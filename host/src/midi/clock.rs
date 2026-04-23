@@ -39,6 +39,7 @@ const AUTO_OFFSET_CLAMP_MS: f64 = 20.0;
 const HARD_LOCK_THRESHOLD_MS: f64 = 1.5;
 const PPT_NUDGE_STEP_NS: i128 = 350_000;
 const PPT_NUDGE_BUDGET_NS: i128 = 4_000_000;
+const MAX_OVERDUE_CATCHUP_PULSES: u64 = 2;
 
 // ── Clock state ───────────────────────────────────────────────────────────────
 
@@ -927,13 +928,31 @@ fn emit_overdue_clock_pulses(cs: &mut ClockState, midi: &Arc<dyn MidiTransport>)
     }
 
     let intervals_elapsed = (elapsed / cs.interval_ns).max(1);
-    cs.last_pulse += Duration::from_nanos(intervals_elapsed.saturating_mul(cs.interval_ns));
+    let pulses_to_emit = intervals_elapsed.min(MAX_OVERDUE_CATCHUP_PULSES);
+
     cs.pulse_index = (cs.pulse_index + intervals_elapsed) % PPQ;
-    for _ in 0..intervals_elapsed {
+    if intervals_elapsed > MAX_OVERDUE_CATCHUP_PULSES {
+        cs.last_pulse = now;
+        cs.phase_slew = None;
+        cs.phase_nudge = None;
+    } else {
+        cs.last_pulse += Duration::from_nanos(intervals_elapsed.saturating_mul(cs.interval_ns));
+    }
+
+    for _ in 0..pulses_to_emit {
         let _ = midi.send_message(&[MSG_CLOCK]);
     }
 
-    if intervals_elapsed > 1 {
+    if intervals_elapsed > MAX_OVERDUE_CATCHUP_PULSES {
+        tracing::warn!(
+            target: "midi.clock",
+            intervals_elapsed,
+            emitted = pulses_to_emit,
+            elapsed_ns = elapsed,
+            interval_ns = cs.interval_ns,
+            "Clock late wake: re-anchored after excessive overdue catch-up"
+        );
+    } else if intervals_elapsed > 1 {
         tracing::trace!(
             target: "midi.clock",
             intervals_elapsed,
@@ -943,7 +962,7 @@ fn emit_overdue_clock_pulses(cs: &mut ClockState, midi: &Arc<dyn MidiTransport>)
         );
     }
 
-    intervals_elapsed
+    pulses_to_emit
 }
 
 // ── Main clock task ───────────────────────────────────────────────────────────
@@ -1403,11 +1422,48 @@ mod tests {
 
         let sent = emit_overdue_clock_pulses(&mut cs, &transport);
 
-        assert_eq!(sent, 3);
+        assert_eq!(sent, 2);
         assert_eq!(cs.pulse_index, 1);
         let msgs = midi.get_messages();
-        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs.len(), 2);
         assert!(msgs.iter().all(|m| m.as_slice() == [MSG_CLOCK]));
+    }
+
+    #[test]
+    fn overdue_emission_caps_burst_and_reanchors() {
+        let mut cs = ClockState::new();
+        cs.running = true;
+        cs.pulse_index = 22;
+        cs.phase_slew = Some(PhaseSlew {
+            started_at: Instant::now(),
+            duration: Duration::from_millis(250),
+            total_correction_ns: 1_000_000,
+            applied_correction_ns: 0,
+        });
+        cs.phase_nudge = Some(PhaseNudge {
+            target_correction_ns: 1_000_000,
+            applied_correction_ns: 0,
+            remaining_budget_ns: PPT_NUDGE_BUDGET_NS,
+        });
+
+        let overdue = Duration::from_nanos(cs.interval_ns.saturating_mul(4).saturating_add(1));
+        cs.last_pulse = Instant::now()
+            .checked_sub(overdue)
+            .unwrap_or(Instant::now());
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+
+        let sent = emit_overdue_clock_pulses(&mut cs, &transport);
+
+        assert_eq!(sent, 2);
+        assert_eq!(cs.pulse_index, 2);
+        assert!(cs.phase_slew.is_none());
+        assert!(cs.phase_nudge.is_none());
+        assert_eq!(midi.get_messages().len(), 2);
+
+        let sent_after_reanchor = emit_overdue_clock_pulses(&mut cs, &transport);
+        assert_eq!(sent_after_reanchor, 0);
     }
 
     #[test]
