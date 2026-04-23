@@ -33,6 +33,10 @@ const MSG_STOP: u8 = 0xFC;
 /// Pulses per quarter note — MIDI spec, always 24.
 const PPQ: u64 = 24;
 
+const AUTO_OFFSET_EWMA_ALPHA: f64 = 0.2;
+const AUTO_OFFSET_DEADBAND_MS: f64 = 0.8;
+const AUTO_OFFSET_CLAMP_MS: f64 = 20.0;
+
 // ── Clock state ───────────────────────────────────────────────────────────────
 
 struct ClockState {
@@ -62,6 +66,8 @@ struct ClockState {
     bars_since_realign: u8,
     /// Optional active phase resync slew used when smoothing is enabled.
     phase_slew: Option<PhaseSlew>,
+    /// Adaptive software offset (ms) derived from phase-error EWMA.
+    auto_offset_ms: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +101,7 @@ impl ClockState {
             last_timing_beat_in_bar: None,
             bars_since_realign: 0,
             phase_slew: None,
+            auto_offset_ms: 0.0,
         }
     }
 
@@ -107,7 +114,12 @@ impl ClockState {
 
     fn arm_wait_for_phrase_start(&mut self) {
         self.set_transport_state(ClockTransportState::WaitingForDownbeat { wait_beats_seen: 0 });
+        self.reset_auto_offset();
         self.last_pulse = Instant::now();
+    }
+
+    fn reset_auto_offset(&mut self) {
+        self.auto_offset_ms = 0.0;
     }
 
     fn transport_state(&self) -> ClockTransportState {
@@ -131,6 +143,7 @@ impl ClockState {
                 self.last_timing_beat_in_bar = None;
                 self.bars_since_realign = 0;
                 self.phase_slew = None;
+                self.reset_auto_offset();
             }
             ClockTransportState::WaitingForDownbeat { wait_beats_seen } => {
                 self.running = false;
@@ -245,6 +258,19 @@ fn beat_at_from_measurement(
     now.checked_sub(Duration::from_secs_f64(phase_secs))
 }
 
+fn update_auto_offset_ms(cs: &mut ClockState, phase_error_ms: f64) {
+    if phase_error_ms.abs() <= AUTO_OFFSET_DEADBAND_MS {
+        return;
+    }
+
+    let target_offset_ms = (-phase_error_ms).clamp(-AUTO_OFFSET_CLAMP_MS, AUTO_OFFSET_CLAMP_MS);
+    cs.auto_offset_ms = ((1.0 - AUTO_OFFSET_EWMA_ALPHA) * cs.auto_offset_ms)
+        + (AUTO_OFFSET_EWMA_ALPHA * target_offset_ms);
+    cs.auto_offset_ms = cs
+        .auto_offset_ms
+        .clamp(-AUTO_OFFSET_CLAMP_MS, AUTO_OFFSET_CLAMP_MS);
+}
+
 fn handle_timing_snapshot(
     cs: &mut ClockState,
     state: &SharedState,
@@ -327,6 +353,9 @@ fn handle_timing_snapshot(
         }
     } else if cs.running && is_beat_edge {
         if let Some(beat_at) = beat_at_from_measurement(cs, now, &measurement) {
+            if let Some(phase_error_ms) = beat_timing_delta_ms(cs, beat_at) {
+                update_auto_offset_ms(cs, phase_error_ms);
+            }
             maybe_resync_on_bar_boundary(
                 cs,
                 midi,
@@ -909,13 +938,14 @@ pub async fn run(
         apply_pending_phase_slew(&mut cs, Instant::now());
 
         // ── Compute next pulse deadline ──────────────────────────────────────
-        let latency_offset_ms = cfg.read().midi.latency_compensation_ms;
+        let latency_offset_ms = cfg.read().midi.latency_compensation_ms as f64;
+        let effective_offset_ms = latency_offset_ms + cs.auto_offset_ms;
         let next_pulse_at = if clock_enabled && cs.running && cs.interval_ns > 0 {
             let base = cs.last_pulse + Duration::from_nanos(cs.interval_ns);
-            if latency_offset_ms > 0 {
-                base + Duration::from_millis(latency_offset_ms as u64)
-            } else if latency_offset_ms < 0 {
-                base.checked_sub(Duration::from_millis((-latency_offset_ms) as u64))
+            if effective_offset_ms > 0.0 {
+                base + Duration::from_secs_f64(effective_offset_ms / 1000.0)
+            } else if effective_offset_ms < 0.0 {
+                base.checked_sub(Duration::from_secs_f64((-effective_offset_ms) / 1000.0))
                     .unwrap_or(base)
             } else {
                 base
@@ -1107,8 +1137,16 @@ mod tests {
     }
 
     fn make_timing_measurement(device: u8, beat_in_bar: u8) -> TimingMeasurement {
+        make_timing_measurement_at(device, beat_in_bar, Instant::now())
+    }
+
+    fn make_timing_measurement_at(
+        device: u8,
+        beat_in_bar: u8,
+        received_at: Instant,
+    ) -> TimingMeasurement {
         TimingMeasurement {
-            received_at: Instant::now(),
+            received_at,
             source: TimingSource::ProLink,
             kind: MeasurementKind::ProLinkBeatPacket,
             device_number: Some(device),
@@ -1483,5 +1521,55 @@ mod tests {
         assert!(cs.phase_slew.is_none());
         assert_eq!(cs.pulse_index, 0);
         assert_eq!(cs.last_pulse, beat_at);
+    }
+
+    #[test]
+    fn auto_offset_filter_clamp_and_deadband() {
+        let mut cs = ClockState::new();
+
+        update_auto_offset_ms(&mut cs, 0.6);
+        assert_eq!(cs.auto_offset_ms, 0.0);
+
+        update_auto_offset_ms(&mut cs, -100.0);
+        assert!((cs.auto_offset_ms - 4.0).abs() < 1e-9);
+
+        update_auto_offset_ms(&mut cs, -100.0);
+        assert!((cs.auto_offset_ms - 7.2).abs() < 1e-9);
+
+        update_auto_offset_ms(&mut cs, 100.0);
+        assert!((cs.auto_offset_ms - 1.76).abs() < 1e-9);
+
+        assert!(cs.auto_offset_ms.abs() <= AUTO_OFFSET_CLAMP_MS);
+
+        update_auto_offset_ms(&mut cs, 0.5);
+        assert!((cs.auto_offset_ms - 1.76).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stale_or_nonmaster_measurements_do_not_update_auto_offset() {
+        let mut cs = ClockState::new();
+        cs.transition_to_running();
+        cs.last_pulse = Instant::now()
+            .checked_sub(Duration::from_millis(10))
+            .unwrap_or(Instant::now());
+        cs.last_timing_beat_in_bar = Some(4);
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let state = make_test_state(1, BeatSource::ProLink);
+
+        let now = Instant::now();
+        let stale_received_at = now.checked_sub(Duration::from_secs(2)).unwrap_or(now);
+        let stale = make_timing_measurement_at(1, 1, stale_received_at);
+        state.write().timing.observe(stale);
+        handle_timing_snapshot(&mut cs, &state, &transport, &activity, 1, 0, now);
+        assert_eq!(cs.auto_offset_ms, 0.0);
+
+        cs.last_timing_beat_in_bar = Some(4);
+        let fresh_non_master = make_timing_measurement_at(2, 1, Instant::now());
+        state.write().timing.observe(fresh_non_master);
+        handle_timing_snapshot(&mut cs, &state, &transport, &activity, 1, 0, Instant::now());
+        assert_eq!(cs.auto_offset_ms, 0.0);
     }
 }
