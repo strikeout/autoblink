@@ -36,6 +36,9 @@ const PPQ: u64 = 24;
 const AUTO_OFFSET_EWMA_ALPHA: f64 = 0.2;
 const AUTO_OFFSET_DEADBAND_MS: f64 = 0.8;
 const AUTO_OFFSET_CLAMP_MS: f64 = 20.0;
+const HARD_LOCK_THRESHOLD_MS: f64 = 1.5;
+const PPT_NUDGE_STEP_NS: i128 = 350_000;
+const PPT_NUDGE_BUDGET_NS: i128 = 4_000_000;
 
 // ── Clock state ───────────────────────────────────────────────────────────────
 
@@ -66,8 +69,19 @@ struct ClockState {
     bars_since_realign: u8,
     /// Optional active phase resync slew used when smoothing is enabled.
     phase_slew: Option<PhaseSlew>,
+    /// Optional active correction nudge used by the selectable correction mode.
+    phase_nudge: Option<PhaseNudge>,
     /// Adaptive software offset (ms) derived from phase-error EWMA.
     auto_offset_ms: f64,
+    /// Current correction mode.
+    correction_mode: ClockCorrectionMode,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockCorrectionMode {
+    AggressiveHardLock,
+    PptNudging,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +97,13 @@ struct PhaseSlew {
     duration: Duration,
     total_correction_ns: i128,
     applied_correction_ns: i128,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PhaseNudge {
+    target_correction_ns: i128,
+    applied_correction_ns: i128,
+    remaining_budget_ns: i128,
 }
 
 impl ClockState {
@@ -101,7 +122,9 @@ impl ClockState {
             last_timing_beat_in_bar: None,
             bars_since_realign: 0,
             phase_slew: None,
+            phase_nudge: None,
             auto_offset_ms: 0.0,
+            correction_mode: ClockCorrectionMode::AggressiveHardLock,
         }
     }
 
@@ -120,6 +143,11 @@ impl ClockState {
 
     fn reset_auto_offset(&mut self) {
         self.auto_offset_ms = 0.0;
+    }
+
+    #[allow(dead_code)]
+    fn set_correction_mode(&mut self, mode: ClockCorrectionMode) {
+        self.correction_mode = mode;
     }
 
     fn transport_state(&self) -> ClockTransportState {
@@ -143,6 +171,7 @@ impl ClockState {
                 self.last_timing_beat_in_bar = None;
                 self.bars_since_realign = 0;
                 self.phase_slew = None;
+                self.phase_nudge = None;
                 self.reset_auto_offset();
             }
             ClockTransportState::WaitingForDownbeat { wait_beats_seen } => {
@@ -152,6 +181,7 @@ impl ClockState {
                 self.last_timing_beat_in_bar = None;
                 self.bars_since_realign = 0;
                 self.phase_slew = None;
+                self.phase_nudge = None;
             }
             ClockTransportState::Running => {
                 self.running = true;
@@ -160,6 +190,7 @@ impl ClockState {
                 self.last_timing_beat_in_bar = None;
                 self.bars_since_realign = 0;
                 self.phase_slew = None;
+                self.phase_nudge = None;
             }
         }
     }
@@ -355,6 +386,7 @@ fn handle_timing_snapshot(
         if let Some(beat_at) = beat_at_from_measurement(cs, now, &measurement) {
             if let Some(phase_error_ms) = beat_timing_delta_ms(cs, beat_at) {
                 update_auto_offset_ms(cs, phase_error_ms);
+                apply_mode_specific_correction(cs, beat_at, phase_error_ms);
             }
             maybe_resync_on_bar_boundary(
                 cs,
@@ -401,6 +433,77 @@ fn apply_pending_phase_slew(cs: &mut ClockState, now: Instant) {
         cs.pulse_index = 0;
     } else {
         cs.phase_slew = Some(slew);
+    }
+}
+
+fn apply_pending_phase_nudge(cs: &mut ClockState) {
+    let Some(mut nudge) = cs.phase_nudge else {
+        return;
+    };
+
+    let remaining_target_ns = nudge.target_correction_ns - nudge.applied_correction_ns;
+    if remaining_target_ns == 0 || nudge.remaining_budget_ns <= 0 {
+        cs.phase_nudge = None;
+        return;
+    }
+
+    let step_ns = remaining_target_ns
+        .abs()
+        .min(PPT_NUDGE_STEP_NS)
+        .min(nudge.remaining_budget_ns.max(0));
+    if step_ns <= 0 {
+        cs.phase_nudge = None;
+        return;
+    }
+
+    let applied_ns = remaining_target_ns.signum() * step_ns;
+    if applied_ns > 0 {
+        cs.last_pulse += Duration::from_nanos(applied_ns as u64);
+    } else if applied_ns < 0 {
+        let back = Duration::from_nanos((-applied_ns) as u64);
+        cs.last_pulse = cs.last_pulse.checked_sub(back).unwrap_or(cs.last_pulse);
+    }
+
+    nudge.applied_correction_ns += applied_ns;
+    nudge.remaining_budget_ns -= step_ns;
+
+    if nudge.applied_correction_ns == nudge.target_correction_ns || nudge.remaining_budget_ns <= 0 {
+        cs.phase_nudge = None;
+    } else {
+        cs.phase_nudge = Some(nudge);
+    }
+}
+
+fn start_ppt_nudge(cs: &mut ClockState, phase_error_ms: f64) {
+    let target_correction_ns = (-phase_error_ms * 1_000_000.0)
+        .round()
+        .clamp(-(PPT_NUDGE_BUDGET_NS as f64), PPT_NUDGE_BUDGET_NS as f64) as i128;
+
+    if target_correction_ns == 0 {
+        cs.phase_nudge = None;
+        return;
+    }
+
+    cs.phase_nudge = Some(PhaseNudge {
+        target_correction_ns,
+        applied_correction_ns: 0,
+        remaining_budget_ns: PPT_NUDGE_BUDGET_NS,
+    });
+}
+
+fn apply_mode_specific_correction(cs: &mut ClockState, beat_at: Instant, phase_error_ms: f64) {
+    match cs.correction_mode {
+        ClockCorrectionMode::AggressiveHardLock => {
+            if phase_error_ms.abs() > HARD_LOCK_THRESHOLD_MS {
+                cs.phase_slew = None;
+                cs.phase_nudge = None;
+                cs.pulse_index = 0;
+                cs.last_pulse = beat_at;
+            }
+        }
+        ClockCorrectionMode::PptNudging => {
+            start_ppt_nudge(cs, phase_error_ms);
+        }
     }
 }
 
@@ -555,11 +658,11 @@ fn handle_beat_event(
                         cs.pulse_index = 0;
                         cs.last_pulse = Instant::now();
                     }
-                } else if cs.running {
-                    maybe_resync_on_bar_boundary(
-                        cs,
-                        midi,
-                        activity,
+    } else if cs.running {
+        maybe_resync_on_bar_boundary(
+            cs,
+            midi,
+            activity,
                         resync_interval_bars,
                         smoothing_ms,
                         bp.beat_in_bar,
@@ -779,6 +882,11 @@ fn handle_prolink_beat_loop_disabled(
             a.clock_pulse_index = cs.pulse_index;
             a.clock_timing_delta_ms = beat_timing_delta_ms(cs, received_at);
         }
+
+        if let Some(phase_error_ms) = beat_timing_delta_ms(cs, received_at) {
+            update_auto_offset_ms(cs, phase_error_ms);
+            apply_mode_specific_correction(cs, received_at, phase_error_ms);
+        }
     } else {
         cs.transition_to_running();
         cs.pulse_index = 0;
@@ -936,6 +1044,7 @@ pub async fn run(
         }
 
         apply_pending_phase_slew(&mut cs, Instant::now());
+        apply_pending_phase_nudge(&mut cs);
 
         // ── Compute next pulse deadline ──────────────────────────────────────
         let latency_offset_ms = cfg.read().midi.latency_compensation_ms as f64;
@@ -1571,5 +1680,72 @@ mod tests {
         state.write().timing.observe(fresh_non_master);
         handle_timing_snapshot(&mut cs, &state, &transport, &activity, 1, 0, Instant::now());
         assert_eq!(cs.auto_offset_ms, 0.0);
+    }
+
+    #[test]
+    fn aggressive_hard_lock_reanchors_phase_within_threshold() {
+        let mut cs = ClockState::new();
+        cs.transition_to_running();
+        cs.set_correction_mode(ClockCorrectionMode::AggressiveHardLock);
+
+        let beat_at = Instant::now();
+        cs.last_pulse = beat_at
+            .checked_sub(Duration::from_millis(3))
+            .unwrap_or(beat_at);
+        cs.pulse_index = 11;
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+
+        let phase_error_ms = beat_timing_delta_ms(&cs, beat_at).unwrap();
+        assert!(phase_error_ms.abs() > HARD_LOCK_THRESHOLD_MS);
+
+        apply_mode_specific_correction(&mut cs, beat_at, phase_error_ms);
+
+        assert_eq!(cs.last_pulse, beat_at);
+        assert_eq!(cs.pulse_index, 0);
+        assert!(cs.phase_slew.is_none());
+        assert!(cs.phase_nudge.is_none());
+        assert!(midi.get_messages().is_empty());
+        assert!(beat_timing_delta_ms(&cs, beat_at).unwrap().abs() <= HARD_LOCK_THRESHOLD_MS);
+
+        drop(transport);
+    }
+
+    #[test]
+    fn continuous_nudging_reduces_phase_error_without_transport_restart() {
+        let mut cs = ClockState::new();
+        cs.transition_to_running();
+        cs.set_correction_mode(ClockCorrectionMode::PptNudging);
+
+        let beat_at = Instant::now();
+        cs.last_pulse = beat_at
+            .checked_sub(Duration::from_millis(3))
+            .unwrap_or(beat_at);
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+
+        let phase_error_ms = beat_timing_delta_ms(&cs, beat_at).unwrap();
+        let initial_error = phase_error_ms.abs();
+        apply_mode_specific_correction(&mut cs, beat_at, phase_error_ms);
+        assert!(cs.phase_nudge.is_some());
+        assert!(midi.get_messages().is_empty());
+
+        let mut previous_error = initial_error;
+        for _ in 0..16 {
+            apply_pending_phase_nudge(&mut cs);
+            let current_error = beat_timing_delta_ms(&cs, beat_at).unwrap().abs();
+            assert!(current_error <= previous_error + 0.000_001);
+            previous_error = current_error;
+            if cs.phase_nudge.is_none() {
+                break;
+            }
+        }
+
+        assert!(previous_error <= 0.35 + 0.001);
+        assert!(midi.get_messages().is_empty());
+
+        drop(transport);
     }
 }
