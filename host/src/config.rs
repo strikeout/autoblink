@@ -19,6 +19,16 @@ pub enum Source {
     Auto,
 }
 
+// ── Clock correction mode ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClockCorrectionMode {
+    #[default]
+    AggressiveHardLock,
+    PptNudging,
+}
+
 // ── Top-level config ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +80,7 @@ pub struct MidiConfig {
     pub clock_loop_enabled: bool,
     pub smoothing_ms: u64,
     pub latency_compensation_ms: i64,
+    pub clock_correction_mode: ClockCorrectionMode,
     /// Bar interval for phrase-lock full resync (1 bar = 4 beats).
     pub phrase_lock_stable_beats: u8,
     pub notes: NoteConfig,
@@ -85,6 +96,7 @@ impl Default for MidiConfig {
             clock_loop_enabled: true,
             smoothing_ms: 30,
             latency_compensation_ms: 0,
+            clock_correction_mode: ClockCorrectionMode::default(),
             phrase_lock_stable_beats: 4,
             notes: NoteConfig::default(),
             cc: CcConfig::default(),
@@ -305,4 +317,42 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
         cfg.link.poll_interval_us
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_correction_mode_parses_and_defaults() {
+        let defaults: Config = toml::from_str("").expect("empty TOML should use defaults");
+        assert_eq!(
+            defaults.midi.clock_correction_mode,
+            ClockCorrectionMode::AggressiveHardLock
+        );
+
+        let explicit: Config = toml::from_str(
+            r#"
+                [midi]
+                clock_correction_mode = "ppt-nudging"
+            "#,
+        )
+        .expect("valid clock correction mode should parse");
+        assert_eq!(explicit.midi.clock_correction_mode, ClockCorrectionMode::PptNudging);
+    }
+
+    #[test]
+    fn clock_correction_mode_rejects_invalid_value() {
+        let err = toml::from_str::<Config>(
+            r#"
+                [midi]
+                clock_correction_mode = "not-a-real-mode"
+            "#,
+        )
+        .expect_err("invalid correction mode should fail to parse");
+
+        let msg = err.to_string();
+        assert!(msg.contains("not-a-real-mode"));
+        assert!(msg.contains("aggressive-hard-lock") || msg.contains("ppt-nudging"));
+    }
 }
