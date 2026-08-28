@@ -1,5 +1,28 @@
 # AGENTS.md — xdj-midi
 
+## Constraints
+
+Standing instructions for working in this repo. **Every rule carries an expiry date, and an
+expired rule is not in force.** On the first session after a rule's date, either renew it — push
+the date out and append the reason it still holds — or delete it. Never silently keep it, and
+never renew a rule you cannot justify in one line: not being able to say why it still applies
+*is* the answer. This is the only thing that stops a constraint list growing into hundreds of
+lines of dead instruction that an agent quietly ignores.
+
+The line format is fixed so the list stays greppable — `- **until YYYY-MM-DD** — <rule>`. A new
+rule gets **90 days** unless there is a reason for a shorter or longer life; a rule tied to a
+known event (a migration, a launch, a vendor deadline) expires on that date instead.
+
+```bash
+sh ~/.claude/templates/check-constraints.sh
+```
+
+- **until 2026-11-26** — No repo-specific constraints have been written yet. Delete this line
+  when the first one is added.
+
+Only *instructions* belong here — "always X", "never Y", "ask before Z". Durable **facts** about
+how this code works do not expire and live in the other sections, not in this list.
+
 ## Workspace
 
 - **3 crates**: `xdj-clock-host` (desktop app), `xdj-clock-esp32` (firmware), `xdj-clock-esp32-emulator` (native emulator)
@@ -135,3 +158,40 @@ Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+---
+
+## Wiki Protocol
+
+There is a personal wiki at `~/Sites/AI-projects/Wiki` — an Obsidian vault that an agent
+maintains and the human reads. This project is a subject in its **`digital`** domain.
+
+### The trigger — when a learning occurs, file it
+
+Capture when, and only when, one of these is true:
+
+1. A bug's root cause was **non-obvious** and cost real time.
+2. An external system behaved **contrary to its documentation** — API quirk, rate limit, silent
+   failure, undocumented error.
+3. A decision was made **and alternatives were rejected** — record the why and the rejected list.
+4. A build/deploy/tooling incantation was found that is **in no README**.
+5. Something learned here **applies to another project**. Highest value; nothing else catches it.
+
+Do **not** capture routine feature work, anything already in this file, restatements of public
+docs, or session status updates.
+
+### The split
+
+Facts durable to *this project only* stay in this file. The **cross-project and
+durable-knowledge** slice goes to the wiki. The test: *"would this help me in a different
+repo?"* Yes → wiki. No → here.
+
+### The procedure — read it, never remember it
+
+**`~/Sites/AI-projects/Wiki/CLAUDE.md`, section "Capture", is the single source of truth for
+where the page goes, what shape it takes and how the log line reads.** Read it before writing
+into the wiki, and follow it over anything you remember.
+
+It is deliberately not restated here. This block sat a full schema version behind for months
+because eleven repos each carried their own copy of the procedure; the fix was to stop copying
+the half that changes. Keep it that way — if you find yourself pasting filing rules into this
+file, you are recreating the bug.
