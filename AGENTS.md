@@ -175,6 +175,7 @@ Capture when, and only when, one of these is true:
 3. A decision was made **and alternatives were rejected** — record the why and the rejected list.
 4. A build/deploy/tooling incantation was found that is **in no README**.
 5. Something learned here **applies to another project**. Highest value; nothing else catches it.
+6. The human states a **standing rule or preference** that applies to more than one project.
 
 Do **not** capture routine feature work, anything already in this file, restatements of public
 docs, or session status updates.
