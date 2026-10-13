@@ -26,6 +26,18 @@ use super::{PKT_CONFLICT, PORT_DISCOVERY, PORT_STATUS};
 const CLAIM_INTERVAL: Duration = Duration::from_millis(300);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(1500);
 const CLAIM_ROUNDS: usize = 3;
+/// After this many keepalive send errors in a row, the task stops, so that
+/// the supervisor finds the network again. 5 × 1.5 s is about 7.5 s.
+const MAX_KEEPALIVE_FAILURES: u32 = 5;
+
+/// Aborts the task when the handle goes out of scope.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 // ── Signals ───────────────────────────────────────────────────────────────────
 
@@ -166,7 +178,9 @@ pub async fn run(
     let status_pkt = build_status_packet(&name, claimed);
     let table = Arc::clone(&device_table);
     let listener_sock = Arc::clone(&sock);
-    tokio::spawn(async move {
+    // The listener stops with this task, so a rebuilt task group does not
+    // leave it behind on the old address.
+    let _listener = AbortOnDrop(tokio::spawn(async move {
         let mut buf = [0u8; 2048];
         loop {
             match listener_sock.recv_from(&mut buf).await {
@@ -197,14 +211,16 @@ pub async fn run(
                 }
                 Err(e) => {
                     tracing::warn!("Virtual CDJ listener recv error: {e}");
+                    tokio::time::sleep(super::RECV_ERROR_BACKOFF).await;
                 }
             }
         }
-    });
+    }));
 
     // ── Keep-alive loop ───────────────────────────────────────────────────────
     let status_pkt = build_status_packet(&name, claimed);
     let mut interval = tokio::time::interval(KEEPALIVE_INTERVAL);
+    let mut keepalive_failures: u32 = 0;
     loop {
         interval.tick().await;
 
@@ -216,8 +232,15 @@ pub async fn run(
             hex = %super::hex_preview(&pkt, 48),
             "Sending keepalive packet"
         );
-        if let Err(e) = sock.send_to(&pkt, bcast_addr6).await {
-            tracing::warn!("Keep-alive send error: {e}");
+        match sock.send_to(&pkt, bcast_addr6).await {
+            Ok(_) => keepalive_failures = 0,
+            Err(e) => {
+                tracing::warn!("Keep-alive send error: {e}");
+                keepalive_failures += 1;
+                if keepalive_failures >= MAX_KEEPALIVE_FAILURES {
+                    anyhow::bail!("{keepalive_failures} keep-alive sends failed in a row: {e}");
+                }
+            }
         }
 
         // 2. Unicast status packet to each known device on port 50002.

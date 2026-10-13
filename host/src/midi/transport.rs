@@ -28,6 +28,11 @@ pub type MidiResult = std::result::Result<(), MidiError>;
 
 pub trait MidiTransport: Send + Sync {
     fn send_message(&self, msg: &[u8]) -> MidiResult;
+
+    /// Returns true while an output device is attached.
+    fn is_connected(&self) -> bool {
+        true
+    }
 }
 
 /// Open a MIDI output port by substring match.
@@ -35,7 +40,9 @@ pub trait MidiTransport: Send + Sync {
 /// Behavior matches the host CLI `--midi` selection:
 /// - "auto" selects the first available output port.
 /// - Otherwise, selects the first port whose name contains `port_name` (case-insensitive).
-pub fn open_midi_output(port_name: &str) -> anyhow::Result<MidiOutputConnection> {
+///
+/// Returns the connection and the full name of the selected port.
+pub fn open_midi_output(port_name: &str) -> anyhow::Result<(MidiOutputConnection, String)> {
     let midi_out = MidiOutput::new("xdj-clock")?;
     let ports = midi_out.ports();
     if ports.is_empty() {
@@ -48,6 +55,7 @@ pub fn open_midi_output(port_name: &str) -> anyhow::Result<MidiOutputConnection>
         tracing::info!(%name, "Auto-selected MIDI output port");
         return midi_out
             .connect(port, "xdj-clock")
+            .map(|conn| (conn, name))
             .map_err(|e| anyhow::anyhow!("{}", e));
     }
 
@@ -57,6 +65,7 @@ pub fn open_midi_output(port_name: &str) -> anyhow::Result<MidiOutputConnection>
             tracing::info!(%name, "Selected MIDI output port");
             return midi_out
                 .connect(port, "xdj-clock")
+                .map(|conn| (conn, name))
                 .map_err(|e| anyhow::anyhow!("{}", e));
         }
     }
@@ -355,6 +364,10 @@ impl MidiOutHandle {
 }
 
 impl MidiTransport for MidiOutHandle {
+    fn is_connected(&self) -> bool {
+        MidiOutHandle::is_connected(self)
+    }
+
     fn send_message(&self, msg: &[u8]) -> MidiResult {
         if !self.is_connected() {
             return Err(MidiError::NotConnected);

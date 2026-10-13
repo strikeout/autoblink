@@ -102,7 +102,10 @@ pub async fn run(_bind_ip: Ipv4Addr, tx: broadcast::Sender<BeatEvent>) -> anyhow
                     );
                 }
             }
-            Err(e) => tracing::warn!("Beat listener recv error: {e}"),
+            Err(e) => {
+                tracing::warn!("Beat listener recv error: {e}");
+                tokio::time::sleep(super::RECV_ERROR_BACKOFF).await;
+            }
         }
     }
 }

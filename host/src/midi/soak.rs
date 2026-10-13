@@ -167,7 +167,7 @@ const MTC_P99_JITTER_MS_THRESHOLD: f64 = 5.0;
 const MTC_MAX_RESYNC_COUNT_THRESHOLD: u64 = 1;
 
 pub async fn run(args: SoakArgs) -> anyhow::Result<i32> {
-    let conn = open_midi_output(&args.midi_out)?;
+    let (conn, _) = open_midi_output(&args.midi_out)?;
     let initial_conn: Box<dyn crate::midi::MidiOutConnection> = Box::new(MidirOutConnection(conn));
     let midi_out = MidiOutHandle::start(4096, Some(initial_conn));
 

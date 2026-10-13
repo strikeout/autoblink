@@ -303,6 +303,15 @@ impl MtcScheduler {
         *self = Self::new(enabled, frame_rate);
     }
 
+    /// Stops the quarter-frame cycle. The next wake sends a full-frame and
+    /// starts the cycle again.
+    fn force_resync(&mut self) {
+        self.running = false;
+        self.next_qf_deadline = None;
+        self.qf_index = 0;
+        self.last_cycle_frame = None;
+    }
+
     fn take_stats(&mut self) -> MtcStats {
         std::mem::take(&mut self.stats)
     }
@@ -631,6 +640,7 @@ pub async fn run(
     };
 
     let mut last_trace_at: Instant = Instant::now();
+    let mut last_connected = midi.is_connected();
 
     tracing::info!("MTC timecode task started");
     if !enabled0 {
@@ -697,6 +707,14 @@ pub async fn run(
             clock_loop_enabled = current_clock_loop_enabled;
             beat_driven_playing = false;
         }
+
+        // A new MIDI device needs a full-frame before quarter-frames make sense.
+        let connected = midi.is_connected();
+        if connected && !last_connected {
+            tracing::info!("MTC full-frame resync after MIDI output reconnect");
+            scheduler.force_resync();
+        }
+        last_connected = connected;
 
         let current_master_key = {
             let st = state.read();

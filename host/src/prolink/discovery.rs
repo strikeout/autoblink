@@ -93,7 +93,10 @@ pub async fn run(
             result = udp.recv_from(&mut buf) => {
                 match result {
                     Ok((len, src)) => handle_packet(&buf[..len], src, bind_addr, &own_name, &table, &tx),
-                    Err(e) => tracing::warn!("Discovery recv error: {e}"),
+                    Err(e) => {
+                        tracing::warn!("Discovery recv error: {e}");
+                        tokio::time::sleep(super::RECV_ERROR_BACKOFF).await;
+                    }
                 }
             }
             _ = expiry_check.tick() => {

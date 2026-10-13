@@ -28,6 +28,8 @@ const DB_SERVER_QUERY_PORT: u16 = 12523;
 
 /// Magic bytes that start every dbserver message.
 const DB_MAGIC: [u8; 4] = [0x87, 0x23, 0x49, 0xae];
+/// A dbserver message has at most 12 arguments. A larger count is a bad peer.
+const MAX_ARG_COUNT: usize = 64;
 
 /// Timeout for the entire metadata fetch (connect + query).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -85,7 +87,7 @@ pub async fn run(
     our_device_number: u8,
     device_table: DeviceTable,
     state: SharedState,
-    mut rx: mpsc::Receiver<TrackChange>,
+    rx: &mut mpsc::Receiver<TrackChange>,
 ) {
     let inflight: InflightMap = Arc::new(Mutex::new(HashMap::new()));
 
@@ -768,6 +770,10 @@ async fn read_message(stream: &mut TcpStream) -> anyhow::Result<DbMessage> {
         Field::Number(v) => v as usize,
         _ => anyhow::bail!("Expected numeric argument count"),
     };
+    // A bad peer can send any count. Refuse it before the allocation below.
+    if arg_count > MAX_ARG_COUNT {
+        anyhow::bail!("dbserver argument count {arg_count} is larger than {MAX_ARG_COUNT}");
+    }
     // Type tags blob.
     let _tags = read_field(stream).await?;
 
@@ -877,5 +883,30 @@ fn parse_menu_item(item_index: u32, msg: &DbMessage, meta: &mut TrackMetadata) {
             7 if meta.key.is_empty() => meta.key = label1,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn read_message_refuses_a_huge_argument_count() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut peer, _) = listener.accept().await.unwrap();
+            let mut msg = DB_MAGIC.to_vec();
+            msg.extend([FIELD_U32, 0, 0, 0, 1]); // transaction ID
+            msg.extend([FIELD_U16, 0x40, 0x00]); // message type
+            msg.extend([FIELD_U32, 0xFF, 0xFF, 0xFF, 0xFF]); // argument count
+            msg.extend([FIELD_BLOB, 0, 0, 0, 0]); // type tags
+            peer.write_all(&msg).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let err = read_message(&mut stream).await.err().expect("must refuse");
+        assert!(err.to_string().contains("argument count"), "{err}");
     }
 }
