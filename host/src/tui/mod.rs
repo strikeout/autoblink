@@ -55,6 +55,7 @@ pub async fn run(
 
     // ── Terminal setup ───────────────────────────────────────────────────────
     let mut terminal = ratatui::init();
+    let mut result = Ok(());
 
     // ── Event stream (non-blocking keyboard via crossterm) ───────────────────
     let mut events = EventStream::new();
@@ -121,9 +122,13 @@ pub async fn run(
                 let last_beat = dj_state.read().master.last_beat_at;
                 tui.last_beat_flash = last_beat;
 
-                terminal.draw(|f| {
+                if let Err(e) = terminal.draw(|f| {
                     render::draw(f, &tui, &dj_state, &device_table, &cfg);
-                })?;
+                }) {
+                    // Leave the loop so that the teardown below still runs.
+                    result = Err(e.into());
+                    break;
+                }
             }
 
             // ── Periodic connectivity refresh ───────────────────────────────
@@ -143,7 +148,7 @@ pub async fn run(
     // Send MIDI Stop so external gear doesn't get orphaned clocks.
     midi_out.stop().await;
 
-    Ok(())
+    result
 }
 
 fn handle_settings_key(

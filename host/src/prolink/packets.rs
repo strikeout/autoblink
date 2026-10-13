@@ -166,13 +166,13 @@ pub struct AbsPositionPacket {
 }
 
 pub fn parse_abs_position(data: &[u8]) -> Option<AbsPositionPacket> {
-    if data.len() < 0x40 {
+    if data.len() < 0x3c {
         return None;
     }
     if !has_magic(data) || data[0x0a] != PKT_ABS_POSITION {
         return None;
     }
-    let bpm_x10 = u32be(data, 0x3a);
+    let bpm_x10 = u32be(data, 0x38);
     let pitch_raw = i32be(data, 0x2c);
     Some(AbsPositionPacket {
         device_number: data[0x21],
@@ -457,5 +457,20 @@ mod tests {
         let packet = magic_pkt(PKT_CDJ_STATUS, CDJ_STATUS_PACKET_LEN - 1);
 
         assert!(parse_cdj_status(&packet).is_none());
+    }
+
+    #[test]
+    fn parse_abs_position_reads_cdj3000_length_packet() {
+        // A CDJ-3000 sends 0x3c bytes, with BPM x10 at offset 0x38 (Beat Link PrecisePosition).
+        let mut packet = magic_pkt(PKT_ABS_POSITION, 0x3c);
+        packet[0x21] = 2;
+        packet[0x28..0x2c].copy_from_slice(&5000u32.to_be_bytes());
+        packet[0x38..0x3c].copy_from_slice(&1245u32.to_be_bytes());
+
+        let p = parse_abs_position(&packet).expect("0x3c packet parses");
+        assert_eq!(p.device_number, 2);
+        assert_eq!(p.playhead_ms, 5000);
+        assert!((p.effective_bpm - 124.5).abs() < 1e-9);
+        assert!(parse_abs_position(&packet[..0x3b]).is_none());
     }
 }

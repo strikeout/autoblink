@@ -76,7 +76,7 @@ mod tests {
 
     use crate::config::{new_shared, Config};
     use crate::state::timing::TimingMeasurement;
-    use crate::state::{new_shared as new_shared_state, BeatSource, MasterState, TrackChange};
+    use crate::state::{new_shared as new_shared_state, BeatSource, MasterState};
     use crate::tui::state::MidiActivity;
 
     #[tokio::test]
@@ -110,7 +110,6 @@ mod tests {
         let (status_tx, status_rx) = broadcast::channel(8);
         let (device_tx, _) = broadcast::channel(8);
         let (vcdjready_tx, _) = broadcast::channel(8);
-        let (track_change_tx, _track_change_rx) = tokio::sync::mpsc::channel::<TrackChange>(8);
         let (_cfg_change_tx, cfg_change_rx) = watch::channel(());
         let (timing_tx, timing_rx) = watch::channel(());
 
@@ -126,7 +125,6 @@ mod tests {
             vcdjready_tx,
             midi_out,
             midi_activity: Arc::clone(&midi_activity),
-            track_change_tx,
         };
 
         spawn(ctx, beat_rx, status_rx, cfg_change_rx, timing_rx);

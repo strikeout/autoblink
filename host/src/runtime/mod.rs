@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use crate::app::AppContext;
@@ -31,7 +30,6 @@ pub struct TaskContext {
     pub vcdjready_tx: broadcast::Sender<VirtualCdjReady>,
     pub midi_out: crate::midi::MidiOutHandle,
     pub midi_activity: Arc<Mutex<MidiActivity>>,
-    pub track_change_tx: mpsc::Sender<crate::state::TrackChange>,
 }
 
 #[cfg(test)]
@@ -57,6 +55,7 @@ pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
         status_tx,
         vcdjready_tx,
         track_change_tx,
+        track_change_rx,
     } = ctx;
 
     let beat_rx1 = beat_tx.subscribe();
@@ -86,7 +85,6 @@ pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
         vcdjready_tx: vcdjready_tx.clone(),
         midi_out: midi_out.clone(),
         midi_activity: Arc::clone(&midi_activity),
-        track_change_tx: track_change_tx.clone(),
     };
 
     dj_state.write().set_source_mode(startup_cfg.source.clone());
@@ -108,7 +106,12 @@ pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
         });
     }
 
-    prolink::spawn(&task_ctx, startup_cfg.clone(), device_table.clone());
+    prolink::spawn(
+        &task_ctx,
+        startup_cfg.clone(),
+        device_table.clone(),
+        track_change_rx,
+    );
 
     link::spawn(task_ctx.clone(), startup_cfg.clone());
 

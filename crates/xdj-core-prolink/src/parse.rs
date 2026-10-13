@@ -118,13 +118,13 @@ mod tests {
 }
 
 pub fn parse_abs_position(data: &[u8]) -> Option<AbsPositionPacket> {
-    if data.len() < 0x40 {
+    if data.len() < 0x3c {
         return None;
     }
     if !has_magic(data) || data[0x0a] != PKT_ABS_POSITION {
         return None;
     }
-    let bpm_x10 = u32be(data, 0x3a);
+    let bpm_x10 = u32be(data, 0x38);
     let pitch_raw = i32be(data, 0x2c);
     Some(AbsPositionPacket {
         device_number: data[0x21],

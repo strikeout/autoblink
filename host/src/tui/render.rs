@@ -460,8 +460,10 @@ fn draw_deck_panel(
                     let track_info = parts.join(" - ");
 
                     let max_width = area.width.saturating_sub(8) as usize;
-                    let display = if track_info.len() > max_width && max_width > 3 {
-                        format!("{}…", &track_info[..max_width - 1])
+                    // Count chars, not bytes: a byte slice can split a UTF-8 character and panic.
+                    let display = if track_info.chars().count() > max_width && max_width > 3 {
+                        let head: String = track_info.chars().take(max_width - 1).collect();
+                        format!("{head}…")
                     } else {
                         track_info
                     };

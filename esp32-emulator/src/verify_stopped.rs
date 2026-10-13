@@ -16,15 +16,15 @@ fn main() -> anyhow::Result<()> {
         // Offset 0x24: track_length_s (300)
         // Offset 0x28: playhead_ms (5000)
         // Offset 0x2c: pitch_raw_signed (123 -> 1.23%)
-        // Offset 0x3a: bpm_x10 (1245 -> 124.5 BPM)
-        let mut abs_pkt = vec![0u8; 0x40];
+        // Offset 0x38: bpm_x10 (1245 -> 124.5 BPM)
+        let mut abs_pkt = vec![0u8; 0x3c];
         abs_pkt[..10].copy_from_slice(&MAGIC);
         abs_pkt[10] = PKT_ABS_POSITION;
         abs_pkt[0x21] = 1;
         abs_pkt[0x24..0x28].copy_from_slice(&300u32.to_be_bytes());
         abs_pkt[0x28..0x2c].copy_from_slice(&5000u32.to_be_bytes());
         abs_pkt[0x2c..0x30].copy_from_slice(&123i32.to_be_bytes());
-        abs_pkt[0x3a..0x3e].copy_from_slice(&1245u32.to_be_bytes());
+        abs_pkt[0x38..0x3c].copy_from_slice(&1245u32.to_be_bytes());
 
         sock.send_to(&abs_pkt, target)?;
         println!("Sent AbsPosition: Deck #1, 124.5 BPM, 1.23% Pitch");
