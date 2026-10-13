@@ -17,6 +17,12 @@ pub struct MidiActivity {
     pub last_note: Option<(u8, Instant)>,
     /// Last CC sent: (cc_number, value, when).
     pub last_cc: Option<(u8, u8, Instant)>,
+    /// The OSC messages sent, counted once per target.
+    pub osc_sent: u64,
+    /// The OSC sends that failed, and the targets that are not an IP address with a port.
+    pub osc_errors: u64,
+    /// The last OSC message, as "address args", and when it was sent.
+    pub last_osc: Option<(String, Instant)>,
 
     pub clock_running: bool,
     pub clock_waiting_for_phrase: bool,

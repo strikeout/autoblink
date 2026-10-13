@@ -19,7 +19,9 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use super::discovery::DeviceTable;
-use crate::state::{PhraseEntry, PhraseKind, SharedState, SongStructure, TrackChange, TrackMood};
+use crate::state::{
+    Cue, PhraseEntry, PhraseKind, SharedState, SongStructure, TrackChange, TrackMood, TrackOverview,
+};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -35,8 +37,8 @@ const ARG_TAG_BLOB: u8 = 0x03;
 /// A dbserver message has at most 12 arguments. A larger count is a bad peer.
 const MAX_ARG_COUNT: usize = 64;
 
-/// Timeout for the entire metadata fetch (connect + query).
-const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Timeout for the entire metadata fetch (connect, metadata, PSSI, waveform and cue list).
+const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Timeout for individual TCP read/write operations.
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
@@ -54,6 +56,15 @@ const MSG_MENU_FOOTER: u16 = 0x4201;
 const MSG_ANLZ_TAG_REQ: u16 = 0x2c04;
 /// The response to the analysis tag request has type 0x4f02, not 0x2c04.
 const MSG_ANLZ_TAG_RESP: u16 = 0x4f02;
+const MSG_CUE_LIST_EXT_REQ: u16 = 0x2b04;
+const MSG_CUE_LIST_EXT_RESP: u16 = 0x4e02;
+
+/// The menu identifier "data" of an RMST argument (Beat Link `MenuIdentifier.DATA`).
+const MENU_DATA: u8 = 0x08;
+/// An analysis tag code or a file extension is sent as its ASCII bytes in reverse order.
+const TAG_PSSI: u32 = u32::from_le_bytes(*b"PSSI");
+const TAG_PWV4: u32 = u32::from_le_bytes(*b"PWV4");
+const EXT_EXT: u32 = u32::from_le_bytes(*b"EXT\0");
 
 // ── Field type tags ───────────────────────────────────────────────────────────
 
@@ -73,6 +84,15 @@ pub struct TrackMetadata {
     pub key: String,
     /// Original track BPM (not pitch-adjusted).
     pub bpm: Option<f64>,
+    /// The track length in seconds.
+    pub duration_s: Option<u32>,
+}
+
+/// The analysis data that the fetch gets after the metadata. Each part can fail alone.
+struct TrackAnalysis {
+    song_structure: anyhow::Result<SongStructure>,
+    preview: anyhow::Result<Vec<u8>>,
+    cues: anyhow::Result<Vec<Cue>>,
 }
 
 // ── In-flight request dedup ───────────────────────────────────────────────────
@@ -205,7 +225,7 @@ pub async fn run(
                 inflight2.lock().remove(&key);
             });
             match timeout(FETCH_TIMEOUT, fetch_metadata(ip, asking, &change2)).await {
-                Ok(Ok((meta, song_struct))) => {
+                Ok(Ok((meta, analysis))) => {
                     tracing::info!(
                         device = change2.device_number,
                         rekordbox_id = change2.rekordbox_id,
@@ -223,7 +243,10 @@ pub async fn run(
                         meta.key,
                         meta.bpm,
                     );
-                    match song_struct {
+                    if let Some(secs) = meta.duration_s {
+                        st.set_track_length(change2.device_number, change2.rekordbox_id, secs);
+                    }
+                    match analysis.song_structure {
                         Ok(ss) => {
                             tracing::info!(
                                 device = change2.device_number,
@@ -247,6 +270,34 @@ pub async fn run(
                                 reason,
                             );
                         }
+                    }
+                    let warn = |what: &str, e: &anyhow::Error| {
+                        tracing::warn!(
+                            device = change2.device_number,
+                            rekordbox_id = change2.rekordbox_id,
+                            error = %format!("{e:#}"),
+                            "{what} is not available"
+                        );
+                    };
+                    if let Err(e) = &analysis.preview {
+                        warn("Waveform preview", e);
+                    }
+                    if let Err(e) = &analysis.cues {
+                        warn("Cue list", e);
+                    }
+                    if analysis.preview.is_ok() || analysis.cues.is_ok() {
+                        let overview = TrackOverview {
+                            rekordbox_id: change2.rekordbox_id,
+                            preview: analysis.preview.unwrap_or_default(),
+                            cues: analysis.cues.unwrap_or_default(),
+                        };
+                        tracing::info!(
+                            device = change2.device_number,
+                            columns = overview.preview.len() / 6,
+                            cues = overview.cues.len(),
+                            "Waveform and cues received"
+                        );
+                        st.set_overview(change2.device_number, overview);
                     }
                 }
                 Ok(Err(e)) if e.downcast_ref::<SetupRefused>().is_some() => {
@@ -297,7 +348,7 @@ async fn fetch_metadata(
     player_ip: Ipv4Addr,
     asking: u8,
     change: &TrackChange,
-) -> anyhow::Result<(TrackMetadata, anyhow::Result<SongStructure>)> {
+) -> anyhow::Result<(TrackMetadata, TrackAnalysis)> {
     // Step 1: Discover the dbserver port.
     let db_port = discover_db_port(player_ip).await?;
     tracing::debug!(%player_ip, db_port, "dbserver port discovered");
@@ -410,36 +461,45 @@ async fn fetch_metadata(
         }
     }
 
-    // Step 8: Request PSSI (song structure / phrase analysis) from .EXT file.
-    // A PSSI failure keeps the metadata. The caller shows the reason.
-    let song_structure = fetch_pssi(&mut stream, &mut tx_id, asking, change).await;
+    // Step 8: Request the analysis data. A failure keeps the metadata. The caller shows the reason.
+    let song_structure = fetch_anlz_tag(&mut stream, &mut tx_id, asking, change, TAG_PSSI)
+        .await
+        .and_then(|blob| parse_pssi_tag(&blob));
+    let preview = fetch_anlz_tag(&mut stream, &mut tx_id, asking, change, TAG_PWV4)
+        .await
+        .and_then(|blob| parse_pwv4(&blob));
+    let cues = fetch_cue_list(&mut stream, &mut tx_id, asking, change).await;
 
-    Ok((metadata, song_structure))
+    Ok((
+        metadata,
+        TrackAnalysis {
+            song_structure,
+            preview,
+            cues,
+        },
+    ))
 }
 
-// ── PSSI (song structure / phrase analysis) fetch ─────────────────────────────
+// ── Analysis tag fetch (PSSI, PWV4) ───────────────────────────────────────────
 
-/// Fetch the PSSI tag (song structure) from the player's .EXT analysis file
-/// via the ANLZ_TAG_REQ (0x2c04) dbserver request.
-async fn fetch_pssi(
+/// Fetches one tag of the player's .EXT analysis file with the ANLZ_TAG_REQ (0x2c04) request.
+/// Returns the reply blob, with the dbserver length prefix and the tag header.
+async fn fetch_anlz_tag(
     stream: &mut TcpStream,
     tx_id: &mut u32,
     asking: u8,
     change: &TrackChange,
-) -> anyhow::Result<SongStructure> {
+    tag_type: u32,
+) -> anyhow::Result<Vec<u8>> {
     *tx_id += 1;
+    let tag_name = String::from_utf8_lossy(&tag_type.to_le_bytes()).into_owned();
 
     // Build DMST argument: D|01|Sr|Tr
     let dmst = ((asking as u32) << 24)
         | (0x01u32 << 16)
         | ((change.track_slot as u32) << 8)
         | (change.track_type as u32);
-
-    // Tag type: "PSSI" reversed bytes → 0x49535350
-    let tag_type: u32 = 0x49535350;
-
-    // File extension: "EXT\0" reversed bytes → 0x00545845
-    let file_ext: u32 = 0x00545845;
+    let file_ext = EXT_EXT;
 
     send_message(
         stream,
@@ -457,39 +517,151 @@ async fn fetch_pssi(
     tracing::debug!(
         rekordbox_id = change.rekordbox_id,
         dmst = format!("0x{:08x}", dmst).as_str(),
-        "PSSI tag request sent"
+        tag = tag_name.as_str(),
+        "Analysis tag request sent"
     );
 
     let resp = read_message(stream).await?;
     tracing::debug!(
         msg_type = format!("0x{:04x}", resp.msg_type).as_str(),
         arg_count = resp.args.len(),
-        "PSSI response received"
+        tag = tag_name.as_str(),
+        "Analysis tag response received"
     );
 
     if resp.msg_type != MSG_ANLZ_TAG_RESP {
         anyhow::bail!(
-            "Expected PSSI response 0x{:04x}, got 0x{:04x} [{}]",
+            "Expected {tag_name} response 0x{:04x}, got 0x{:04x} [{}]",
             MSG_ANLZ_TAG_RESP,
             resp.msg_type,
             describe_args(&resp.args)
         );
     }
 
-    // The response should contain a blob with the PSSI tag body.
-    // Find the blob argument.
-    let blob = resp
-        .args
-        .iter()
+    // The response should contain a blob with the tag. Find the blob argument.
+    resp.args
+        .into_iter()
         .find_map(|a| match a {
-            Field::Blob(data) if data.len() > 20 => Some(data.clone()),
+            Field::Blob(data) if data.len() > 20 => Some(data),
             _ => None,
         })
-        .ok_or_else(|| {
-            anyhow::anyhow!("No PSSI blob in response [{}]", describe_args(&resp.args))
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("No {tag_name} blob in the response"))
+}
 
-    parse_pssi_tag(&blob)
+/// Returns the column bytes of a PWV4 tag blob: 6 bytes per column.
+///
+/// The blob is `[len u32][PWV4][len_header u32][len_tag u32][len_entry_bytes u32]
+/// [len_entries u32][unknown u32][entries]`. The entries start `len_header` bytes after `PWV4`.
+/// Beat Link `WaveformPreview` skips the same 28 bytes.
+fn parse_pwv4(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let start = if data.get(4..8) == Some(&b"PWV4"[..]) {
+        4
+    } else if data.get(0..4) == Some(&b"PWV4"[..]) {
+        0
+    } else {
+        let head: String = data.iter().take(16).map(|b| format!("{b:02x}")).collect();
+        anyhow::bail!(
+            "PWV4 blob {} bytes has no PWV4 code, head {head}",
+            data.len()
+        );
+    };
+    let u32_at = |off: usize| {
+        data.get(start + off..start + off + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
+            .ok_or_else(|| anyhow::anyhow!("PWV4 header too short: {} bytes", data.len()))
+    };
+    let (len_header, entry_bytes, entries) = (u32_at(4)?, u32_at(12)?, u32_at(16)?);
+    if entry_bytes != 6 {
+        anyhow::bail!("PWV4 entry size is {entry_bytes}, not 6");
+    }
+    let body = start + len_header;
+    data.get(body..body + entries * 6)
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "PWV4 blob {} bytes is too short for {entries} columns",
+                data.len()
+            )
+        })
+}
+
+// ── Extended cue list fetch ───────────────────────────────────────────────────
+
+/// Fetches the memory cues, hot cues and saved loops with the CUE_LIST_EXT_REQ (0x2b04) request.
+/// The arguments follow Beat Link `MetadataFinder.getCueList`.
+async fn fetch_cue_list(
+    stream: &mut TcpStream,
+    tx_id: &mut u32,
+    asking: u8,
+    change: &TrackChange,
+) -> anyhow::Result<Vec<Cue>> {
+    *tx_id += 1;
+    send_message(
+        stream,
+        *tx_id,
+        MSG_CUE_LIST_EXT_REQ,
+        &cue_list_args(asking, change),
+        &[FIELD_U32, FIELD_U32, FIELD_U32],
+    )
+    .await?;
+    let resp = read_message(stream).await?;
+    if resp.msg_type != MSG_CUE_LIST_EXT_RESP {
+        anyhow::bail!(
+            "Expected cue list response 0x{:04x}, got 0x{:04x} [{}]",
+            MSG_CUE_LIST_EXT_RESP,
+            resp.msg_type,
+            describe_args(&resp.args)
+        );
+    }
+    // Beat Link reads the entries from argument 3.
+    let blob = match resp.args.get(3) {
+        Some(Field::Blob(b)) => b,
+        _ => anyhow::bail!("No cue list blob in [{}]", describe_args(&resp.args)),
+    };
+    Ok(parse_cue_list(blob))
+}
+
+/// The arguments of the extended cue list request: RMST, rekordbox ID, 0.
+fn cue_list_args(asking: u8, change: &TrackChange) -> [Field; 3] {
+    let rmst = (u32::from(asking) << 24)
+        | (u32::from(MENU_DATA) << 16)
+        | (u32::from(change.track_slot) << 8)
+        | u32::from(change.track_type);
+    [
+        Field::Number(rmst),
+        Field::Number(change.rekordbox_id),
+        Field::Number(0),
+    ]
+}
+
+/// Parses the entries of an extended cue list blob (Beat Link `CueList.parseNxs2Entries`).
+///
+/// Each entry starts with its length as a little-endian u32. The hot cue number is at byte 4
+/// (0 = memory cue), the flag at byte 6 (1 = cue, 2 = loop), the start in ms at byte 12 and the
+/// loop end in ms at byte 16. Both times are little-endian u32. An entry with another flag is
+/// not used.
+fn parse_cue_list(data: &[u8]) -> Vec<Cue> {
+    let le = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let mut cues = Vec::new();
+    let mut off = 0usize;
+    while let Some(e) = data.get(off..off + 20) {
+        let len = le(&e[0..4]) as usize;
+        let (hot_cue, flag) = (e[4], e[6]);
+        let (start_ms, end_ms) = (le(&e[12..16]), le(&e[16..20]));
+        if flag == 1 || flag == 2 {
+            cues.push(Cue {
+                hot_cue,
+                start_ms,
+                end_ms: (flag == 2).then_some(end_ms),
+            });
+        }
+        if len < 20 {
+            break;
+        }
+        off += len;
+    }
+    cues.sort_by_key(|c| c.start_ms);
+    cues
 }
 
 /// Summarises dbserver arguments for an error message: a number in hex, the length of a blob.
@@ -1011,6 +1183,12 @@ fn parse_menu_item(item_index: u32, msg: &DbMessage, meta: &mut TrackMetadata) {
             // Musical key.
             meta.key = label1.clone();
         }
+        0x000b => {
+            // Duration — numeric 2 (arg[1]) contains the length in seconds.
+            if let Some(Field::Number(secs)) = msg.args.get(1) {
+                meta.duration_s = Some(*secs).filter(|s| *s > 0);
+            }
+        }
         0x000d => {
             // Tempo — numeric 2 (arg[1]) contains BPM × 100.
             if let Some(Field::Number(raw)) = msg.args.get(1) {
@@ -1020,7 +1198,7 @@ fn parse_menu_item(item_index: u32, msg: &DbMessage, meta: &mut TrackMetadata) {
             }
         }
         _ => {
-            // Items we don't need: album (0x02), duration (0x0b), comment (0x23),
+            // Items we don't need: album (0x02), comment (0x23),
             // rating (0x0a), color (0x13-1b), original artist (0x28), date (0x2e).
         }
     }
@@ -1225,6 +1403,128 @@ mod tests {
         b.extend_from_slice(&(t.len() as u32).to_be_bytes());
         b.extend_from_slice(&t);
         check(&parse_pssi_tag(&b).unwrap());
+    }
+
+    /// Builds a PWV4 blob as the dbserver sends it: length prefix, tag header, entries.
+    fn pwv4_blob(columns: &[[u8; 6]]) -> Vec<u8> {
+        let mut b = ((24 + columns.len() * 6) as u32).to_be_bytes().to_vec();
+        b.extend_from_slice(b"PWV4");
+        b.extend_from_slice(&0x18u32.to_be_bytes());
+        b.extend_from_slice(&((24 + columns.len() * 6) as u32).to_be_bytes());
+        b.extend_from_slice(&6u32.to_be_bytes());
+        b.extend_from_slice(&(columns.len() as u32).to_be_bytes());
+        b.extend_from_slice(&0u32.to_be_bytes());
+        for c in columns {
+            b.extend_from_slice(c);
+        }
+        b
+    }
+
+    #[test]
+    fn pwv4_entries_start_28_bytes_into_the_blob() {
+        let blob = pwv4_blob(&[[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]]);
+        assert_eq!(&blob[28..30], &[1, 2]);
+        assert_eq!(
+            parse_pwv4(&blob).unwrap(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        );
+    }
+
+    #[test]
+    fn pwv4_refuses_a_short_or_foreign_blob() {
+        let blob = pwv4_blob(&[[1; 6], [2; 6]]);
+        assert!(parse_pwv4(&blob[..blob.len() - 1]).is_err());
+        let e = parse_pwv4(&with_header(&[0; 30])).unwrap_err().to_string();
+        assert!(e.contains("no PWV4 code"), "{e}");
+    }
+
+    /// Builds one extended cue list entry of `len` bytes.
+    fn cue_entry(len: u32, hot: u8, flag: u8, start: u32, end: u32) -> Vec<u8> {
+        let mut e = vec![0u8; len as usize];
+        e[0..4].copy_from_slice(&len.to_le_bytes());
+        e[4] = hot;
+        e[6] = flag;
+        e[12..16].copy_from_slice(&start.to_le_bytes());
+        e[16..20].copy_from_slice(&end.to_le_bytes());
+        e
+    }
+
+    #[test]
+    fn cue_list_reads_memory_cues_hot_cues_and_loops() {
+        let mut blob = cue_entry(0x38, 0, 1, 30_000, 0);
+        blob.extend(cue_entry(0x8c, 2, 2, 10_000, 12_000));
+        blob.extend(cue_entry(0x38, 0, 0, 5, 0)); // not used
+        assert_eq!(
+            parse_cue_list(&blob),
+            vec![
+                Cue {
+                    hot_cue: 2,
+                    start_ms: 10_000,
+                    end_ms: Some(12_000)
+                },
+                Cue {
+                    hot_cue: 0,
+                    start_ms: 30_000,
+                    end_ms: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn cue_list_stops_on_a_bad_length() {
+        let mut blob = cue_entry(0x38, 1, 1, 1_000, 0);
+        blob.extend(cue_entry(20, 0, 1, 2_000, 0));
+        blob[0x38..0x3c].copy_from_slice(&0u32.to_le_bytes());
+        blob.extend(cue_entry(0x38, 0, 1, 3_000, 0));
+        let starts: Vec<u32> = parse_cue_list(&blob).iter().map(|c| c.start_ms).collect();
+        assert_eq!(starts, vec![1_000, 2_000]);
+        assert!(parse_cue_list(&[0; 10]).is_empty());
+    }
+
+    #[test]
+    fn duration_is_the_second_number_of_the_menu_item() {
+        let msg = DbMessage {
+            msg_type: MSG_MENU_ITEM,
+            args: vec![
+                Field::Number(0),
+                Field::Number(312),
+                Field::Number(2),
+                Field::Text(String::new()),
+                Field::Number(2),
+                Field::Text(String::new()),
+                Field::Number(0x0b),
+            ],
+        };
+        let mut meta = TrackMetadata::default();
+        parse_menu_item(4, &msg, &mut meta);
+        assert_eq!(meta.duration_s, Some(312));
+    }
+
+    #[test]
+    fn tag_codes_are_the_reversed_ascii_bytes() {
+        assert_eq!(TAG_PSSI, 0x4953_5350);
+        assert_eq!(TAG_PWV4, 0x3456_5750);
+        assert_eq!(EXT_EXT, 0x0054_5845);
+    }
+
+    #[test]
+    fn cue_list_request_uses_the_data_menu() {
+        let change = TrackChange {
+            device_number: 1,
+            track_source_player: 1,
+            track_slot: 3,
+            track_type: 1,
+            rekordbox_id: 207,
+        };
+        assert_eq!(
+            cue_list_args(1, &change),
+            [
+                Field::Number(0x0108_0301),
+                Field::Number(207),
+                Field::Number(0)
+            ]
+        );
     }
 
     #[test]

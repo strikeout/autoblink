@@ -6,9 +6,15 @@
 //! ponytail: the encoder writes single messages with `i`, `f` and `s` arguments only.
 //! It writes no bundles and no time tags. Use the `rosc` crate if a desk needs them.
 
+use std::fmt;
 use std::net::UdpSocket;
+use std::sync::Arc;
+use std::time::Instant;
+
+use parking_lot::Mutex;
 
 use crate::config::SharedConfig;
+use crate::midi::activity::MidiActivity;
 
 /// One OSC argument.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,6 +22,16 @@ pub enum Arg<'a> {
     I(i32),
     F(f32),
     S(&'a str),
+}
+
+impl fmt::Display for Arg<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Arg::I(v) => write!(f, "{v}"),
+            Arg::F(v) => write!(f, "{v:.2}"),
+            Arg::S(s) => write!(f, "{s:?}"),
+        }
+    }
 }
 
 /// Add a NUL terminator, then pad the buffer to a multiple of 4 bytes.
@@ -55,9 +71,19 @@ pub fn encode(addr: &str, args: &[Arg]) -> Vec<u8> {
 /// Sends OSC messages to the targets in `cfg.osc`.
 pub struct OscOut {
     sock: Option<UdpSocket>,
+    /// The counters that the web UI shows. `None` in a test that does not read them.
+    activity: Option<Arc<Mutex<MidiActivity>>>,
 }
 
 impl OscOut {
+    /// Opens the socket. Each send updates the OSC counters in `activity`.
+    pub fn with_activity(activity: Arc<Mutex<MidiActivity>>) -> Self {
+        Self {
+            activity: Some(activity),
+            ..Self::new()
+        }
+    }
+
     pub fn new() -> Self {
         let sock = UdpSocket::bind("0.0.0.0:0").and_then(|s| {
             s.set_nonblocking(true)?;
@@ -65,10 +91,16 @@ impl OscOut {
             Ok(s)
         });
         match sock {
-            Ok(s) => Self { sock: Some(s) },
+            Ok(s) => Self {
+                sock: Some(s),
+                activity: None,
+            },
             Err(e) => {
                 tracing::warn!(error = %e, "The OSC socket did not open. The app sends no OSC.");
-                Self { sock: None }
+                Self {
+                    sock: None,
+                    activity: None,
+                }
             }
         }
     }
@@ -80,15 +112,32 @@ impl OscOut {
         if !cfg.osc.enabled {
             return;
         }
-        let msg = encode(&format!("{}{}", cfg.osc.prefix, path), args);
+        let addr = format!("{}{}", cfg.osc.prefix, path);
+        let msg = encode(&addr, args);
+        let (mut sent, mut errors) = (0, 0);
         for target in &cfg.osc.targets {
             // A parsed address needs no DNS lookup, so the send never blocks.
-            let Ok(addr) = target.parse::<std::net::SocketAddr>() else {
+            let Ok(to) = target.parse::<std::net::SocketAddr>() else {
                 tracing::debug!(%target, "The OSC target is not an IP address with a port");
+                errors += 1;
                 continue;
             };
-            if let Err(e) = sock.send_to(&msg, addr) {
-                tracing::debug!(%target, error = %e, "OSC send failed");
+            match sock.send_to(&msg, to) {
+                Ok(_) => sent += 1,
+                Err(e) => {
+                    tracing::debug!(%target, error = %e, "OSC send failed");
+                    errors += 1;
+                }
+            }
+        }
+        drop(cfg);
+        // The MIDI tasks share the counters. A busy lock skips this update and does not wait.
+        if let Some(mut act) = self.activity.as_ref().and_then(|a| a.try_lock()) {
+            act.osc_sent += sent;
+            act.osc_errors += errors;
+            if sent > 0 {
+                let text = args.iter().fold(addr, |t, a| format!("{t} {a}"));
+                act.last_osc = Some((text, Instant::now()));
             }
         }
     }
@@ -145,5 +194,25 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = rx.recv(&mut buf).unwrap();
         assert_eq!(&buf[..n], encode("/xdj/beat", &[Arg::I(2)]).as_slice());
+    }
+
+    #[test]
+    fn send_counts_messages_and_bad_targets() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let cfg = crate::config::new_shared(crate::config::Config::default());
+        {
+            let mut c = cfg.write();
+            c.osc.enabled = true;
+            c.osc.targets = vec![rx.local_addr().unwrap().to_string(), "desk:8000".into()];
+        }
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let out = OscOut::with_activity(Arc::clone(&activity));
+
+        out.send(&cfg, "/phrase", &[Arg::S("INTRO"), Arg::F(0.5)]);
+
+        let act = activity.lock();
+        assert_eq!((act.osc_sent, act.osc_errors), (1, 1));
+        let (text, _) = act.last_osc.as_ref().unwrap();
+        assert_eq!(text, "/xdj/phrase \"INTRO\" 0.50");
     }
 }

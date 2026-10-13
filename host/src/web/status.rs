@@ -69,6 +69,12 @@ pub struct Deck {
     pub beat: Option<u8>,
     pub beat_count: Option<u32>,
     pub playhead_ms: Option<u32>,
+    pub track_len_ms: Option<u32>,
+    /// The active loop as [start, end] in ms.
+    pub loop_ms: Option<[u32; 2]>,
+    /// The rekordbox ID of the waveform at `GET /waveform/{deck}`. The page fetches it again
+    /// when this value changes.
+    pub wave: Option<u32>,
     /// "artist - title - key - NNNbpm", from the fields that are known.
     pub track: Option<String>,
     /// "deck#N USB (rb#123)" when a rekordbox track is loaded.
@@ -113,6 +119,18 @@ pub struct Output {
     pub mtc: Option<&'static str>,
     pub mtc_qf: u64,
     pub mtc_full: u64,
+    pub osc: Osc,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Osc {
+    pub enabled: bool,
+    pub targets: Vec<String>,
+    pub prefix: String,
+    pub sent: u64,
+    pub errors: u64,
+    /// The last message, "address args", during 300 ms after it was sent.
+    pub last: Option<String>,
 }
 
 /// The MIDI output state that only the output worker knows.
@@ -172,6 +190,9 @@ pub fn snapshot(
                 beat: None,
                 beat_count: None,
                 playhead_ms: None,
+                track_len_ms: None,
+                loop_ms: None,
+                wave: None,
                 track: None,
                 src: None,
                 phrase: None,
@@ -184,6 +205,9 @@ pub fn snapshot(
             deck.beat = Some(ds.beat_in_bar).filter(|b| (1..=4).contains(b));
             deck.beat_count = Some(ds.beat_count).filter(|c| *c != u32::MAX && *c > 0);
             deck.playhead_ms = ds.playhead_ms;
+            deck.track_len_ms = ds.track_length_ms;
+            deck.loop_ms = ds.loop_ms.map(|(a, b)| [a, b]);
+            deck.wave = ds.overview.as_ref().map(|o| o.rekordbox_id);
 
             let mut parts: Vec<String> = [&ds.track_artist, &ds.track_title, &ds.track_key]
                 .into_iter()
@@ -313,6 +337,18 @@ pub fn snapshot(
                 .then(|| cfg.midi.mtc.frame_rate.label()),
             mtc_qf: act.mtc_quarter_frames,
             mtc_full: act.mtc_full_frames,
+            osc: Osc {
+                enabled: cfg.osc.enabled,
+                targets: cfg.osc.targets.clone(),
+                prefix: cfg.osc.prefix.clone(),
+                sent: act.osc_sent,
+                errors: act.osc_errors,
+                last: act
+                    .last_osc
+                    .as_ref()
+                    .filter(|(_, t)| t.elapsed().as_millis() < 300)
+                    .map(|(m, _)| m.clone()),
+            },
         },
     }
 }
@@ -353,6 +389,11 @@ mod tests {
             d2.beat_in_bar = 3;
             d2.track_artist = "Artist".into();
             d2.track_title = "Title".into();
+            d2.loop_ms = Some((1_000, 3_000));
+            d2.overview = Some(Arc::new(crate::state::TrackOverview {
+                rekordbox_id: 207,
+                ..Default::default()
+            }));
             st.devices.insert(2, d2);
             st.mixer[0].hi = Some(70);
             st.mixer[0].fader = Some(127);
@@ -384,6 +425,9 @@ mod tests {
         assert_eq!(d2.bpm, Some(128.0));
         assert_eq!(d2.beat, Some(3));
         assert_eq!(d2.track.as_deref(), Some("Artist - Title"));
+        assert_eq!(d2.loop_ms, Some([1_000, 3_000]));
+        assert_eq!(d2.wave, Some(207));
+        assert_eq!(st.decks[0].wave, None);
         assert!(st.decks[0].play_state.is_none());
         assert!(!st.no_devices);
 

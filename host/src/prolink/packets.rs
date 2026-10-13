@@ -10,6 +10,9 @@ use super::{
 /// The parser reads up to offset 0xa6.
 const CDJ_STATUS_MIN_LEN: usize = 0xa7;
 const CDJ_STATUS_STATE_OFFSET: usize = 0x88;
+/// A CDJ-3000 status packet holds the active loop at 0x1b6 (start) and 0x1be (end).
+const CDJ_STATUS_LOOP_START: usize = 0x1b6;
+const CDJ_STATUS_LOOP_END: usize = 0x1be;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -282,6 +285,8 @@ pub struct CdjStatus {
     pub track_type: u8,
     /// Rekordbox database ID (0x2c–0x2f, big-endian).  0 = no track.
     pub rekordbox_id: u32,
+    /// The active loop as (start, end) in ms. Only a CDJ-3000 class packet holds it.
+    pub loop_ms: Option<(u32, u32)>,
 }
 
 pub fn parse_cdj_status(data: &[u8]) -> Option<CdjStatus> {
@@ -328,7 +333,21 @@ pub fn parse_cdj_status(data: &[u8]) -> Option<CdjStatus> {
         track_slot: data[0x29],
         track_type: data[0x2a],
         rekordbox_id: u32be(data, 0x2c),
+        loop_ms: parse_loop_ms(data),
     })
+}
+
+/// Reads the active loop of a CDJ-3000 class status packet, in ms.
+///
+/// Each raw value × 65536 / 1000 is the position in ms (djl-analysis, vcdj "Loops").
+/// Returns `None` when the packet is too short or when no loop plays.
+fn parse_loop_ms(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < CDJ_STATUS_LOOP_END + 4 {
+        return None;
+    }
+    let ms = |off| (u64::from(u32be(data, off)) * 65_536 / 1_000).min(u64::from(u32::MAX)) as u32;
+    let (start, end) = (ms(CDJ_STATUS_LOOP_START), ms(CDJ_STATUS_LOOP_END));
+    (start != 0 && end > start).then_some((start, end))
 }
 
 pub(crate) fn cdj_state_word(data: &[u8]) -> Option<u16> {
@@ -459,6 +478,20 @@ mod tests {
         let packet = magic_pkt(PKT_CDJ_STATUS, CDJ_STATUS_MIN_LEN - 1);
 
         assert!(parse_cdj_status(&packet).is_none());
+    }
+
+    #[test]
+    fn parse_cdj_status_reads_the_cdj3000_loop() {
+        let mut packet = magic_pkt(PKT_CDJ_STATUS, 0x200);
+        assert_eq!(parse_cdj_status(&packet).unwrap().loop_ms, None);
+        // 1000 raw units are 65 536 ms.
+        packet[0x1b6..0x1ba].copy_from_slice(&1000u32.to_be_bytes());
+        packet[0x1be..0x1c2].copy_from_slice(&1001u32.to_be_bytes());
+        assert_eq!(
+            parse_cdj_status(&packet).unwrap().loop_ms,
+            Some((65_536, 65_601))
+        );
+        assert_eq!(parse_cdj_status(&packet[..0x1c1]).unwrap().loop_ms, None);
     }
 
     #[test]

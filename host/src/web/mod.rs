@@ -16,6 +16,12 @@
 //! - `{type: "set", idx, value}` stores a numeric or text setting.
 //! - `{type: "port", name}` switches the MIDI output port.
 //! - `{type: "rescan"}` lists the MIDI ports and network interfaces again.
+//!
+//! HTTP, for the `waveform` capability:
+//! - `GET /waveform/{deck}` gives `{rekordbox_id, preview, cues}` of the loaded track, or 404.
+//!   `preview` is the PWV4 colour preview, 6 bytes per column. Each cue is `{hot, start, end}`
+//!   in ms; `hot` 0 is a memory cue, and `end` is set for a loop. The status field `wave` of a
+//!   deck names the rekordbox ID that this route gives.
 
 pub mod status;
 
@@ -24,7 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -183,6 +189,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/", get(|| async { Html(PAGE) }))
         .route("/index.html", get(|| async { Html(PAGE) }))
         .route("/ws", get(ws_handler))
+        .route("/waveform/{deck}", get(waveform_handler))
         .with_state(shared)
 }
 
@@ -319,6 +326,52 @@ fn send_if_changed(tx: &watch::Sender<Arc<str>>, msg: Arc<str>) {
     });
 }
 
+#[derive(Serialize)]
+struct WaveformBody<'a> {
+    rekordbox_id: u32,
+    preview: &'a [u8],
+    cues: Vec<CueBody>,
+}
+
+#[derive(Serialize)]
+struct CueBody {
+    hot: u8,
+    start: u32,
+    end: Option<u32>,
+}
+
+/// Gives the waveform preview and the cues of a deck. See the module documentation.
+async fn waveform_handler(Path(deck): Path<u8>, State(shared): State<Arc<Shared>>) -> Response {
+    // Clone the Arc under the lock, and serialize after the lock is released.
+    let overview = shared
+        .ctx
+        .dj_state
+        .read()
+        .devices
+        .get(&deck)
+        .and_then(|d| d.overview.clone());
+    let Some(o) = overview else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let body = WaveformBody {
+        rekordbox_id: o.rekordbox_id,
+        preview: &o.preview,
+        cues: o
+            .cues
+            .iter()
+            .map(|c| CueBody {
+                hot: c.hot_cue,
+                start: c.start_ms,
+                end: c.end_ms,
+            })
+            .collect(),
+    };
+    match serde_json::to_string(&body) {
+        Ok(json) => ([(header::CONTENT_TYPE, "application/json")], json).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 /// Returns true when the request may open the socket.
 ///
 /// Browsers do not apply CORS to WebSockets. Without this check, any page in a browser on the
@@ -401,7 +454,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
         "proto": 1,
         "version": env!("CARGO_PKG_VERSION"),
         "device": "host",
-        "caps": ["beat", "decks", "mixer", "output", "settings", "ports", "logs"],
+        "caps": ["beat", "decks", "mixer", "output", "settings", "ports", "logs", "waveform"],
     });
     if !send(&mut socket, &hello.to_string()).await {
         return;
@@ -717,6 +770,54 @@ mod tests {
         let beat = next_of_type(&mut ws, "beat").await;
         assert_eq!(beat["device"], 0);
         assert_eq!(beat["beat"], 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn waveform_route_gives_the_overview_of_a_deck() {
+        let ctx = ctx();
+        let state = Arc::clone(&ctx.dj_state);
+        let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let get = |path: &'static str| async move {
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            s.write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes(),
+            )
+            .await
+            .unwrap();
+            let mut out = String::new();
+            s.read_to_string(&mut out).await.unwrap();
+            out
+        };
+        assert!(get("/waveform/1").await.starts_with("HTTP/1.1 404"));
+
+        {
+            let mut st = state.write();
+            let mut d = crate::state::DeviceState::new(1);
+            d.rekordbox_id = 207;
+            st.devices.insert(1, d);
+            st.set_overview(
+                1,
+                crate::state::TrackOverview {
+                    rekordbox_id: 207,
+                    preview: vec![1, 2, 3, 4, 5, 6],
+                    cues: vec![crate::state::Cue {
+                        hot_cue: 1,
+                        start_ms: 500,
+                        end_ms: Some(900),
+                    }],
+                },
+            );
+        }
+        let resp = get("/waveform/1").await;
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+        let json: serde_json::Value =
+            serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(json["rekordbox_id"], 207);
+        assert_eq!(json["preview"][5], 6);
+        assert_eq!(json["cues"][0]["end"], 900);
     }
 
     #[tokio::test(flavor = "multi_thread")]

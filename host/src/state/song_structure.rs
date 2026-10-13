@@ -92,3 +92,22 @@ pub struct SongStructure {
     /// Ordered list of phrases.
     pub phrases: Vec<PhraseEntry>,
 }
+
+/// A stored cue point or loop of a track, from the extended cue list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cue {
+    /// The hot cue number: 1 is A, 2 is B. 0 is a memory cue.
+    pub hot_cue: u8,
+    pub start_ms: u32,
+    /// The loop end. `None` for a cue that is not a loop.
+    pub end_ms: Option<u32>,
+}
+
+/// The waveform preview and the stored cues of one track.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrackOverview {
+    pub rekordbox_id: u32,
+    /// The PWV4 colour preview: 6 bytes per column, usually 1200 columns.
+    pub preview: Vec<u8>,
+    pub cues: Vec<Cue>,
+}
