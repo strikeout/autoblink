@@ -84,6 +84,11 @@ phrase_change = 38
 # The value must be 116 or lower.
 phrase_base = 40
 
+# Note that is on while the bass is cut on all live XDJ-AZ mixer channels.
+# A channel is live when its deck plays and its fader is up.
+# The app reads the mixer from the XDJ-AZ USB MIDI port.
+no_bass = 39
+
 # ── MIDI CC mapping ──────────────────────────────────────────────────────────
 
 [midi.cc]

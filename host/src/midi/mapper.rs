@@ -260,6 +260,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_bass_note_is_on_while_the_bass_is_cut() {
+        let midi = Arc::new(MockMidiTransport::new());
+        let midi_transport: Arc<dyn MidiTransport> = midi.clone();
+        let state = new_shared_state(30);
+        state.write().apply_cdj_status(&cdj_at(7, 5));
+        let (status_tx, status_rx) = broadcast::channel(8);
+        let (_beat_tx, beat_rx) = broadcast::channel(8);
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let handle = tokio::spawn(run_with_midi(
+            midi_transport,
+            state.clone(),
+            beat_rx,
+            status_rx,
+            new_shared(Config::default()),
+            activity,
+        ));
+        let wake = || {
+            let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
+                device_number: 16,
+                is_master: false,
+                bpm_raw: 12800,
+                track_bpm: Some(128.0),
+                beat_in_bar: 1,
+            }));
+        };
+
+        state.write().mixer[0].low = Some(0);
+        wake();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(midi.get_messages().contains(&note_on(9, 39, 127).to_vec()));
+
+        midi.clear_messages();
+        state.write().mixer[0].low = Some(64);
+        wake();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(midi.get_messages().contains(&note_off(9, 39).to_vec()));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn runtime_note_config_changes_take_effect() {
         let midi = Arc::new(MockMidiTransport::new());
         let midi_transport: Arc<dyn MidiTransport> = midi.clone();
@@ -445,6 +486,7 @@ async fn run_with_midi(
     // (device, rekordbox_id, phrase index) of the last phrase kind that was sent.
     let mut prev_phrase_key: Option<(u8, u32, usize)> = None;
     let mut prev_phrase_16_beat: u8 = 0;
+    let mut prev_no_bass = false;
     tracing::info!("MIDI mapper task started");
 
     loop {
@@ -639,6 +681,23 @@ async fn run_with_midi(
             );
         } else {
             prev_phrase_key = None;
+        }
+
+        // ── NO_BASS gate ──────────────────────────────────────────────────────
+        // The note is on while the bass is cut on all live mixer channels.
+        let no_bass = state.read().no_bass();
+        if no_bass != prev_no_bass {
+            prev_no_bass = no_bass;
+            let note_cfg = cfg.read().midi.notes.clone();
+            if no_bass {
+                let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.no_bass, 127));
+                let mut act = activity.lock();
+                act.notes_sent += 1;
+                act.last_note = Some((note_cfg.no_bass, Instant::now()));
+            } else {
+                let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.no_bass));
+            }
+            tracing::debug!(no_bass, note = note_cfg.no_bass, "NO_BASS MIDI note sent");
         }
     }
 }
