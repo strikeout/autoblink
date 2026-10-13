@@ -74,6 +74,7 @@ pub struct MidiConfig {
     pub phrase_lock_stable_beats: u8,
     pub notes: NoteConfig,
     pub cc: CcConfig,
+    pub program: ProgramConfig,
     pub mtc: MtcConfig,
 }
 
@@ -88,6 +89,7 @@ impl Default for MidiConfig {
             phrase_lock_stable_beats: 4,
             notes: NoteConfig::default(),
             cc: CcConfig::default(),
+            program: ProgramConfig::default(),
             mtc: MtcConfig::default(),
         }
     }
@@ -106,6 +108,8 @@ pub struct NoteConfig {
     pub downbeat: u8,
     /// Note number fired on phrase change (song structure transition).
     pub phrase_change: u8,
+    /// First note of the phrase-kind range. The note is `phrase_base` + the kind code (0–11).
+    pub phrase_base: u8,
 }
 
 impl Default for NoteConfig {
@@ -115,6 +119,7 @@ impl Default for NoteConfig {
             beat: 36,
             downbeat: 37,
             phrase_change: 38,
+            phrase_base: 40,
         }
     }
 }
@@ -133,6 +138,12 @@ pub struct CcConfig {
     pub playing: u8,
     pub master_deck: u8,
     pub phrase_16: u8,
+    /// Phrase kind of the master deck. The value is the kind code times 10.
+    pub phrase_kind: u8,
+    /// Progress through the current phrase of the master deck (0.0–1.0 maps to 0–127).
+    pub phrase_progress: u8,
+    /// Beats left in the current phrase of the master deck (capped at 127).
+    pub phrase_beats_left: u8,
 }
 
 impl Default for CcConfig {
@@ -147,8 +158,23 @@ impl Default for CcConfig {
             playing: 5,
             master_deck: 6,
             phrase_16: 7,
+            phrase_kind: 20,
+            phrase_progress: 21,
+            phrase_beats_left: 22,
         }
     }
+}
+
+// ── Program Change config ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProgramConfig {
+    /// Send a Program Change with the phrase kind code when the master phrase changes.
+    /// Off by default, because a Program Change switches the patch of a synth.
+    pub enabled: bool,
+    /// MIDI channel (0-indexed, 0-15).
+    pub channel: u8,
 }
 
 // ── MTC (MIDI Timecode) config ────────────────────────────────────────────────
@@ -284,6 +310,22 @@ pub(crate) fn validate(cfg: &Config) -> anyhow::Result<()> {
         "midi.notes.channel must be 0–15"
     );
     anyhow::ensure!(cfg.midi.cc.channel <= 15, "midi.cc.channel must be 0–15");
+    anyhow::ensure!(
+        cfg.midi.program.channel <= 15,
+        "midi.program.channel must be 0–15"
+    );
+    anyhow::ensure!(
+        cfg.midi.notes.phrase_base <= 116,
+        "midi.notes.phrase_base must be 0–116, got {}",
+        cfg.midi.notes.phrase_base
+    );
+    for (name, num) in [
+        ("phrase_kind", cfg.midi.cc.phrase_kind),
+        ("phrase_progress", cfg.midi.cc.phrase_progress),
+        ("phrase_beats_left", cfg.midi.cc.phrase_beats_left),
+    ] {
+        anyhow::ensure!(num <= 127, "midi.cc.{name} must be 0–127, got {num}");
+    }
     anyhow::ensure!(
         cfg.midi.latency_compensation_ms >= -1000 && cfg.midi.latency_compensation_ms <= 1000,
         "midi.latency_compensation_ms must be -1000 to 1000, got {}",

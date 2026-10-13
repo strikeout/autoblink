@@ -493,27 +493,19 @@ fn draw_deck_panel(
                 }
 
                 // Phrase information: show current phrase as a gauge progress bar.
-                if let (Some(ss), Some(idx)) = (&ds.song_structure, ds.current_phrase_idx) {
-                    if let Some(phrase) = ss.phrases.get(idx) {
-                        let next_beat = ss
-                            .phrases
-                            .get(idx + 1)
-                            .map(|p| p.beat)
-                            .unwrap_or(ss.end_beat);
-                        let phrase_len = next_beat.saturating_sub(phrase.beat).max(1);
-                        let beat_count = ds.beat_count as u16;
-                        let beats_in = beat_count.saturating_sub(phrase.beat);
-                        let progress = (beats_in as f64 / phrase_len as f64).clamp(0.0, 1.0);
-                        let pct = (progress * 100.0) as u8;
+                if let (Some(ss), Some(info)) = (&ds.song_structure, ds.phrase_info()) {
+                    if let Some(phrase) = ss.phrases.get(info.idx) {
+                        let pct = (info.progress * 100.0) as u8;
 
-                        let fill_tag = if phrase.has_fill && beat_count >= phrase.fill_beat {
-                            " [FILL]"
-                        } else {
-                            ""
-                        };
-                        let label = format!("{} {}%{}", phrase.kind, pct, fill_tag);
+                        let fill_tag =
+                            if phrase.has_fill && ds.beat_count >= u32::from(phrase.fill_beat) {
+                                " [FILL]"
+                            } else {
+                                ""
+                            };
+                        let label = format!("{} {}%{}", info.kind, pct, fill_tag);
 
-                        phrase_gauges.push((lines.len(), progress, label));
+                        phrase_gauges.push((lines.len(), info.progress, label));
                         lines.push(Line::from(""));
                     }
                 } else if ds.rekordbox_id != 0 && ds.song_structure.is_none() {

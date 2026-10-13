@@ -9,7 +9,7 @@ use crate::prolink::packets::{AbsPositionPacket, BeatPacket, CdjStatus, MixerSta
 use crate::prolink::BEAT_NONE;
 
 use super::beat_source::BeatSource;
-use super::device::{DeviceState, MasterState};
+use super::device::{DeviceState, MasterState, PhraseInfo};
 use super::song_structure::SongStructure;
 use super::timing::{LogThrottle, TimingMeasurement, TimingModel};
 use super::track_change::TrackChange;
@@ -361,9 +361,11 @@ impl DjState {
         match self.source_mode {
             Source::Link => false,
             Source::ProLink => true,
-            Source::Auto => !(self.link_peer_count > 0
-                && self.master.source == Some(BeatSource::AbletonLink)
-                && self.master.bpm > 0.0),
+            Source::Auto => {
+                !(self.link_peer_count > 0
+                    && self.master.source == Some(BeatSource::AbletonLink)
+                    && self.master.bpm > 0.0)
+            }
         }
     }
 
@@ -622,6 +624,11 @@ impl DjState {
         }
     }
 
+    /// Returns the phrase that the master deck plays now.
+    pub fn master_phrase(&self) -> Option<PhraseInfo> {
+        self.devices.get(&self.master.device_number)?.phrase_info()
+    }
+
     pub fn update_current_phrase(&mut self, device_number: u8) -> bool {
         let dev = match self.devices.get_mut(&device_number) {
             Some(d) => d,
@@ -635,7 +642,7 @@ impl DjState {
             Some(s) => s,
             None => return false,
         };
-        let beat = beat_count as u16;
+        let beat = u16::try_from(beat_count).unwrap_or(u16::MAX);
 
         let new_idx = structure
             .phrases

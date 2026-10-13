@@ -25,6 +25,10 @@ fn cc(ch: u8, num: u8, val: u8) -> [u8; 3] {
     [0xB0 | (ch & 0x0f), num & 0x7f, val & 0x7f]
 }
 
+fn program_change(ch: u8, prog: u8) -> [u8; 2] {
+    [0xC0 | (ch & 0x0f), prog & 0x7f]
+}
+
 /// Scale a float in [0.0, 1.0] to a 7-bit MIDI value (0–127).
 fn scale01(v: f64) -> u8 {
     (v.clamp(0.0, 1.0) * 127.0).round() as u8
@@ -55,6 +59,108 @@ mod tests {
     use crate::midi::test_utils::MockMidiTransport;
     use crate::state::{new_shared as new_shared_state, BeatSource, MasterState};
     use std::time::Duration;
+
+    #[test]
+    fn test_program_change_helper() {
+        assert_eq!(program_change(2, 11), [0xC2, 11]);
+        assert_eq!(program_change(17, 200), [0xC1, 72]);
+    }
+
+    fn cdj_at(rekordbox_id: u32, beat_count: u32) -> crate::prolink::packets::CdjStatus {
+        crate::prolink::packets::CdjStatus {
+            device_number: 1,
+            play_state: crate::prolink::packets::PlayState::Playing,
+            is_master: true,
+            is_sync: false,
+            is_on_air: true,
+            is_playing_flag: true,
+            pitch_raw: crate::prolink::PITCH_NORMAL,
+            bpm_raw: 12800,
+            track_bpm: Some(128.0),
+            effective_bpm: 128.0,
+            pitch_pct: 0.0,
+            beat_count,
+            beat_in_bar: 1,
+            track_source_player: 1,
+            track_slot: 3,
+            track_type: 1,
+            rekordbox_id,
+        }
+    }
+
+    #[tokio::test]
+    async fn master_phrase_kind_is_sent_as_cc_note_and_program() {
+        use crate::state::{PhraseEntry, PhraseKind, SongStructure, TrackMood};
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let midi_transport: Arc<dyn MidiTransport> = midi.clone();
+        let cfg = new_shared(Config::default());
+        cfg.write().midi.program.enabled = true;
+        let state = new_shared_state(30);
+        let phrase = |beat, kind| PhraseEntry {
+            index: 1,
+            beat,
+            kind,
+            has_fill: false,
+            fill_beat: 0,
+        };
+        {
+            let mut st = state.write();
+            st.master.device_number = 1;
+            st.apply_cdj_status(&cdj_at(7, 5));
+            st.set_song_structure(
+                1,
+                7,
+                SongStructure {
+                    mood: TrackMood::Mid,
+                    end_beat: 65,
+                    phrases: vec![phrase(1, PhraseKind::Intro), phrase(33, PhraseKind::Verse1)],
+                },
+            );
+            st.apply_cdj_status(&cdj_at(7, 5));
+        }
+        let (status_tx, status_rx) = broadcast::channel(8);
+        let (_beat_tx, beat_rx) = broadcast::channel(8);
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let handle = tokio::spawn(run_with_midi(
+            midi_transport,
+            state.clone(),
+            beat_rx,
+            status_rx,
+            cfg,
+            activity,
+        ));
+        let wake = || {
+            let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
+                device_number: 16,
+                is_master: false,
+                bpm_raw: 12800,
+                track_bpm: Some(128.0),
+                beat_in_bar: 1,
+            }));
+        };
+
+        wake();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let msgs = midi.get_messages();
+        assert!(msgs.contains(&cc(0, 20, 0).to_vec()));
+        assert!(msgs.contains(&note_on(9, 40, 127).to_vec()));
+        assert!(msgs.contains(&note_off(9, 40).to_vec()));
+        assert!(msgs.contains(&program_change(0, 0).to_vec()));
+        assert!(msgs.contains(&cc(0, 22, 28).to_vec())); // 33 - 5 beats left
+
+        midi.clear_messages();
+        state.write().apply_cdj_status(&cdj_at(7, 40));
+        wake();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let msgs = midi.get_messages();
+        assert!(msgs.contains(&cc(0, 20, 10).to_vec()));
+        assert!(msgs.contains(&note_on(9, 41, 127).to_vec()));
+        assert!(msgs.contains(&program_change(0, 1).to_vec()));
+        assert!(msgs.contains(&cc(0, 22, 25).to_vec())); // 65 - 40 beats left
+
+        handle.abort();
+    }
 
     #[test]
     fn test_scale01() {
@@ -279,11 +385,7 @@ fn beat_velocity(beat_in_bar: u8) -> u8 {
 
 /// Return true if a ProLink beat from `device` may fire beat notes.
 /// The active master source must not be Ableton Link.
-fn prolink_beat_allowed(
-    master_source: Option<BeatSource>,
-    master_num: u8,
-    device: u8,
-) -> bool {
+fn prolink_beat_allowed(master_source: Option<BeatSource>, master_num: u8, device: u8) -> bool {
     master_source != Some(BeatSource::AbletonLink) && (device == master_num || master_num == 0)
 }
 
@@ -324,6 +426,8 @@ struct PrevCc {
     playing: u8,
     master_deck: u8,
     phrase_16: u8,
+    phrase_progress: u8,
+    phrase_beats_left: u8,
 }
 
 // ── Main mapper task ──────────────────────────────────────────────────────────
@@ -338,6 +442,8 @@ async fn run_with_midi(
 ) {
     let mut prev = PrevCc::default();
     let mut prev_phrase_idx: Option<usize> = None;
+    // (device, rekordbox_id, phrase index) of the last phrase kind that was sent.
+    let mut prev_phrase_key: Option<(u8, u32, usize)> = None;
     let mut prev_phrase_16_beat: u8 = 0;
     tracing::info!("MIDI mapper task started");
 
@@ -479,6 +585,60 @@ async fn run_with_midi(
                 );
             }
             prev_phrase_idx = cur_phrase;
+        }
+
+        // ── Phrase kind output ────────────────────────────────────────────────
+        // Send the kind of the master phrase as a CC, a note and an optional Program Change.
+        // This also fires on a track load and on a master switch, not only at a phrase boundary.
+        // When the master role goes away and comes back, the same phrase fires again.
+        let (phrase, rekordbox_id) = {
+            let st = state.read();
+            let id = st
+                .devices
+                .get(&master.device_number)
+                .map_or(0, |d| d.rekordbox_id);
+            (st.master_phrase(), id)
+        };
+        if let Some(info) = phrase {
+            let key = (master.device_number, rekordbox_id, info.idx);
+            if prev_phrase_key != Some(key) {
+                prev_phrase_key = Some(key);
+                if let Some(code) = info.kind.code() {
+                    let cfg_now = cfg.read().midi.clone();
+                    let kind_val = code * 10;
+                    let _ = midi.send_message(&cc(
+                        cfg_now.cc.channel,
+                        cfg_now.cc.phrase_kind,
+                        kind_val,
+                    ));
+                    let note = cfg_now.notes.phrase_base.saturating_add(code);
+                    let _ = midi.send_message(&note_on(cfg_now.notes.channel, note, 127));
+                    let _ = midi.send_message(&note_off(cfg_now.notes.channel, note));
+                    if cfg_now.program.enabled {
+                        let _ = midi.send_message(&program_change(cfg_now.program.channel, code));
+                    }
+                    let mut act = activity.lock();
+                    act.cc_sent += 1;
+                    act.last_cc = Some((cfg_now.cc.phrase_kind, kind_val, Instant::now()));
+                    act.notes_sent += 1;
+                    act.last_note = Some((note, Instant::now()));
+                    tracing::debug!(kind = %info.kind, code, "Phrase kind MIDI sent");
+                }
+            }
+            send_cc_if_changed!(
+                prev.phrase_progress,
+                scale01(info.progress),
+                cc_cfg.phrase_progress,
+                cc_cfg.channel
+            );
+            send_cc_if_changed!(
+                prev.phrase_beats_left,
+                info.beats_left.min(127) as u8,
+                cc_cfg.phrase_beats_left,
+                cc_cfg.channel
+            );
+        } else {
+            prev_phrase_key = None;
         }
     }
 }
