@@ -106,7 +106,11 @@ impl DjState {
         dev.is_on_air = s.is_on_air;
         dev.is_sync = s.is_sync;
         dev.play_state = s.play_state;
-        dev.pitch_pct = s.pitch_pct;
+        // A paused deck reports its motor pitch, which is near -100 %. Keep the last real pitch.
+        // ponytail: on a paused pre-3000 deck, a fader move shows only at play. Read 0x8c to fix.
+        if dev.is_playing {
+            dev.pitch_pct = s.pitch_pct;
+        }
         if dev.beat_in_bar != s.beat_in_bar && s.beat_in_bar != 0 {
             dev.phrase_16_beat = dev.phrase_16_beat.wrapping_add(1) % 16;
         }
@@ -954,6 +958,25 @@ mod tests {
         let old = Instant::now() - std::time::Duration::from_secs(5);
         state.apply_beat(&beat_from(33, 120.0), old);
         assert!(!state.master.is_playing);
+    }
+
+    #[test]
+    fn paused_status_does_not_overwrite_pitch() {
+        let mut state = DjState::new(30);
+        let playing = CdjStatus {
+            pitch_pct: -3.0,
+            ..cdj(1, true, 120.0, 10)
+        };
+        state.apply_cdj_status(&playing);
+        assert_eq!(state.master.pitch_pct, -3.0);
+
+        let paused = CdjStatus {
+            pitch_raw: 0,
+            pitch_pct: -100.0,
+            ..cdj(1, false, 120.0, 10)
+        };
+        state.apply_cdj_status(&paused);
+        assert_eq!(state.master.pitch_pct, -3.0);
     }
 
     #[test]
