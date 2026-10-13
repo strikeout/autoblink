@@ -459,14 +459,13 @@ fn maybe_resync_on_bar_boundary(
     }
 
     apply_pending_phase_slew(cs, beat_at);
-    // A slew corrects only a phase error of less than half a pulse. It does
-    // not change `pulse_index`. A larger error means that the pulse count is
-    // wrong, so the clock must restart on the beat.
-    let half_pulse_ns = cs.interval_ns as i128 / 2;
+    // The error includes `pulse_index`, so a slew moves the beat pulse onto the
+    // beat. The overdue-pulse logic counts each pulse that the slew adds or
+    // removes, so the receiver's pulse count stays correct. A Stop/Start can
+    // move some receivers back to the song start, so use it only when
+    // smoothing is off.
     match beat_phase_error_ns(cs, beat_at) {
-        Some(error_ns)
-            if smoothing_ms > 0 && error_ns > -half_pulse_ns && error_ns <= half_pulse_ns =>
-        {
+        Some(error_ns) if smoothing_ms > 0 => {
             start_full_bar_resync_slewed(cs, beat_at, error_ns, smoothing_ms);
         }
         _ => apply_full_bar_resync_hard(cs, midi, activity, beat_at),
@@ -1637,22 +1636,20 @@ mod tests {
     }
 
     #[test]
-    fn slewed_resync_hard_restarts_when_pulse_count_is_off() {
+    fn slewed_resync_corrects_multi_pulse_error_without_restart() {
         let beat_at = Instant::now();
         let mut cs = running_clock_at(beat_at - Duration::from_millis(40), 5);
+        let expected = beat_phase_error_ns(&cs, beat_at).unwrap();
+        assert!(expected.abs() > cs.interval_ns as i128);
         let midi = Arc::new(MockMidiTransport::new());
         let transport: Arc<dyn MidiTransport> = midi.clone();
         let activity = Arc::new(Mutex::new(MidiActivity::default()));
 
         maybe_resync_on_bar_boundary(&mut cs, &transport, &activity, 1, 200, 1, beat_at);
 
-        assert_eq!(
-            midi.get_messages(),
-            vec![vec![MSG_STOP], vec![MSG_START], vec![MSG_CLOCK]]
-        );
-        assert!(cs.phase_slew.is_none());
-        assert_eq!(cs.pulse_index, 0);
-        assert_eq!(cs.last_pulse, beat_at);
+        assert!(midi.get_messages().is_empty());
+        assert_eq!(cs.pulse_index, 5);
+        assert_eq!(cs.phase_slew.unwrap().total_correction_ns, expected);
     }
 
     #[test]
