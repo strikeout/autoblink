@@ -2,6 +2,7 @@
 name = "xdj-clock-host"
 version.workspace = true
 edition.workspace = true
+default-run = "xdj-clock"
 license.workspace = true
 
 [[bin]]

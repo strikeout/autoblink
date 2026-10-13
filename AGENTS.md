@@ -9,7 +9,8 @@
 ## Developer Commands
 
 ```sh
-# Host (desktop app)
+# Host (desktop app). A bare `cargo run` starts it with the TUI (`default-run` in host/Cargo.toml).
+cargo run
 cargo run -p xdj-clock-host
 cargo run -p xdj-clock-host -- --list-midi
 cargo run -p xdj-clock-host -- --list-interfaces
