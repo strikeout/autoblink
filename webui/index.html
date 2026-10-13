@@ -23,10 +23,17 @@ header .kv b{color:var(--text);font-weight:500}
 .dot.on{background:var(--play)}
 #state.play{color:var(--play)}#state.stop{color:var(--danger)}
 #toast{margin-left:auto;color:var(--danger);font-weight:600}
-main{padding:12px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));max-width:1600px;margin:0 auto}
+main{padding:12px;display:grid;gap:12px;grid-template-columns:2fr 1fr;max-width:1600px;margin:0 auto}
+@media(max-width:900px){main{grid-template-columns:1fr}}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}
 .panel h2{font-size:11px;text-transform:uppercase;letter-spacing:1.4px;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
 .wide{grid-column:1/-1}
+details.panel>summary{list-style:none;cursor:pointer;user-select:none}
+details.panel>summary::-webkit-details-marker{display:none}
+details.panel>summary h2{justify-content:flex-start;gap:6px}
+details.panel>summary h2::before{content:'▸';color:var(--dim);font-size:14px;letter-spacing:0}
+details.panel[open]>summary h2::before{content:'▾'}
+details.panel:not([open])>summary h2{margin-bottom:0}
 [hidden]{display:none!important}
 /* master */
 #bpm{font-size:58px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;transition:color .05s}
@@ -37,8 +44,20 @@ main{padding:12px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,mi
 .beats.flash span.on{background:var(--flash);box-shadow:0 0 12px var(--flash)}
 .row{display:flex;flex-wrap:wrap;gap:4px 16px;color:var(--muted);margin-top:4px}
 .row b{color:var(--text);font-weight:500}
-.bar{height:6px;background:#1c1c2c;border-radius:3px;overflow:hidden;margin-top:6px}
-.bar i{display:block;height:100%;background:var(--accent)}
+.mgrid{display:flex;flex-wrap:wrap;gap:16px 32px}
+.mgrid>div{flex:1 1 280px;min-width:0}
+.pk{display:flex;align-items:center;gap:10px;min-height:38px}
+#pkind{font-size:30px;font-weight:700;letter-spacing:1px;color:var(--text)}
+#pkind.none{font-size:14px;font-weight:400;letter-spacing:0;color:var(--dim)}
+.ftag{font-size:11px;font-weight:700;padding:2px 6px;border-radius:3px;background:var(--warn);color:#000}
+.pbar{position:relative;height:22px;background:#1c1c2c;border-radius:4px;overflow:hidden;margin-top:6px}
+.pbar i{position:absolute;inset:0 auto 0 0;background:#0a5a6a;transition:width .1s linear}
+.pbar span{position:relative;padding-left:8px;line-height:22px;font-size:12px}
+.s16{display:flex;gap:8px;margin-top:10px}
+.s16 div{flex:1;display:flex;gap:3px}
+.s16 span{flex:1;height:12px;border-radius:2px;background:#1c1c2c}
+.s16 span.past{background:#0a5a6a}
+.s16 span.on{background:var(--accent);box-shadow:0 0 8px var(--accent)}
 /* decks */
 .decks{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
 .deck{background:#0d0d16;border:1px solid var(--border);border-radius:8px;padding:10px}
@@ -65,19 +84,21 @@ table.mixer td:first-child,table.mixer th:first-child{text-align:left;color:var(
 .act{display:flex;gap:10px;min-height:20px;margin-top:6px}
 .act .note{color:var(--flash);font-weight:700}.act .cc{color:var(--accent)}
 /* settings */
-.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px 20px}
-.section{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin:10px 0 4px}
-.set{display:flex;align-items:center;gap:6px;padding:3px 0}
+.sgrid{columns:250px;column-gap:28px}
+.group{break-inside:avoid;margin-bottom:8px}
+.section{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin:2px 0 3px;display:flex;align-items:center;gap:8px}
+.section button{font-size:10px;padding:0 6px;letter-spacing:0;text-transform:none}
+.set{display:flex;align-items:center;gap:4px;padding:1px 0;font-size:12px}
 .set label{flex:1;color:var(--muted)}
 .set .val{color:var(--text);text-align:right}
-button{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:3px 9px;font:inherit;cursor:pointer}
+button{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 7px;font:inherit;cursor:pointer}
 button:hover{border-color:var(--accent)}
 button.val{min-width:44px}
-input.num{width:78px;background:#0d0d16;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:3px 6px;text-align:right}
+input.num{width:58px;background:#0d0d16;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 5px;text-align:right;font-size:12px}
 input.num:focus{outline:none;border-color:var(--accent)}
 input.num.bad{border-color:var(--danger)}
 /* ports */
-.ports{display:flex;flex-direction:column;gap:4px}
+.ports{display:flex;flex-direction:column;gap:3px}
 .port{text-align:left;display:flex;gap:8px}
 .port.active{border-color:var(--play)}
 .port .mark{width:10px;color:var(--play)}
@@ -98,20 +119,31 @@ input.num.bad{border-color:var(--danger)}
 </header>
 <main>
   <section class="panel">
-    <h2>Master</h2>
-    <div id="bpm" class="num">---.-</div>
-    <div id="beats" class="beats"><span></span><span></span><span></span><span></span></div>
-    <div class="row">
-      <span>pitch <b id="pitch" class="num">±0.00%</b></span>
-      <span>deck <b id="mdeck">—</b></span>
+    <h2>Master <span class="kv">deck <b id="mdeck">—</b></span></h2>
+    <div class="mgrid">
+      <div>
+        <div id="bpm" class="num">---.-</div>
+        <div id="beats" class="beats"><span></span><span></span><span></span><span></span></div>
+        <div class="row">
+          <span>pitch <b id="pitch" class="num">±0.00%</b></span>
+        </div>
+        <div class="row num">
+          <span>in <b id="in16">00</b></span>
+          <span>out <b id="out16">00</b></span>
+          <span>Δ <b id="delta">—</b></span>
+          <span>clock <b id="cstate">idle</b></span>
+        </div>
+      </div>
+      <div>
+        <div class="pk"><span id="pkind" class="none">—</span><span id="pfill" class="ftag" hidden>FILL</span></div>
+        <div class="pbar"><i id="pprog" style="width:0"></i><span id="ppct" class="num"></span></div>
+        <div class="row num">
+          <span>beats left <b id="pleft">—</b></span>
+          <span>bar <b id="pbar16">—</b></span>
+        </div>
+        <div id="s16" class="s16"></div>
+      </div>
     </div>
-    <div class="row num">
-      <span>in <b id="in16">00</b></span>
-      <span>out <b id="out16">00</b></span>
-      <span>Δ <b id="delta">—</b></span>
-      <span>clock <b id="cstate">idle</b></span>
-    </div>
-    <div class="bar"><i id="phrasebar" style="width:0"></i></div>
   </section>
 
   <section class="panel" data-cap="output">
@@ -123,29 +155,27 @@ input.num.bad{border-color:var(--danger)}
     <div class="act num"><span id="anote" class="note"></span><span id="acc" class="cc"></span><span id="aidle" class="empty">idle</span></div>
   </section>
 
-  <section class="panel" data-cap="ports">
-    <h2>Output Port <button id="rescan">Rescan</button></h2>
-    <div id="ports" class="ports"></div>
-  </section>
-
   <section class="panel wide" data-cap="decks">
     <h2>Deck Information <span id="link" class="kv"></span></h2>
     <div id="decks" class="decks"></div>
     <table id="mixer" class="mixer" data-cap="mixer" hidden></table>
   </section>
 
-  <section class="panel wide" data-cap="settings">
-    <h2>Settings</h2>
-    <div class="cols">
-      <div><div class="section">Input</div><div id="set-input"></div></div>
-      <div id="set-midi"></div>
+  <details id="p-settings" class="panel wide" data-cap="settings" open>
+    <summary><h2>Settings</h2></summary>
+    <div id="sgrid" class="sgrid">
+      <div id="set-input" class="group"><div class="section">Input</div></div>
+      <div class="group" data-cap="ports">
+        <div class="section">Output Port <button id="rescan">Rescan</button></div>
+        <div id="ports" class="ports"></div>
+      </div>
     </div>
-  </section>
+  </details>
 
-  <section class="panel wide" data-cap="logs">
-    <h2>Logs</h2>
+  <details id="p-logs" class="panel wide" data-cap="logs" open>
+    <summary><h2>Logs</h2></summary>
     <div id="log" class="log"></div>
-  </section>
+  </details>
 </main>
 <script>
 'use strict';
@@ -201,7 +231,7 @@ function onStatus(s) {
   set('pitch', Math.abs(m.pitch) < 0.005 ? '±0.00%' : (m.pitch > 0 ? '+' : '') + m.pitch.toFixed(2) + '%');
   set('mdeck', m.device ? '#' + m.device + (m.virtual_master ? ' (virtual)' : '') : (s.link_active ? 'Link' : '—'));
   set('in16', pad2(m.phrase16));
-  $('phrasebar').style.width = (m.phrase16 / 16 * 100) + '%';
+  renderPhrase(s);
   if (s.clock) {
     set('out16', pad2(s.clock.out16));
     set('delta', s.clock.delta_ms == null ? '—' : s.clock.delta_ms.toFixed(1) + 'ms');
@@ -211,6 +241,24 @@ function onStatus(s) {
   if (s.output) renderOutput(s.output);
   if (s.decks) renderDecks(s);
   if (s.mixer !== undefined) renderMixer(s.mixer);
+}
+
+/** Shows the phrase of the master deck and its position in the 16-beat phrase. */
+function renderPhrase(s) {
+  const m = s.master;
+  const d = (s.decks || []).find((x) => x.num === m.device);
+  const p = d && d.phrase;
+  set('pkind', p ? p.kind : (d && d.phrase_note) || (m.device ? 'no phrase info' : '—'));
+  $('pkind').classList.toggle('none', !p);
+  $('pfill').hidden = !(p && p.fill);
+  $('pprog').style.width = (p ? p.progress * 100 : 0) + '%';
+  set('ppct', p ? Math.floor(p.progress * 100) + '%' : '');
+  set('pleft', p && p.beats_left != null ? String(p.beats_left) : '—');
+  set('pbar16', m.phrase16 ? Math.ceil(m.phrase16 / 4) + '/4' : '—');
+  $('s16').querySelectorAll('span').forEach((e, i) => {
+    const want = i + 1 < m.phrase16 ? 'past' : i + 1 === m.phrase16 ? 'on' : '';
+    if (e.className !== want) e.className = want;
+  });
 }
 
 function renderOutput(o) {
@@ -274,16 +322,21 @@ function renderMixer(mx) {
 }
 
 // Settings rows are built once per index, then updated in place, so that an input keeps its focus.
+// Each section is a group that the columns of #sgrid do not split.
 const setRows = new Map();
-let lastSection = null;
+let group = null, groupName = null;
 function onSettings(m) {
   for (const it of m.items) {
     let row = setRows.get(it.idx);
     if (!row) {
-      const parent = it.idx < MIDI_SETTINGS_START ? $('set-input') : $('set-midi');
-      if (it.section && it.idx >= MIDI_SETTINGS_START && it.section !== lastSection) {
-        parent.append(h('div', 'section', it.section));
-        lastSection = it.section;
+      let parent = $('set-input');
+      if (it.idx >= MIDI_SETTINGS_START) {
+        if (!group || (it.section && it.section !== groupName)) {
+          groupName = it.section || 'MIDI';
+          group = h('div', 'group', h('div', 'section', groupName));
+          $('sgrid').append(group);
+        }
+        parent = group;
       }
       row = buildSetting(it);
       setRows.set(it.idx, row);
@@ -405,6 +458,22 @@ function connect() {
 }
 
 $('rescan').addEventListener('click', () => send({ type: 'rescan' }));
+
+// The 16-beat phrase strip: four bars of four beats.
+for (let bar = 0; bar < 4; bar++) $('s16').append(h('div', null, h('span'), h('span'), h('span'), h('span')));
+
+// A collapsed panel stays collapsed after a reload.
+document.querySelectorAll('details.panel').forEach((d) => {
+  const key = 'xdj-clock.open.' + d.id;
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved !== null) d.open = saved === '1';
+  } catch { /* storage blocked: keep the default */ }
+  d.addEventListener('toggle', () => {
+    try { localStorage.setItem(key, d.open ? '1' : '0'); } catch { /* ignore */ }
+  });
+});
+
 connect();
 </script>
 </body>
