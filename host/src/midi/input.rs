@@ -127,7 +127,13 @@ fn connect(
             port,
             "xdj-clock-mixer",
             move |_, msg, _| {
-                apply_cc(&mut dj_state.write().mixer, msg);
+                // A panic on the CoreMIDI thread aborts the process.
+                let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    apply_cc(&mut dj_state.write().mixer, msg);
+                }));
+                if caught.is_err() {
+                    tracing::error!("The MIDI input callback panicked. The message is ignored.");
+                }
             },
             (),
         )

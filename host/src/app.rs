@@ -636,7 +636,7 @@ pub fn list_interfaces() -> anyhow::Result<()> {
 }
 
 /// Resolves on Ctrl+C, and on SIGTERM from a service manager such as systemd.
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};

@@ -26,27 +26,33 @@ pub fn spawn(
 ) {
     let ctx = ctx.clone();
     let track_change_rx = Arc::new(tokio::sync::Mutex::new(track_change_rx));
-    tokio::spawn(async move {
-        loop {
-            let (hint, bind_ip, bcast_ip, mac) = wait_for_interface(&ctx).await;
-            tracing::info!(%bind_ip, %bcast_ip, "Network interface initialized");
+    super::spawn_supervised("Pro DJ Link supervisor", move || {
+        let ctx = ctx.clone();
+        let startup_cfg = startup_cfg.clone();
+        let device_table = device_table.clone();
+        let track_change_rx = Arc::clone(&track_change_rx);
+        async move {
+            loop {
+                let (hint, bind_ip, bcast_ip, mac) = wait_for_interface(&ctx).await;
+                tracing::info!(%bind_ip, %bcast_ip, "Network interface initialized");
 
-            let mut group = JoinSet::new();
-            spawn_group(
-                &mut group,
-                &ctx,
-                &startup_cfg,
-                &device_table,
-                &track_change_rx,
-                bind_ip,
-                bcast_ip,
-                mac,
-            );
+                let mut group = JoinSet::new();
+                spawn_group(
+                    &mut group,
+                    &ctx,
+                    &startup_cfg,
+                    &device_table,
+                    &track_change_rx,
+                    bind_ip,
+                    bcast_ip,
+                    mac,
+                );
 
-            let reason = watch_group(&mut group, &ctx, &hint, bind_ip).await;
-            tracing::warn!(%reason, "Rebuilding the Pro DJ Link network tasks");
-            group.shutdown().await;
-            tokio::time::sleep(CHECK_INTERVAL).await;
+                let reason = watch_group(&mut group, &ctx, &hint, bind_ip).await;
+                tracing::warn!(%reason, "Rebuilding the Pro DJ Link network tasks");
+                group.shutdown().await;
+                tokio::time::sleep(CHECK_INTERVAL).await;
+            }
         }
     });
 }
@@ -96,7 +102,12 @@ async fn watch_group(
                 if ctx.cfg.read().interface != hint {
                     return "the interface setting changed".to_string();
                 }
-                if let Some(reason) = network_changed(hint, bind_ip) {
+                // `getifaddrs` can block, so keep it off the async workers.
+                let hint2 = hint.to_string();
+                let changed = tokio::task::spawn_blocking(move || network_changed(&hint2, bind_ip))
+                    .await
+                    .unwrap_or_else(|e| Some(format!("the interface check panicked: {e}")));
+                if let Some(reason) = changed {
                     return reason;
                 }
             }
