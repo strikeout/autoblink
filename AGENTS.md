@@ -86,6 +86,7 @@ Plus `pub fn interface_priority()` for network interface ranking.
 - `web/status.rs` — status snapshot; takes each lock alone, never two at once
 - `settings.rs` — the settings table and the validated changes
 - `webui/index.html` (repo root) — the one page that the host, the emulator and the ESP32 serve
+- `runtime/mod.rs` — `supervise` restarts each long-running task after a panic. The MIDI clock, the MTC, the mapper and the MIDI output worker run on the `midi-rt` thread, a separate single-thread runtime.
 
 ## Platform-Specific Code
 
@@ -135,6 +136,10 @@ ESP32 CI uses the `espressif/idf:latest` Docker container and builds on the `esp
 - Adding a new architecture target should mirror the `esp32`/`esp32-emulator` split:
   - firmware crate + native emulator crate
   - both share protocol via a new shared crate (planned as `xdj-core-prolink`)
+
+## Constraints
+
+- **until 2027-01-11** — Keep the host app alive under every fault. A task must restart after a panic (`runtime::supervise`). A blocking call must not run on a tokio worker. An FFI callback must not capture Rust data, because the vendored `rusty_link` callback setters keep a dangling pointer.
 
 ## graphify
 

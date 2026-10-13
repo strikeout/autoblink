@@ -37,11 +37,11 @@ use tokio::sync::broadcast;
 use tokio::sync::watch;
 
 use crate::config::{MtcFrameRate, SharedConfig};
+use crate::midi::activity::MidiActivity;
 use crate::midi::MidiTransport;
 use crate::prolink::beat_listener::BeatEvent;
 use crate::state::timing::{MeasurementKind, TimingMeasurement, TimingSnapshot, TimingSource};
 use crate::state::{BeatSource, SharedState};
-use crate::midi::activity::MidiActivity;
 
 use tokio::time::{sleep, sleep_until, Instant as TokioInstant};
 
@@ -769,11 +769,15 @@ pub async fn run(
             match m {
                 MtcOut::QuarterFrame(bytes) => {
                     let _ = midi.send_message(&bytes);
-                    activity.lock().mtc_quarter_frames += 1;
+                    if let Some(mut a) = activity.try_lock() {
+                        a.mtc_quarter_frames += 1;
+                    }
                 }
                 MtcOut::FullFrame(bytes) => {
                     let _ = midi.send_message(&bytes);
-                    activity.lock().mtc_full_frames += 1;
+                    if let Some(mut a) = activity.try_lock() {
+                        a.mtc_full_frames += 1;
+                    }
                 }
             }
         }

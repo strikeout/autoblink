@@ -17,11 +17,11 @@ use tokio::sync::broadcast;
 use tokio::sync::watch;
 
 use crate::config::SharedConfig;
-use crate::midi::MidiTransport;
+use crate::midi::activity::MidiActivity;
+use crate::midi::{MidiError, MidiTransport};
 use crate::prolink::beat_listener::BeatEvent;
 use crate::state::timing::{TimingMeasurement, TimingSnapshot, TimingSource};
 use crate::state::{BeatSource, SharedState};
-use crate::midi::activity::MidiActivity;
 
 // ── MIDI byte constants ───────────────────────────────────────────────────────
 
@@ -36,6 +36,12 @@ const PPQ: u64 = 24;
 /// The clock ignores a tempo above this value. A garbage packet can carry a
 /// tempo of millions of BPM, which would make the pulse loop spin.
 const MAX_BPM: f64 = 999.0;
+
+/// The clock task wakes this long before a pulse and spins to the deadline.
+const SPIN_WINDOW: Duration = Duration::from_millis(1);
+
+/// A lower BPM gives a pulse interval of minutes, and the clock then stops.
+const MIN_BPM: f64 = 20.0;
 
 // ── Clock state ───────────────────────────────────────────────────────────────
 
@@ -107,7 +113,7 @@ impl ClockState {
     }
 
     fn set_bpm(&mut self, bpm: f64) {
-        if bpm > 0.0 && bpm <= MAX_BPM && (bpm - self.last_bpm).abs() > 0.01 {
+        if (MIN_BPM..=MAX_BPM).contains(&bpm) && (bpm - self.last_bpm).abs() > 0.01 {
             self.interval_ns = bpm_to_interval_ns(bpm);
             self.last_bpm = bpm;
         }
@@ -266,7 +272,9 @@ fn beat_at_from_measurement(
         .as_secs_f64();
     let phase_now = (beat_phase.clamp(0.0, 1.0) + (age_secs / beat_dur_secs)).fract();
     let phase_secs = phase_now * beat_dur_secs;
-    now.checked_sub(Duration::from_secs_f64(phase_secs))
+    // A subnormal BPM gives an infinite beat length.
+    let phase = Duration::try_from_secs_f64(phase_secs).ok()?;
+    now.checked_sub(phase)
 }
 
 fn handle_timing_snapshot(
@@ -478,10 +486,11 @@ fn maybe_resync_on_bar_boundary(
     // The error includes `pulse_index`, so a slew moves the beat pulse onto the
     // beat. The overdue-pulse logic counts each pulse that the slew adds or
     // removes, so the receiver's pulse count stays correct. A Stop/Start can
-    // move some receivers back to the song start, so use it only when
-    // smoothing is off.
+    // move some receivers back to the song start, so use it only when the
+    // error is unknown. With `smoothing_ms = 0` the slew is the shortest one
+    // that keeps the tempo change at 10 % or less.
     match beat_phase_error_ns(cs, beat_at) {
-        Some(error_ns) if smoothing_ms > 0 => {
+        Some(error_ns) => {
             start_full_bar_resync_slewed(cs, beat_at, error_ns, smoothing_ms);
         }
         _ => apply_full_bar_resync_hard(cs, midi, activity, beat_at),
@@ -855,7 +864,14 @@ fn emit_overdue_clock_pulses(
         intervals_elapsed
     };
     for _ in 0..pulses_to_send {
-        let _ = midi.send_message(&[MSG_CLOCK]);
+        // A full output queue drops the pulse. The receiver's pulse count is
+        // then wrong, so the next downbeat restarts it.
+        if let Err(MidiError::SendError(_)) = midi.send_message(&[MSG_CLOCK]) {
+            if !cs.beats_dropped {
+                tracing::warn!(target: "midi.clock", "MIDI output queue full: a clock pulse is dropped");
+            }
+            cs.beats_dropped = true;
+        }
     }
 
     if intervals_elapsed > PPQ {
@@ -1022,19 +1038,40 @@ pub async fn run(
 
         // ── Compute next pulse deadline ──────────────────────────────────────
         let latency_offset_ms = cfg.read().midi.latency_compensation_ms;
-        let next_pulse_at = if clock_enabled && cs.running && cs.interval_ns > 0 {
+        // Without a valid BPM, the emit below sends nothing and `last_pulse`
+        // stays in the past. A pulse deadline would then spin the loop.
+        let has_bpm = cs.last_bpm > 0.0 || (MIN_BPM..=MAX_BPM).contains(&cached_bpm);
+        let pulse_due = clock_enabled && cs.running && cs.interval_ns > 0 && has_bpm;
+        let next_pulse_at = if pulse_due {
             let base = cs.last_pulse + Duration::from_nanos(cs.interval_ns);
             shift_instant_ms(base, latency_offset_ms)
         } else {
             // Not running: wake periodically to check state changes.
             Instant::now() + Duration::from_millis(10)
         };
-        let sleep_dur = next_pulse_at.saturating_duration_since(Instant::now());
+        // A tokio timer fires up to 1 ms late. Wake 1 ms early and spin to the
+        // pulse deadline. This thread runs only the MIDI tasks (`midi-rt`).
+        // ponytail: the thread has the default OS priority. If pulses still
+        // jitter under load, raise it with a QoS class or `thread_priority`.
+        let wake_at = if pulse_due {
+            next_pulse_at
+                .checked_sub(SPIN_WINDOW)
+                .unwrap_or(next_pulse_at)
+        } else {
+            next_pulse_at
+        };
+        let sleep_dur = wake_at.saturating_duration_since(Instant::now());
         let deadline = tokio::time::Instant::now() + sleep_dur;
 
         // ── Wait for next pulse deadline OR a beat event ─────────────────────
         tokio::select! {
-            _ = tokio::time::sleep_until(deadline) => {}
+            _ = tokio::time::sleep_until(deadline) => {
+                if pulse_due {
+                    while Instant::now() < next_pulse_at {
+                        std::hint::spin_loop();
+                    }
+                }
+            }
             changed = cfg_change_rx.changed() => {
                 if changed.is_err() {
                     // Sender dropped; keep running.
@@ -1042,9 +1079,10 @@ pub async fn run(
             }
             changed = timing_rx.changed() => {
                 if changed.is_ok() && clock_loop_enabled {
-                    let cfg_r = cfg.read();
-                    let stable_bars = cfg_r.midi.phrase_lock_stable_beats;
-                    let smoothing_ms = cfg_r.midi.smoothing_ms;
+                    let (stable_bars, smoothing_ms) = {
+                        let cfg_r = cfg.read();
+                        (cfg_r.midi.phrase_lock_stable_beats, cfg_r.midi.smoothing_ms)
+                    };
                     handle_timing_snapshot(
                         &mut cs,
                         &state,
@@ -1060,9 +1098,10 @@ pub async fn run(
                 match evt {
                     Ok(evt) => {
                         if clock_enabled && !clock_loop_enabled {
-                            let cfg_r = cfg.read();
-                            let stable_bars = cfg_r.midi.phrase_lock_stable_beats;
-                            let smoothing_ms = cfg_r.midi.smoothing_ms;
+                            let (stable_bars, smoothing_ms) = {
+                                let cfg_r = cfg.read();
+                                (cfg_r.midi.phrase_lock_stable_beats, cfg_r.midi.smoothing_ms)
+                            };
                             handle_prolink_beat_loop_disabled(
                                 &mut cs,
                                 &state,
@@ -1420,10 +1459,14 @@ mod tests {
             }
         }
 
+        // The resync is a slew, also with smoothing 0. It does not restart
+        // the receiver.
+        assert!(cs.phase_slew.is_none());
         let measurement = make_timing_measurement(1, 1);
         state.write().timing.observe(measurement.clone());
         handle_timing_snapshot(&mut cs, &state, &midi, &activity, 4, 0, Instant::now());
-        assert_eq!(cs.pulse_index, 0);
+        assert!(cs.phase_slew.is_some());
+        assert_eq!(cs.pulse_index, 9);
     }
 
     #[test]
@@ -1467,14 +1510,13 @@ mod tests {
         state.write().timing.observe(measurement);
         handle_timing_snapshot(&mut cs, &state, &transport, &activity, 1, 0, beat_at);
 
-        let msgs = midi.get_messages();
-        assert_eq!(msgs, vec![vec![MSG_STOP], vec![MSG_START], vec![MSG_CLOCK]]);
-        assert_eq!(cs.pulse_index, 0);
+        assert!(midi.get_messages().is_empty());
+        assert!(cs.phase_slew.is_some());
         assert!(cs.running);
     }
 
     #[test]
-    fn loop_disabled_resync_hard_restarts_transport_when_smoothing_is_zero() {
+    fn loop_disabled_resync_slews_without_stop_start_when_smoothing_is_zero() {
         let mut cs = ClockState::new();
         cs.transition_to_running();
         cs.has_started = true;
@@ -1500,12 +1542,12 @@ mod tests {
             make_beat_at(1, 1, beat_at),
         );
 
-        let msgs = midi.get_messages();
-        assert_eq!(msgs, vec![vec![MSG_STOP], vec![MSG_START], vec![MSG_CLOCK]]);
+        // A Stop/Start makes the receiver restart its sequence. The clock
+        // moves the pulse grid with a slew instead.
+        assert!(midi.get_messages().is_empty());
         assert!(cs.running);
-        assert_eq!(cs.pulse_index, 0);
-        assert!(cs.phase_slew.is_none());
-        assert_eq!(cs.last_pulse, beat_at);
+        assert_eq!(cs.pulse_index, 7);
+        assert!(cs.phase_slew.is_some());
     }
 
     #[test]
@@ -1555,6 +1597,18 @@ mod tests {
         cs.last_pulse = last_pulse;
         cs.pulse_index = pulse_index;
         cs
+    }
+
+    #[test]
+    fn a_dropped_pulse_restarts_the_receiver_at_the_next_downbeat() {
+        let t0 = Instant::now();
+        let mut cs = running_clock_at(t0, 0);
+        let interval = Duration::from_nanos(cs.interval_ns);
+        let transport: Arc<dyn MidiTransport> = Arc::new(MockMidiTransport::failing());
+
+        emit_overdue_clock_pulses(&mut cs, &transport, t0 + interval, 0);
+
+        assert!(cs.beats_dropped);
     }
 
     #[test]

@@ -5,11 +5,18 @@ use crate::link::run as link_run;
 
 pub fn spawn(ctx: TaskContext, startup_cfg: crate::config::Config) {
     let link_cfg = startup_cfg.link.clone();
-    let dj_state = Arc::clone(&ctx.dj_state);
-    let beat_tx = ctx.beat_tx.clone();
-    let timing_tx = ctx.timing_tx.clone();
-    let link = rusty_link::AblLink::new(120.0);
-    tokio::spawn(async move {
-        link_run(link_cfg, dj_state, beat_tx, timing_tx, link).await;
+    if !link_cfg.enabled {
+        tracing::info!("Ableton Link engine disabled by config");
+        return;
+    }
+    super::spawn_supervised("Ableton Link", move || {
+        let link = rusty_link::AblLink::new(120.0);
+        link_run(
+            link_cfg.clone(),
+            Arc::clone(&ctx.dj_state),
+            ctx.beat_tx.clone(),
+            ctx.timing_tx.clone(),
+            link,
+        )
     });
 }

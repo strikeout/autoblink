@@ -1,71 +1,51 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::broadcast;
+use tokio::runtime::Handle;
 use tokio::sync::watch;
 
 use super::TaskContext;
-use crate::prolink::beat_listener::BeatEvent;
-use crate::prolink::status_listener::StatusEvent;
 
-pub fn spawn(
-    ctx: TaskContext,
-    beat_rx: broadcast::Receiver<BeatEvent>,
-    status_rx: broadcast::Receiver<StatusEvent>,
-    cfg_change_rx: watch::Receiver<()>,
-    timing_rx: watch::Receiver<()>,
-) {
-    let midi_out = ctx.midi_out.clone();
-    let dj_state = Arc::clone(&ctx.dj_state);
-    let cfg = Arc::clone(&ctx.cfg);
-    let midi_activity = Arc::clone(&ctx.midi_activity);
-
-    let mapper_midi: Arc<dyn crate::midi::MidiTransport> = Arc::new(midi_out.clone());
-    tokio::spawn(crate::midi::mapper::run(
-        mapper_midi,
-        dj_state.clone(),
-        beat_rx.resubscribe(),
-        status_rx,
-        cfg.clone(),
-        midi_activity.clone(),
-    ));
-
-    let dj_state2 = Arc::clone(&ctx.dj_state);
-    let cfg2 = Arc::clone(&ctx.cfg);
-    let midi_activity2 = Arc::clone(&ctx.midi_activity);
-    let beat_rx2 = beat_rx.resubscribe();
-    let timing_rx2 = timing_rx.clone();
-
-    let midi_out_for_clock = midi_out.clone();
-    tokio::spawn(async move {
-        let midi_transport: Arc<dyn crate::midi::MidiTransport> = Arc::new(midi_out_for_clock);
-        crate::midi::clock::run(
-            midi_transport,
-            dj_state2,
-            beat_rx2,
-            cfg2,
-            midi_activity2,
-            cfg_change_rx,
-            timing_rx2,
+/// Starts the mapper, the clock and the MTC on the MIDI runtime `rt`.
+pub fn spawn(ctx: TaskContext, cfg_change_rx: watch::Receiver<()>, rt: &Handle) {
+    let c = ctx.clone();
+    rt.spawn(super::supervise("MIDI mapper", move || {
+        let midi: Arc<dyn crate::midi::MidiTransport> = Arc::new(c.midi_out.clone());
+        crate::midi::mapper::run(
+            midi,
+            Arc::clone(&c.dj_state),
+            c.beat_tx.subscribe(),
+            c.status_tx.subscribe(),
+            Arc::clone(&c.cfg),
+            Arc::clone(&c.midi_activity),
         )
-        .await;
-    });
+    }));
 
-    let dj_state3 = Arc::clone(&ctx.dj_state);
-    let cfg3 = Arc::clone(&ctx.cfg);
-    let midi_activity3 = Arc::clone(&ctx.midi_activity);
-    let beat_rx3 = beat_rx.resubscribe();
-    let timing_rx3 = timing_rx;
+    let c = ctx.clone();
+    rt.spawn(super::supervise("MIDI clock", move || {
+        let midi: Arc<dyn crate::midi::MidiTransport> = Arc::new(c.midi_out.clone());
+        crate::midi::clock::run(
+            midi,
+            Arc::clone(&c.dj_state),
+            c.beat_tx.subscribe(),
+            Arc::clone(&c.cfg),
+            Arc::clone(&c.midi_activity),
+            cfg_change_rx.clone(),
+            c.timing_tx.subscribe(),
+        )
+    }));
 
-    let mtc_midi: Arc<dyn crate::midi::MidiTransport> = Arc::new(midi_out);
-    tokio::spawn(crate::midi::timecode::run(
-        mtc_midi,
-        dj_state3,
-        cfg3,
-        midi_activity3,
-        beat_rx3,
-        timing_rx3,
-    ));
+    rt.spawn(super::supervise("MIDI timecode", move || {
+        let midi: Arc<dyn crate::midi::MidiTransport> = Arc::new(ctx.midi_out.clone());
+        crate::midi::timecode::run(
+            midi,
+            Arc::clone(&ctx.dj_state),
+            Arc::clone(&ctx.cfg),
+            Arc::clone(&ctx.midi_activity),
+            ctx.beat_tx.subscribe(),
+            ctx.timing_tx.subscribe(),
+        )
+    }));
 }
 
 /// Reopens the configured MIDI output port after the device goes away.
@@ -79,7 +59,10 @@ pub async fn reconnect_loop<F>(
     open: F,
     period: Duration,
 ) where
-    F: Fn(&str) -> anyhow::Result<(Box<dyn crate::midi::MidiOutConnection>, String)>,
+    F: Fn(&str) -> anyhow::Result<(Box<dyn crate::midi::MidiOutConnection>, String)>
+        + Clone
+        + Send
+        + 'static,
 {
     let mut warned = false;
     loop {
@@ -95,7 +78,12 @@ pub async fn reconnect_loop<F>(
             continue;
         }
         let wanted = cfg.read().midi.output.clone();
-        match open(&wanted) {
+        // CoreMIDI can block for seconds during a USB hot-plug.
+        let (open2, wanted2) = (open.clone(), wanted.clone());
+        let opened = tokio::task::spawn_blocking(move || open2(&wanted2))
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("the port open panicked: {e}")));
+        match opened {
             Ok((conn, name)) => {
                 midi_out.switch_connection(Some(conn), false).await;
                 cfg.write().midi.output = name.clone();
@@ -136,6 +124,7 @@ mod tests {
     use crate::midi::activity::MidiActivity;
     use crate::state::timing::TimingMeasurement;
     use crate::state::{new_shared as new_shared_state, BeatSource, MasterState};
+    use tokio::sync::broadcast;
 
     #[tokio::test]
     async fn mtc_can_be_enabled_and_disabled_after_startup() {
@@ -164,12 +153,12 @@ mod tests {
             ));
         }
 
-        let (beat_tx, beat_rx) = broadcast::channel(8);
-        let (status_tx, status_rx) = broadcast::channel(8);
+        let (beat_tx, _) = broadcast::channel(8);
+        let (status_tx, _) = broadcast::channel(8);
         let (device_tx, _) = broadcast::channel(8);
         let (vcdjready_tx, _) = broadcast::channel(8);
         let (_cfg_change_tx, cfg_change_rx) = watch::channel(());
-        let (timing_tx, timing_rx) = watch::channel(());
+        let (timing_tx, _timing_rx) = watch::channel(());
 
         let midi_activity = Arc::new(ParkingMutex::new(MidiActivity::default()));
         let midi_out = crate::midi::MidiOutHandle::start(64, None);
@@ -185,7 +174,7 @@ mod tests {
             midi_activity: Arc::clone(&midi_activity),
         };
 
-        spawn(ctx, beat_rx, status_rx, cfg_change_rx, timing_rx);
+        spawn(ctx, cfg_change_rx, &Handle::current());
 
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(midi_activity.lock().mtc_quarter_frames, 0);

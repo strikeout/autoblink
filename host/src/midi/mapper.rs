@@ -5,11 +5,11 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
 use crate::config::{CcConfig, NoteConfig, SharedConfig};
+use crate::midi::activity::MidiActivity;
 use crate::midi::MidiTransport;
 use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::state::{BeatSource, SharedState};
-use crate::midi::activity::MidiActivity;
 
 // ── MIDI byte helpers ─────────────────────────────────────────────────────────
 
@@ -451,9 +451,11 @@ fn fire_beat_notes(
         let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.downbeat, 127));
         let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.downbeat));
     }
-    let mut act = activity.lock();
-    act.notes_sent += 1;
-    act.last_note = Some((note_cfg.beat, Instant::now()));
+    // The UI counters are optional. Do not wait for the lock.
+    if let Some(mut act) = activity.try_lock() {
+        act.notes_sent += 1;
+        act.last_note = Some((note_cfg.beat, Instant::now()));
+    }
 }
 
 // ── Previous CC values (to suppress duplicate sends) ─────────────────────────
@@ -559,9 +561,11 @@ async fn run_with_midi(
                 if $prev != $new {
                     $prev = $new;
                     let _ = midi.send_message(&cc($ch, $num, $new));
-                    let mut act = activity.lock();
-                    act.cc_sent += 1;
-                    act.last_cc = Some(($num, $new, Instant::now()));
+                    // The UI counters are optional. Do not wait for the lock.
+                    if let Some(mut act) = activity.try_lock() {
+                        act.cc_sent += 1;
+                        act.last_cc = Some(($num, $new, Instant::now()));
+                    }
                 }
             };
         }
@@ -599,9 +603,11 @@ async fn run_with_midi(
             if prev.phrase_16 != new_phrase_16 {
                 prev.phrase_16 = new_phrase_16;
                 let _ = midi.send_message(&cc(cc_cfg.channel, cc_cfg.phrase_16, new_phrase_16));
-                let mut act = activity.lock();
-                act.cc_sent += 1;
-                act.last_cc = Some((cc_cfg.phrase_16, new_phrase_16, Instant::now()));
+                // The UI counters are optional. Do not wait for the lock.
+                if let Some(mut act) = activity.try_lock() {
+                    act.cc_sent += 1;
+                    act.last_cc = Some((cc_cfg.phrase_16, new_phrase_16, Instant::now()));
+                }
             }
         }
         prev_phrase_16_beat = master.phrase_16_beat;
@@ -619,9 +625,11 @@ async fn run_with_midi(
                 let note_cfg = cfg.read().midi.notes.clone();
                 let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.phrase_change, 127));
                 let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.phrase_change));
-                let mut act = activity.lock();
-                act.notes_sent += 1;
-                act.last_note = Some((note_cfg.phrase_change, Instant::now()));
+                // The UI counters are optional. Do not wait for the lock.
+                if let Some(mut act) = activity.try_lock() {
+                    act.notes_sent += 1;
+                    act.last_note = Some((note_cfg.phrase_change, Instant::now()));
+                }
                 tracing::debug!(
                     note = note_cfg.phrase_change,
                     "Phrase change MIDI note fired"
@@ -660,11 +668,13 @@ async fn run_with_midi(
                     if cfg_now.program.enabled {
                         let _ = midi.send_message(&program_change(cfg_now.program.channel, code));
                     }
-                    let mut act = activity.lock();
-                    act.cc_sent += 1;
-                    act.last_cc = Some((cfg_now.cc.phrase_kind, kind_val, Instant::now()));
-                    act.notes_sent += 1;
-                    act.last_note = Some((note, Instant::now()));
+                    // The UI counters are optional. Do not wait for the lock.
+                    if let Some(mut act) = activity.try_lock() {
+                        act.cc_sent += 1;
+                        act.last_cc = Some((cfg_now.cc.phrase_kind, kind_val, Instant::now()));
+                        act.notes_sent += 1;
+                        act.last_note = Some((note, Instant::now()));
+                    }
                     tracing::debug!(kind = %info.kind, code, "Phrase kind MIDI sent");
                 }
             }
@@ -693,9 +703,11 @@ async fn run_with_midi(
             let note_cfg = cfg.read().midi.notes.clone();
             let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.no_bass, 127));
             let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.no_bass));
-            let mut act = activity.lock();
-            act.notes_sent += 1;
-            act.last_note = Some((note_cfg.no_bass, Instant::now()));
+            // The UI counters are optional. Do not wait for the lock.
+            if let Some(mut act) = activity.try_lock() {
+                act.notes_sent += 1;
+                act.last_note = Some((note_cfg.no_bass, Instant::now()));
+            }
             tracing::debug!(no_bass, note = note_cfg.no_bass, "NO_BASS MIDI note sent");
         }
     }

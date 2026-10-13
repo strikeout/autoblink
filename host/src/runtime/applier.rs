@@ -8,24 +8,26 @@ use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::state::TrackChange;
 
-pub fn spawn(
-    ctx: TaskContext,
-    beat_rx: broadcast::Receiver<BeatEvent>,
-    status_rx: broadcast::Receiver<StatusEvent>,
-    track_change_tx: mpsc::Sender<TrackChange>,
-) {
-    let dj_state = Arc::clone(&ctx.dj_state);
-    let cfg = Arc::clone(&ctx.cfg);
-    let timing_tx = ctx.timing_tx.clone();
-
-    tokio::spawn(beat_applier(
-        dj_state.clone(),
-        cfg.clone(),
-        beat_rx,
-        timing_tx.clone(),
-    ));
-
-    tokio::spawn(status_applier(dj_state, cfg, status_rx, track_change_tx));
+pub fn spawn(ctx: TaskContext, track_change_tx: mpsc::Sender<TrackChange>) {
+    // The factories keep the sender alive, so the metadata task never sees a
+    // closed track change queue.
+    let c = ctx.clone();
+    super::spawn_supervised("beat applier", move || {
+        beat_applier(
+            Arc::clone(&c.dj_state),
+            Arc::clone(&c.cfg),
+            c.beat_tx.subscribe(),
+            c.timing_tx.clone(),
+        )
+    });
+    super::spawn_supervised("status applier", move || {
+        status_applier(
+            Arc::clone(&ctx.dj_state),
+            Arc::clone(&ctx.cfg),
+            ctx.status_tx.subscribe(),
+            track_change_tx.clone(),
+        )
+    });
 }
 
 async fn beat_applier(

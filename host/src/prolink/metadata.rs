@@ -199,6 +199,11 @@ pub async fn run(
         let change2 = change.clone();
 
         tokio::spawn(async move {
+            // The guard frees the key also when the fetch panics. Otherwise
+            // the app never fetches this track again.
+            let _done = scopeguard(move || {
+                inflight2.lock().remove(&key);
+            });
             match timeout(FETCH_TIMEOUT, fetch_metadata(ip, asking, &change2)).await {
                 Ok(Ok((meta, song_struct))) => {
                     tracing::info!(
@@ -269,9 +274,21 @@ pub async fn run(
                     );
                 }
             }
-            inflight2.lock().remove(&key);
         });
     }
+}
+
+/// Calls `f` when the returned value is dropped.
+fn scopeguard<F: FnOnce()>(f: F) -> impl Drop {
+    struct Guard<F: FnOnce()>(Option<F>);
+    impl<F: FnOnce()> Drop for Guard<F> {
+        fn drop(&mut self) {
+            if let Some(f) = self.0.take() {
+                f();
+            }
+        }
+    }
+    Guard(Some(f))
 }
 
 // ── Core fetch logic ──────────────────────────────────────────────────────────

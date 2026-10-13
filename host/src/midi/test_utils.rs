@@ -19,6 +19,14 @@ impl MockMidiTransport {
         }
     }
 
+    /// A transport whose output queue is always full.
+    pub fn failing() -> Self {
+        Self {
+            should_fail: true,
+            ..Self::new()
+        }
+    }
+
     pub fn get_messages(&self) -> Vec<Vec<u8>> {
         self.messages.lock().unwrap().clone()
     }

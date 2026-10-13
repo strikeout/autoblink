@@ -136,6 +136,172 @@ fn lane_for_message(msg: &[u8]) -> MidiLane {
     }
 }
 
+struct Lanes {
+    rx_control: mpsc::Receiver<MidiOutCommand>,
+    rx_realtime: mpsc::Receiver<Vec<u8>>,
+    rx_normal: mpsc::Receiver<Vec<u8>>,
+}
+
+async fn run_worker(
+    lanes: Arc<tokio::sync::Mutex<Lanes>>,
+    initial: Option<Box<dyn MidiOutConnection>>,
+    connected_worker: Arc<AtomicBool>,
+    dropped_messages_worker: Arc<AtomicUsize>,
+) {
+    let mut lanes = lanes.lock().await;
+    let Lanes {
+        rx_control,
+        rx_realtime,
+        rx_normal,
+    } = &mut *lanes;
+    let mut conn: Option<Box<dyn MidiOutConnection>> = initial;
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    let mut sent_total: u64 = 0;
+    let mut sent_last: u64 = 0;
+    let mut dropped_last: usize = 0;
+
+    loop {
+        tokio::select! {
+            biased;
+
+            cmd = rx_control.recv() => {
+                let Some(cmd) = cmd else {
+                    break;
+                };
+
+                match cmd {
+                    MidiOutCommand::SwitchConnection {
+                        mut new_conn,
+                        stop_before_drop,
+                        respond_to,
+                    } => {
+                        if stop_before_drop {
+                            if let Some(ref mut c) = conn {
+                                let _ = c.send(&[0xFC]);
+                            }
+                        }
+
+                        conn = new_conn.take();
+                        connected_worker.store(conn.is_some(), Ordering::Relaxed);
+
+                        tracing::trace!(
+                            target: "midi.out",
+                            connected = conn.is_some(),
+                            stop_before_drop,
+                            "MIDI output connection switched"
+                        );
+
+                        if let Some(tx) = respond_to {
+                            let _ = tx.send(());
+                        }
+                    }
+                    MidiOutCommand::Stop { respond_to } => {
+                        if let Some(ref mut c) = conn {
+                            let _ = c.send(&[0xFC]);
+                        }
+
+                        tracing::trace!(target: "midi.out", "MIDI output Stop sent");
+
+                        if let Some(tx) = respond_to {
+                            let _ = tx.send(());
+                        }
+                    }
+                    #[cfg(test)]
+                    MidiOutCommand::Barrier(tx) => {
+                        while let Ok(msg) = rx_realtime.try_recv() {
+                            let Some(ref mut c) = conn else {
+                                dropped_messages_worker.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            };
+
+                            if let Err(err) = c.send(&msg) {
+                                tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
+                                conn = None;
+                                connected_worker.store(false, Ordering::Relaxed);
+                            } else {
+                                sent_total = sent_total.saturating_add(1);
+                            }
+                        }
+                        while let Ok(msg) = rx_normal.try_recv() {
+                            let Some(ref mut c) = conn else {
+                                dropped_messages_worker.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            };
+
+                            if let Err(err) = c.send(&msg) {
+                                tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
+                                conn = None;
+                                connected_worker.store(false, Ordering::Relaxed);
+                            } else {
+                                sent_total = sent_total.saturating_add(1);
+                            }
+                        }
+                        let _ = tx.send(());
+                    }
+                }
+            }
+
+            msg = rx_realtime.recv() => {
+                let Some(msg) = msg else {
+                    break;
+                };
+                let Some(ref mut c) = conn else {
+                    dropped_messages_worker.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+
+                if let Err(err) = c.send(&msg) {
+                    tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
+                    conn = None;
+                    connected_worker.store(false, Ordering::Relaxed);
+                } else {
+                    sent_total = sent_total.saturating_add(1);
+                }
+            }
+
+            msg = rx_normal.recv() => {
+                let Some(msg) = msg else {
+                    break;
+                };
+                let Some(ref mut c) = conn else {
+                    dropped_messages_worker.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+
+                if let Err(err) = c.send(&msg) {
+                    tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
+                    conn = None;
+                    connected_worker.store(false, Ordering::Relaxed);
+                } else {
+                    sent_total = sent_total.saturating_add(1);
+                }
+            }
+
+            _ = ticker.tick() => {
+                if tracing::level_enabled!(tracing::Level::TRACE) {
+                    let queue_len = rx_realtime.len() + rx_normal.len();
+                    let dropped_total = dropped_messages_worker.load(Ordering::Relaxed);
+                    let dropped_delta = dropped_total.saturating_sub(dropped_last);
+                    let sent_delta = sent_total.saturating_sub(sent_last);
+
+                    tracing::trace!(
+                        target: "midi.out",
+                        connected = conn.is_some(),
+                        queue_len,
+                        sent_messages = sent_delta,
+                        dropped_messages = dropped_delta,
+                        dropped_messages_total = dropped_total,
+                        "MIDI output worker metrics"
+                    );
+
+                    dropped_last = dropped_total;
+                    sent_last = sent_total;
+                }
+            }
+        }
+    }
+}
+
 /// A cheap, clonable handle used by producers (clock/mapper/MTC) to enqueue
 /// MIDI bytes.
 ///
@@ -161,158 +327,39 @@ impl MidiOutHandle {
         let realtime_capacity = (queue_capacity / 4).max(64);
         let normal_capacity = queue_capacity.max(64);
 
-        let (tx_control, mut rx_control) = mpsc::channel::<MidiOutCommand>(control_capacity);
-        let (tx_realtime, mut rx_realtime) = mpsc::channel::<Vec<u8>>(realtime_capacity);
-        let (tx_normal, mut rx_normal) = mpsc::channel::<Vec<u8>>(normal_capacity);
+        let (tx_control, rx_control) = mpsc::channel::<MidiOutCommand>(control_capacity);
+        let (tx_realtime, rx_realtime) = mpsc::channel::<Vec<u8>>(realtime_capacity);
+        let (tx_normal, rx_normal) = mpsc::channel::<Vec<u8>>(normal_capacity);
         let connected = Arc::new(AtomicBool::new(initial.is_some()));
-        let connected_worker = Arc::clone(&connected);
         let dropped_messages = Arc::new(AtomicUsize::new(0));
-        let dropped_messages_worker = Arc::clone(&dropped_messages);
 
+        let lanes = Arc::new(tokio::sync::Mutex::new(Lanes {
+            rx_control,
+            rx_realtime,
+            rx_normal,
+        }));
+
+        // The worker owns the output connection. If it panics, start it again
+        // with the same queues. The connection is lost, so mark the output as
+        // disconnected. The reconnect loop then opens the port again.
+        let connected_sup = Arc::clone(&connected);
+        let dropped_sup = Arc::clone(&dropped_messages);
         tokio::spawn(async move {
-            let mut conn: Option<Box<dyn MidiOutConnection>> = initial;
-            let mut ticker = tokio::time::interval(Duration::from_secs(1));
-            let mut sent_total: u64 = 0;
-            let mut sent_last: u64 = 0;
-            let mut dropped_last: usize = 0;
-
+            let mut initial = initial;
             loop {
-                tokio::select! {
-                    biased;
-
-                    cmd = rx_control.recv() => {
-                        let Some(cmd) = cmd else {
-                            break;
-                        };
-
-                        match cmd {
-                            MidiOutCommand::SwitchConnection {
-                                mut new_conn,
-                                stop_before_drop,
-                                respond_to,
-                            } => {
-                                if stop_before_drop {
-                                    if let Some(ref mut c) = conn {
-                                        let _ = c.send(&[0xFC]);
-                                    }
-                                }
-
-                                conn = new_conn.take();
-                                connected_worker.store(conn.is_some(), Ordering::Relaxed);
-
-                                tracing::trace!(
-                                    target: "midi.out",
-                                    connected = conn.is_some(),
-                                    stop_before_drop,
-                                    "MIDI output connection switched"
-                                );
-
-                                if let Some(tx) = respond_to {
-                                    let _ = tx.send(());
-                                }
-                            }
-                            MidiOutCommand::Stop { respond_to } => {
-                                if let Some(ref mut c) = conn {
-                                    let _ = c.send(&[0xFC]);
-                                }
-
-                                tracing::trace!(target: "midi.out", "MIDI output Stop sent");
-
-                                if let Some(tx) = respond_to {
-                                    let _ = tx.send(());
-                                }
-                            }
-                            #[cfg(test)]
-                            MidiOutCommand::Barrier(tx) => {
-                                while let Ok(msg) = rx_realtime.try_recv() {
-                                    let Some(ref mut c) = conn else {
-                                        dropped_messages_worker.fetch_add(1, Ordering::Relaxed);
-                                        continue;
-                                    };
-
-                                    if let Err(err) = c.send(&msg) {
-                                        tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
-                                        conn = None;
-                                        connected_worker.store(false, Ordering::Relaxed);
-                                    } else {
-                                        sent_total = sent_total.saturating_add(1);
-                                    }
-                                }
-                                while let Ok(msg) = rx_normal.try_recv() {
-                                    let Some(ref mut c) = conn else {
-                                        dropped_messages_worker.fetch_add(1, Ordering::Relaxed);
-                                        continue;
-                                    };
-
-                                    if let Err(err) = c.send(&msg) {
-                                        tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
-                                        conn = None;
-                                        connected_worker.store(false, Ordering::Relaxed);
-                                    } else {
-                                        sent_total = sent_total.saturating_add(1);
-                                    }
-                                }
-                                let _ = tx.send(());
-                            }
-                        }
-                    }
-
-                    msg = rx_realtime.recv() => {
-                        let Some(msg) = msg else {
-                            break;
-                        };
-                        let Some(ref mut c) = conn else {
-                            dropped_messages_worker.fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        };
-
-                        if let Err(err) = c.send(&msg) {
-                            tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
-                            conn = None;
-                            connected_worker.store(false, Ordering::Relaxed);
-                        } else {
-                            sent_total = sent_total.saturating_add(1);
-                        }
-                    }
-
-                    msg = rx_normal.recv() => {
-                        let Some(msg) = msg else {
-                            break;
-                        };
-                        let Some(ref mut c) = conn else {
-                            dropped_messages_worker.fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        };
-
-                        if let Err(err) = c.send(&msg) {
-                            tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
-                            conn = None;
-                            connected_worker.store(false, Ordering::Relaxed);
-                        } else {
-                            sent_total = sent_total.saturating_add(1);
-                        }
-                    }
-
-                    _ = ticker.tick() => {
-                        if tracing::level_enabled!(tracing::Level::TRACE) {
-                            let queue_len = rx_realtime.len() + rx_normal.len();
-                            let dropped_total = dropped_messages_worker.load(Ordering::Relaxed);
-                            let dropped_delta = dropped_total.saturating_sub(dropped_last);
-                            let sent_delta = sent_total.saturating_sub(sent_last);
-
-                            tracing::trace!(
-                                target: "midi.out",
-                                connected = conn.is_some(),
-                                queue_len,
-                                sent_messages = sent_delta,
-                                dropped_messages = dropped_delta,
-                                dropped_messages_total = dropped_total,
-                                "MIDI output worker metrics"
-                            );
-
-                            dropped_last = dropped_total;
-                            sent_last = sent_total;
-                        }
+                let worker = tokio::spawn(run_worker(
+                    Arc::clone(&lanes),
+                    initial.take(),
+                    Arc::clone(&connected_sup),
+                    Arc::clone(&dropped_sup),
+                ));
+                match worker.await {
+                    // All handles are gone, so the queues are closed.
+                    Ok(()) => break,
+                    Err(e) => {
+                        tracing::error!("The MIDI output worker stopped: {e}. Starting it again.");
+                        connected_sup.store(false, Ordering::Relaxed);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 }
             }
@@ -690,5 +737,33 @@ mod tests {
             worst_gap < 160,
             "realtime interleaving gap too large under flood (worst gap {worst_gap})"
         );
+    }
+
+    struct PanicConn;
+
+    impl MidiOutConnection for PanicConn {
+        fn send(&mut self, _msg: &[u8]) -> MidiResult {
+            panic!("driver bug");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_worker_restarts_and_reports_disconnected() {
+        let handle = MidiOutHandle::start(64, Some(Box::new(PanicConn)));
+        assert!(handle.is_connected());
+
+        let _ = handle.send_message(&[0xF8]);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!handle.is_connected());
+
+        // The new worker uses the same queues.
+        let sent = Arc::new(StdMutex::new(Vec::new()));
+        handle
+            .switch_connection(Some(Box::new(RecordingConn::new(Arc::clone(&sent)))), false)
+            .await;
+        assert!(handle.is_connected());
+        handle.send_message(&[0xF8]).unwrap();
+        handle.barrier().await;
+        assert_eq!(*sent.lock().unwrap(), vec![vec![0xF8]]);
     }
 }

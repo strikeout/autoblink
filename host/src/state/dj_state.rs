@@ -62,6 +62,10 @@ impl DjState {
         }
     }
 
+    pub fn source_mode(&self) -> Source {
+        self.source_mode.clone()
+    }
+
     pub fn set_source_mode(&mut self, source_mode: Source) {
         if self.source_mode != source_mode {
             self.source_mode = source_mode;
@@ -291,13 +295,16 @@ impl DjState {
         let prev_master = self.master.device_number;
 
         let m = TimingMeasurement::from_prolink_beat(bp, received_at);
-        if self.prolink_may_observe() {
-            self.timing.observe(m.clone());
-        }
 
         self.refresh_master();
         let master = self.master.device_number;
         let master_changed = prev_master != master;
+
+        // The timing model has one slot. A beat from a deck that is not the
+        // master would move the clock and the MTC off the master's grid.
+        if self.prolink_may_observe() && (master == 0 || master == bp.device_number) {
+            self.timing.observe(m.clone());
+        }
 
         tracing::trace!(
             target: "timing.ingest",
@@ -336,13 +343,16 @@ impl DjState {
         let prev_master = self.master.device_number;
 
         let m = TimingMeasurement::from_prolink_abs_position(ap, received_at);
-        if self.prolink_may_observe() {
-            self.timing.observe(m.clone());
-        }
 
         self.refresh_master();
         let master = self.master.device_number;
         let master_changed = prev_master != master;
+
+        // The timing model has one slot. A beat from a deck that is not the
+        // master would move the clock and the MTC off the master's grid.
+        if self.prolink_may_observe() && (master == 0 || master == ap.device_number) {
+            self.timing.observe(m.clone());
+        }
 
         let should_log = self
             .abspos_ingest_trace
@@ -1022,6 +1032,21 @@ mod tests {
 
         let last = state.timing.last().unwrap();
         assert_eq!(last.device_number, Some(1));
+        assert_eq!(last.bpm, 125.0);
+    }
+
+    #[test]
+    fn a_beat_from_a_non_master_deck_does_not_move_the_timing() {
+        let mut state = DjState::new(30);
+        state.apply_cdj_status(&cdj(1, false, 120.0, 10));
+        state.apply_cdj_status(&cdj(2, true, 125.0, 20));
+        assert_eq!(state.master.device_number, 2);
+
+        state.apply_beat(&beat_from(2, 125.0), Instant::now());
+        state.apply_beat(&beat_from(1, 120.0), Instant::now());
+
+        let last = state.timing.last().unwrap();
+        assert_eq!(last.device_number, Some(2));
         assert_eq!(last.bpm, 125.0);
     }
 

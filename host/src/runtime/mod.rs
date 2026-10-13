@@ -1,5 +1,6 @@
+use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
@@ -32,6 +33,72 @@ pub struct TaskContext {
     pub midi_activity: Arc<Mutex<MidiActivity>>,
 }
 
+/// Runs the task that `factory` makes, and starts it again when it panics or
+/// returns. The wait before a restart starts at 1 s and doubles to 10 s while
+/// the task keeps failing. A task that runs for 60 s resets the wait.
+pub async fn supervise<F, Fut>(name: &'static str, mut factory: F)
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        let started = Instant::now();
+        match tokio::spawn(factory()).await {
+            Ok(()) => tracing::warn!(task = name, "A task stopped. It starts again."),
+            Err(e) if e.is_panic() => {
+                tracing::error!(task = name, "A task panicked. It starts again.")
+            }
+            Err(_) => return,
+        }
+        if started.elapsed() >= Duration::from_secs(60) {
+            backoff = Duration::from_secs(1);
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(10));
+    }
+}
+
+/// Spawns `factory` under [`supervise`] on the current runtime.
+pub fn spawn_supervised<F, Fut>(name: &'static str, factory: F)
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(supervise(name, factory));
+}
+
+/// Starts a single-thread runtime on its own OS thread for the MIDI clock, the
+/// MTC and the MIDI output worker. Network work, the UI and blocking calls on
+/// the main runtime then cannot delay a clock pulse. If the thread cannot
+/// start, the MIDI tasks use the main runtime.
+fn start_midi_runtime() -> tokio::runtime::Handle {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let started = std::thread::Builder::new()
+        .name("midi-rt".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!("Cannot build the MIDI runtime: {e}");
+                    return;
+                }
+            };
+            let _ = tx.send(rt.handle().clone());
+            rt.block_on(std::future::pending::<()>());
+        });
+    match started.ok().and_then(|_| rx.recv().ok()) {
+        Some(handle) => handle,
+        None => {
+            tracing::error!("The MIDI thread did not start. MIDI uses the main runtime.");
+            tokio::runtime::Handle::current()
+        }
+    }
+}
+
 #[cfg(test)]
 fn source_flags(source: crate::config::Source) -> (bool, bool) {
     match source {
@@ -58,22 +125,22 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         track_change_rx,
     } = ctx;
 
-    let beat_rx1 = beat_tx.subscribe();
-    let beat_rx3 = beat_tx.subscribe();
-    let status_rx1 = status_tx.subscribe();
-    let status_rx2 = status_tx.subscribe();
-    let device_rx = device_tx.subscribe();
-
     let midi_activity: Arc<Mutex<MidiActivity>> = Arc::new(Mutex::new(MidiActivity::default()));
     let (cfg_change_tx, cfg_change_rx) = watch::channel(());
-    let (timing_tx, timing_rx) = watch::channel(());
+    let (timing_tx, _timing_rx) = watch::channel(());
 
     let initial_conn = midi_conn.lock().take().map(|c| {
         Box::new(crate::midi::MidirOutConnection(c)) as Box<dyn crate::midi::MidiOutConnection>
     });
 
+    let midi_rt = start_midi_runtime();
+
     // Bounded queue: producers must never block on MIDI output.
-    let midi_out = crate::midi::MidiOutHandle::start(2048, initial_conn);
+    // The output worker runs on the MIDI runtime.
+    let midi_out = {
+        let _enter = midi_rt.enter();
+        crate::midi::MidiOutHandle::start(2048, initial_conn)
+    };
 
     let task_ctx = TaskContext {
         dj_state: Arc::clone(&dj_state),
@@ -92,15 +159,16 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
     {
         let cfg = Arc::clone(&cfg);
         let dj_state = Arc::clone(&dj_state);
-        let initial_source = startup_cfg.source.clone();
-        tokio::spawn(async move {
-            let mut last_source = initial_source;
-            loop {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                let current_source = cfg.read().source.clone();
-                if current_source != last_source {
-                    dj_state.write().set_source_mode(current_source.clone());
-                    last_source = current_source;
+        spawn_supervised("source mode", move || {
+            let cfg = Arc::clone(&cfg);
+            let dj_state = Arc::clone(&dj_state);
+            async move {
+                loop {
+                    let source = cfg.read().source.clone();
+                    if dj_state.read().source_mode() != source {
+                        dj_state.write().set_source_mode(source);
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             }
         });
@@ -113,24 +181,27 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         track_change_rx,
     );
 
-    // ponytail: the Link, applier, logger and MIDI tasks below have no
-    // supervisor. They do no network I/O, and the BPM guards in the clock
-    // remove the only known panic. If one of them can stop, give it a restart
-    // loop like the Pro DJ Link supervisor in prolink.rs.
+    // Each task below restarts after a panic. See `supervise`.
     link::spawn(task_ctx.clone(), startup_cfg.clone());
 
-    applier::spawn(task_ctx.clone(), beat_rx1, status_rx1, track_change_tx);
+    applier::spawn(task_ctx.clone(), track_change_tx);
 
-    logger::spawn(task_ctx.clone(), device_rx);
+    logger::spawn(task_ctx.clone());
 
-    midi::spawn(task_ctx, beat_rx3, status_rx2, cfg_change_rx, timing_rx);
+    midi::spawn(task_ctx, cfg_change_rx, &midi_rt);
 
-    tokio::spawn(midi::reconnect_loop(
-        midi_out.clone(),
-        Arc::clone(&cfg),
-        midi::open_midir_output,
-        Duration::from_secs(2),
-    ));
+    {
+        let midi_out = midi_out.clone();
+        let cfg = Arc::clone(&cfg);
+        spawn_supervised("MIDI reconnect", move || {
+            midi::reconnect_loop(
+                midi_out.clone(),
+                Arc::clone(&cfg),
+                midi::open_midir_output,
+                Duration::from_secs(2),
+            )
+        });
+    }
 
     crate::midi::input::spawn(Arc::clone(&dj_state));
 
@@ -162,8 +233,31 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::source_flags;
+    use super::{source_flags, supervise};
     use crate::config::Source;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn supervise_restarts_a_task_that_panics_or_returns() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let starts2 = Arc::clone(&starts);
+        tokio::spawn(supervise("test", move || {
+            let n = starts2.fetch_add(1, Ordering::SeqCst);
+            async move {
+                match n {
+                    0 => panic!("first run panics"),
+                    1 => {}
+                    _ => std::future::pending::<()>().await,
+                }
+            }
+        }));
+
+        // The waits are 1 s after the panic and 2 s after the return.
+        tokio::time::sleep(Duration::from_millis(3500)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn source_flags_auto_enables_both() {

@@ -100,9 +100,25 @@ pub async fn spawn(ctx: WebCtx, addr: SocketAddr) -> Option<SocketAddr> {
 
     let shared = start(ctx);
     let app = router(shared);
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!(error = %e, "The web UI server stopped");
+    // The first run uses the bound listener. A restart binds the same address again.
+    let mut first = Some(listener);
+    crate::runtime::spawn_supervised("web UI server", move || {
+        let app = app.clone();
+        let listener = first.take();
+        async move {
+            let listener = match listener {
+                Some(l) => l,
+                None => match TcpListener::bind(local).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::error!(%local, error = %e, "Cannot bind the web UI again");
+                        return;
+                    }
+                },
+            };
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!(error = %e, "The web UI server stopped");
+            }
         }
     });
     Some(local)
@@ -155,8 +171,10 @@ fn start(ctx: WebCtx) -> Arc<Shared> {
         ports_tx: watch::channel(empty).0,
         rescan: Notify::new(),
     });
-    tokio::spawn(scan_loop(Arc::clone(&shared)));
-    tokio::spawn(produce_loop(Arc::clone(&shared)));
+    let s = Arc::clone(&shared);
+    crate::runtime::spawn_supervised("web UI scan", move || scan_loop(Arc::clone(&s)));
+    let s = Arc::clone(&shared);
+    crate::runtime::spawn_supervised("web UI status", move || produce_loop(Arc::clone(&s)));
     shared
 }
 

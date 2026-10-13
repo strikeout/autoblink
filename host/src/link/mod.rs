@@ -1,14 +1,13 @@
 //! Ableton Link engine — polls the Link session timeline and pushes beat/tempo/phase
 //! updates into SharedState so the MIDI clock and mapper tasks can consume them.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rusty_link::{AblLink, SessionState};
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 
-use crate::config::LinkConfig;
+use crate::config::{LinkConfig, Source};
 use crate::prolink::beat_listener::BeatEvent;
 use crate::state::SharedState;
 
@@ -40,16 +39,11 @@ pub async fn run(
     link.enable_start_stop_sync(true);
     tracing::info!("AblLink enabled (start/stop sync: true)");
 
-    // Simple peer-count callback — logging only, no state capture needed.
-    let state_peer = Arc::clone(&state);
-    link.set_num_peers_callback(move |n| {
-        state_peer.write().set_link_peer_count(n as usize);
-        if n > 0 {
-            tracing::info!(peers = n, "Ableton Link peer(s) connected");
-        } else {
-            tracing::info!("Ableton Link: no peers (session is empty)");
-        }
-    });
+    // Do not use the rusty_link callback setters. In rusty_link 0.2.3 they give
+    // Link a pointer to a closure on their own stack frame, and Link calls it
+    // after the closure is gone. That crashed the app on a peer join or leave.
+    // The loop polls the peer count instead.
+    let mut last_peers: Option<u64> = None;
 
     tracing::info!(
         quantum = link_cfg.quantum,
@@ -59,7 +53,9 @@ pub async fn run(
 
     let mut session = SessionState::new();
 
-    let poll_interval = Duration::from_micros(link_cfg.poll_interval_us);
+    // A tokio timer has a resolution of 1 ms. A shorter interval only adds wakeups.
+    let poll_interval = Duration::from_micros(link_cfg.poll_interval_us.max(1_000));
+    let mut link_on = true;
     let quantum = link_cfg.quantum;
 
     let phase_update_interval = Duration::from_millis(10);
@@ -70,12 +66,32 @@ pub async fn run(
     let mut last_heartbeat = Instant::now();
 
     loop {
+        // In Pro DJ Link mode, nothing reads the Link timeline. Leave the
+        // session and poll slowly, so that Link takes no CPU and no state lock.
+        let wanted = state.read().source_mode() != Source::ProLink;
+        if wanted != link_on {
+            link.enable(wanted);
+            link_on = wanted;
+            tracing::info!(enabled = wanted, "Ableton Link follows the source setting");
+        }
+        if !link_on {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+
         tokio::time::sleep(poll_interval).await;
 
-        if last_heartbeat.elapsed() >= Duration::from_secs(1) {
+        if last_heartbeat.elapsed() >= Duration::from_millis(100) {
             let n = link.num_peers();
-            let bpm = session.tempo();
-            tracing::trace!(peers = n, bpm = %format!("{:.2}", bpm), "Ableton Link engine loop");
+            if last_peers != Some(n) {
+                state.write().set_link_peer_count(n as usize);
+                if n > 0 {
+                    tracing::info!(peers = n, "Ableton Link peer(s) connected");
+                } else {
+                    tracing::info!("Ableton Link: no peers (session is empty)");
+                }
+                last_peers = Some(n);
+            }
             last_heartbeat = Instant::now();
         }
 
