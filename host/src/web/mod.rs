@@ -18,10 +18,11 @@
 //! - `{type: "rescan"}` lists the MIDI ports and network interfaces again.
 //!
 //! HTTP, for the `waveform` capability:
-//! - `GET /waveform/{deck}` gives `{rekordbox_id, preview, cues}` of the loaded track, or 404.
-//!   `preview` is the PWV4 colour preview, 6 bytes per column. Each cue is `{hot, start, end}`
-//!   in ms; `hot` 0 is a memory cue, and `end` is set for a loop. The status field `wave` of a
-//!   deck names the rekordbox ID that this route gives.
+//! - `GET /waveform/{deck}` gives `{rekordbox_id, preview, cues, phrases}` of the loaded track,
+//!   or 404. `preview` is the PWV4 colour preview, 6 bytes per column. Each cue is
+//!   `{hot, start, end}` in ms; `hot` 0 is a memory cue, and `end` is set for a loop. Each
+//!   phrase is `{kind, start, end, fill}` in ms; `fill` is the start of the fill-in, or null.
+//!   The status field `wave` of a deck names the rekordbox ID that this route gives.
 
 pub mod status;
 
@@ -331,6 +332,15 @@ struct WaveformBody<'a> {
     rekordbox_id: u32,
     preview: &'a [u8],
     cues: Vec<CueBody>,
+    phrases: Vec<PhraseBody>,
+}
+
+#[derive(Serialize)]
+struct PhraseBody {
+    kind: String,
+    start: u32,
+    end: u32,
+    fill: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -363,6 +373,16 @@ async fn waveform_handler(Path(deck): Path<u8>, State(shared): State<Arc<Shared>
                 hot: c.hot_cue,
                 start: c.start_ms,
                 end: c.end_ms,
+            })
+            .collect(),
+        phrases: o
+            .phrases
+            .iter()
+            .map(|p| PhraseBody {
+                kind: p.kind.to_string(),
+                start: p.start_ms,
+                end: p.end_ms,
+                fill: p.fill_ms,
             })
             .collect(),
     };
@@ -808,6 +828,12 @@ mod tests {
                         start_ms: 500,
                         end_ms: Some(900),
                     }],
+                    phrases: vec![crate::state::PhraseSpan {
+                        kind: crate::state::PhraseKind::Intro,
+                        start_ms: 0,
+                        end_ms: 400,
+                        fill_ms: None,
+                    }],
                 },
             );
         }
@@ -818,6 +844,7 @@ mod tests {
         assert_eq!(json["rekordbox_id"], 207);
         assert_eq!(json["preview"][5], 6);
         assert_eq!(json["cues"][0]["end"], 900);
+        assert_eq!(json["phrases"][0]["kind"], "INTRO");
     }
 
     #[tokio::test(flavor = "multi_thread")]

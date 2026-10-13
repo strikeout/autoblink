@@ -60,7 +60,9 @@ details.panel:not([open])>summary h2{margin-bottom:0}
 .s16 span.on{background:var(--accent);box-shadow:0 0 8px var(--accent)}
 /* decks */
 .decks{display:grid;gap:8px;grid-template-columns:repeat(2,minmax(0,1fr))}
-@media(max-width:900px){.decks{grid-template-columns:1fr}}
+.decks.withmix{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
+@media(max-width:900px){.decks,.decks.withmix{grid-template-columns:1fr}}
+.mixmid{display:flex;gap:4px;justify-content:center}
 .deck{background:#0d0d16;border:1px solid var(--border);border-radius:8px;padding:10px}
 .deck.master{border-color:var(--flash)}
 .deck.vmaster{border-color:var(--accent)}
@@ -78,26 +80,21 @@ details.panel:not([open])>summary h2{margin-bottom:0}
 .deck .phrase i{position:absolute;inset:0 auto 0 0;background:#0a5a6a}
 .deck .phrase span{position:relative;font-size:11px;padding-left:6px;line-height:16px}
 .deck canvas.wave{display:block;width:100%;height:56px;margin-top:6px;border-radius:3px;background:#08080d}
+.deck canvas.wave.lane{height:74px}
 .empty{color:var(--dim);padding:8px 0}
-/* mixer: one strip per channel */
-#mixer{margin-top:12px}
-.mstrips{display:grid;gap:8px;grid-template-columns:repeat(4,minmax(0,1fr))}
-@media(max-width:900px){.mstrips{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.ch{display:flex;gap:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;padding:8px 10px}
-.ch .eqs{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0}
-.ch .chn{font-weight:600;font-size:12px}
-.eqrow{display:grid;grid-template-columns:28px 1fr 34px;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
-.eqrow .v{text-align:right;color:var(--text)}
-.eq{position:relative;height:8px;background:#1c1c2c;border-radius:4px}
-.eq::after{content:'';position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--dim)}
-.eq i{position:absolute;top:0;bottom:0;border-radius:4px}
-.eq i.boost{left:50%;background:var(--accent)}
-.eq i.cut{right:50%;background:var(--warn)}
-.eq i.kill{right:50%;background:var(--danger)}
-.eqrow.kill .v{color:var(--danger);font-weight:700}
-.eqrow.unk{opacity:.35}
-.fdr{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px;min-width:34px}
-.fdr .track{position:relative;width:8px;flex:1;min-height:52px;background:#1c1c2c;border-radius:4px;overflow:hidden}
+/* mixer: one channel strip next to its deck, with knobs */
+.ch{display:flex;flex-direction:column;align-items:center;gap:2px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;padding:6px 4px;width:62px}
+.ch .chn{font-weight:600;font-size:11px;margin-bottom:2px}
+.knob{display:flex;flex-direction:column;align-items:center;font-size:10px;color:var(--muted);line-height:1.1}
+.knob svg{width:38px;height:38px;display:block}
+.knob .trk{stroke:#2a2a40;stroke-width:4;fill:none;stroke-linecap:round}
+.knob .val{stroke-width:4;fill:none;stroke-linecap:round}
+.knob .ptr{stroke:var(--text);stroke-width:2;stroke-linecap:round}
+.knob b{color:var(--text);font-weight:500}
+.knob.kill b{color:var(--danger);font-weight:700}
+.knob.unk{opacity:.35}
+.fdr{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;margin-top:4px}
+.fdr .track{position:relative;width:8px;height:56px;background:#1c1c2c;border-radius:4px;overflow:hidden}
 .fdr .track i{position:absolute;left:0;right:0;bottom:0;background:var(--play)}
 .fdr.unk{opacity:.35}
 /* output */
@@ -182,10 +179,6 @@ input.num.text{width:150px;text-align:left}
   <section class="panel wide" data-cap="decks">
     <h2>Deck Information <span id="link" class="kv"></span></h2>
     <div id="decks" class="decks"></div>
-    <div id="mixer" data-cap="mixer" hidden>
-      <div class="section">Mixer (XDJ-AZ)</div>
-      <div id="mstrips" class="mstrips"></div>
-    </div>
   </section>
 
   <details id="p-settings" class="panel wide" data-cap="settings" open>
@@ -267,7 +260,6 @@ function onStatus(s) {
 
   if (s.output) renderOutput(s.output);
   if (s.decks) renderDecks(s);
-  if (s.mixer !== undefined) renderMixer(s.mixer);
 }
 
 /** Shows the phrase of the master deck and its position in the 16-beat phrase. */
@@ -315,7 +307,9 @@ function fmtTime(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60
 
 function renderDecks(s) {
   set('link', s.link_peers > 0 ? 'Ableton Link: ' + s.link_peers + ' peer(s)' + (s.link_active ? ' · active' : '') : (s.link_active ? 'Ableton Link active' : ''));
-  const cards = s.decks.map((d) => {
+  // A device above 16 without a play state is a mixer or a computer, not a deck.
+  const decks = s.decks.filter((d) => d.play_state != null || d.num <= 16);
+  const cards = decks.map((d) => {
     const top = h('div', 'top',
       h('span', d.playing ? 'play' : 'stopped', d.playing ? '▶' : '■'),
       h('span', 'name', '#' + d.num + ' ' + d.name),
@@ -346,47 +340,85 @@ function renderDecks(s) {
       d.phrase_note && h('div', 'line', d.phrase_note));
   });
   if (cards.length === 0) cards.push(h('div', 'empty', s.no_devices ? 'No devices on network' : ''));
-  // The cards are new on each status. The canvas of a deck moves into its new card.
-  $('decks').replaceChildren(...cards);
-  for (const d of s.decks) { const w = waves.get(d.num); if (w && w.canvas.isConnected) drawWave(w, d); }
+  // With a mixer, each row is: left deck, the two channel strips, right deck. Channel n belongs
+  // to player n.
+  const mx = s.mixer && (!caps || caps.has('mixer')) ? s.mixer : null;
+  const items = [];
+  if (mx && decks.length > 0) {
+    for (let i = 0; i < cards.length; i += 2) {
+      const strip = (d) => (d && d.num >= 1 && d.num <= mx.length ? stripFor(d.num - 1, mx[d.num - 1]) : null);
+      items.push(cards[i], h('div', 'mixmid', strip(decks[i]), strip(decks[i + 1])), cards[i + 1] || h('div'));
+    }
+  } else items.push(...cards);
+  $('decks').classList.toggle('withmix', items.length !== cards.length);
+  // The cards are new on each status. The canvas and the strip of a deck move into the new row.
+  $('decks').replaceChildren(...items);
+  for (const d of decks) { const w = waves.get(d.num); if (w && w.canvas.isConnected) drawWave(w, d); }
 }
 
-// The waveform of each deck: {canvas, id, img, cues}. `id` is the rekordbox ID of `img`.
+// The waveform of each deck: {canvas, id, img, cues, phrases}. `id` is the rekordbox ID of `img`.
 const waves = new Map();
-const WAVE_H = 31; // the highest PWV4 column
+// The phrase lane colours, by the first word of the phrase kind.
+const PHRASE_COLOURS = { INTRO: '#3f6ea8', VERSE: '#7357a8', BRIDGE: '#a8853a', CHORUS: '#b5425a', UP: '#38996d', DOWN: '#357fa3', OUTRO: '#3f6ea8' };
 
 function waveFor(d) {
   let w = waves.get(d.num);
-  if (!w) { w = { canvas: h('canvas', 'wave'), id: null, img: null, cues: [] }; waves.set(d.num, w); }
+  if (!w) { w = { canvas: h('canvas', 'wave'), id: null, img: null, cues: [], phrases: [] }; waves.set(d.num, w); }
   if ((d.wave ?? null) !== w.id) {
-    w.id = d.wave ?? null; w.img = null; w.cues = [];
+    w.id = d.wave ?? null; w.img = null; w.cues = []; w.phrases = [];
+    w.canvas.classList.remove('lane');
     if (w.id != null) {
       const want = w.id;
       fetch('/waveform/' + d.num).then((r) => (r.ok ? r.json() : null)).then((j) => {
         if (!j || j.rekordbox_id !== want || w.id !== want) return;
-        w.img = renderPreview(j.preview);
+        w.img = j.preview && j.preview.length ? renderPreview(j.preview) : null;
         w.cues = j.cues || [];
+        w.phrases = j.phrases || [];
+        w.canvas.classList.toggle('lane', w.phrases.length > 0);
       }).catch(() => { /* the next track change tries again */ });
     }
   }
   return w;
 }
 
-/** Draws the PWV4 columns once into an offscreen canvas, with the Beat Link RGB colours. */
+/**
+ * Draws the PWV4 columns once into an offscreen canvas, with the Beat Link RGB colours.
+ * Bytes 3, 4 and 5 of a column are the red, green and blue levels. The back height is the
+ * largest level, the front height is the blue level. The highest column of the track sets the
+ * scale, as in Beat Link `WaveformPreview.getMaxHeight`.
+ */
 function renderPreview(b) {
   const n = Math.floor(b.length / 6);
+  let top = 1;
+  for (let i = 0; i < n; i++) top = Math.max(top, b[i * 6 + 3], b[i * 6 + 4], b[i * 6 + 5]);
   const c = document.createElement('canvas');
-  c.width = Math.max(n, 1); c.height = WAVE_H;
+  c.width = Math.max(n, 1); c.height = top;
   const g = c.getContext('2d');
   for (let i = 0; i < n; i++) {
     const r = b[i * 6 + 3], gr = b[i * 6 + 4], bl = b[i * 6 + 5];
-    const back = Math.min(Math.max(r, gr, bl), WAVE_H), front = Math.min(bl, WAVE_H);
+    const back = Math.max(r, gr, bl), front = bl;
     if (back === 0) continue;
-    const col = (max) => 'rgb(' + [r, gr, bl].map((v) => Math.min(255, Math.round(v * max / back))).join(',') + ')';
-    g.fillStyle = col(191); g.fillRect(i, WAVE_H - back, 1, back);
-    g.fillStyle = col(255); g.fillRect(i, WAVE_H - front, 1, front);
+    const col = (max) => 'rgb(' + [r, gr, bl].map((v) => Math.round(v * max / back)).join(',') + ')';
+    g.fillStyle = col(191); g.fillRect(i, top - back, 1, back);
+    g.fillStyle = col(255); g.fillRect(i, top - front, 1, front);
   }
   return c;
+}
+
+/** Draws the phrase blocks with their names. The phrase under the playhead is brighter. */
+function drawPhrases(g, phrases, x, y, hgt, dpr, playhead) {
+  g.font = (10 * dpr) + 'px -apple-system,sans-serif'; g.textBaseline = 'middle';
+  for (const p of phrases) {
+    const x0 = x(p.start), x1 = x(p.end), wd = Math.max(x1 - x0 - dpr, 1);
+    const now = playhead != null && playhead >= p.start && playhead < p.end;
+    g.globalAlpha = now ? 1 : 0.6;
+    g.fillStyle = PHRASE_COLOURS[p.kind.split(' ')[0]] || '#555';
+    g.fillRect(x0, y + dpr, wd, hgt - dpr);
+    if (p.fill != null) { g.fillStyle = 'rgba(255,255,255,.25)'; g.fillRect(x(p.fill), y + dpr, Math.max(x1 - x(p.fill) - dpr, 1), hgt - dpr); }
+    g.globalAlpha = 1;
+    const label = p.kind.replace('VERSE ', 'V');
+    if (g.measureText(label).width + 6 * dpr < wd) { g.fillStyle = '#fff'; g.fillText(label, x0 + 3 * dpr, y + hgt / 2 + dpr / 2); }
+  }
 }
 
 /** Draws the waveform, the stored cues and loops, the active loop and the playhead. */
@@ -398,23 +430,27 @@ function drawWave(w, d) {
   if (w.canvas.height !== H) w.canvas.height = H;
   const g = w.canvas.getContext('2d');
   g.clearRect(0, 0, W, H);
-  if (w.img) g.drawImage(w.img, 0, 0, W, H);
+  // The phrase lane is the bottom 18 px. The waveform takes the rest.
+  const laneH = w.phrases.length ? Math.round(18 * dpr) : 0;
+  const WH = H - laneH;
+  if (w.img) g.drawImage(w.img, 0, 0, W, WH);
   const len = d.track_len_ms;
   if (!len) return;
   const x = (ms) => Math.round(ms / len * W);
+  if (laneH) drawPhrases(g, w.phrases, x, WH, laneH, dpr, d.playhead_ms);
   for (const c of w.cues) {
-    if (c.end != null) { g.fillStyle = 'rgba(255,170,0,.22)'; g.fillRect(x(c.start), 0, Math.max(x(c.end) - x(c.start), 1), H); }
+    if (c.end != null) { g.fillStyle = 'rgba(255,170,0,.22)'; g.fillRect(x(c.start), 0, Math.max(x(c.end) - x(c.start), 1), WH); }
   }
   if (d.loop_ms) {
     const [a, b] = d.loop_ms;
-    g.fillStyle = 'rgba(255,208,0,.35)'; g.fillRect(x(a), 0, Math.max(x(b) - x(a), 2 * dpr), H);
-    g.fillStyle = '#ffd000'; g.fillRect(x(a), 0, dpr, H); g.fillRect(x(b) - dpr, 0, dpr, H);
+    g.fillStyle = 'rgba(255,208,0,.35)'; g.fillRect(x(a), 0, Math.max(x(b) - x(a), 2 * dpr), WH);
+    g.fillStyle = '#ffd000'; g.fillRect(x(a), 0, dpr, WH); g.fillRect(x(b) - dpr, 0, dpr, WH);
   }
   g.font = (9 * dpr) + 'px sans-serif'; g.textBaseline = 'top';
   for (const c of w.cues) {
     const cx = x(c.start);
     g.fillStyle = c.hot ? '#00ff88' : '#ff4d4d';
-    g.fillRect(cx, 0, dpr, H);
+    g.fillRect(cx, 0, dpr, WH);
     if (c.hot) g.fillText(String.fromCharCode(64 + c.hot), cx + 2 * dpr, 1);
     else { g.beginPath(); g.moveTo(cx - 3 * dpr, 0); g.lineTo(cx + 4 * dpr, 0); g.lineTo(cx + dpr / 2, 5 * dpr); g.fill(); }
   }
@@ -424,43 +460,57 @@ function drawWave(w, d) {
   }
 }
 
-// The mixer strips are built once, then updated in place.
-let strips = [];
-function buildStrip(i) {
-  const eqs = ['hi', 'mid', 'low'].map((band) => {
-    const bar = h('i'), val = h('span', 'v num'), bg = h('div', 'eq', bar);
-    return { band, row: h('div', 'eqrow', h('span', null, band.toUpperCase()), bg, val), bar, val };
-  });
-  const fbar = h('i'), fval = h('span', 'num'), fdr = h('div', 'fdr', h('div', 'track', fbar), fval);
-  const el = h('div', 'ch', h('div', 'eqs', h('div', 'chn', 'CH' + (i + 1)), ...eqs.map((e) => e.row)), fdr);
-  return { el, eqs, fbar, fval, fdr };
+// The channel strips are built once per channel, then moved into each new deck row.
+const strips = [];
+const SVGNS = 'http://www.w3.org/2000/svg';
+const svg = (tag, cls) => { const e = document.createElementNS(SVGNS, tag); if (cls) e.setAttribute('class', cls); return e; };
+
+/** The point at `deg` degrees clockwise from the top, on a circle of radius r around (19, 19). */
+const knobPt = (deg, r) => { const a = deg * Math.PI / 180; return [19 + r * Math.sin(a), 19 - r * Math.cos(a)]; };
+/** An SVG arc from a0 to a1 degrees, clockwise from the top. */
+function arc(a0, a1, r) {
+  const [x0, y0] = knobPt(Math.min(a0, a1), r), [x1, y1] = knobPt(Math.max(a0, a1), r);
+  return 'M' + x0 + ' ' + y0 + 'A' + r + ' ' + r + ' 0 ' + (Math.abs(a1 - a0) > 180 ? 1 : 0) + ' 1 ' + x1 + ' ' + y1;
 }
 
-/** Shows an EQ offset (-64 to +63, centre 0) as a bar from the centre. -64 is a kill. */
-function setEq(e, v) {
-  const unk = v == null, kill = v != null && v <= -64;
-  e.row.classList.toggle('unk', unk);
-  e.row.classList.toggle('kill', kill);
-  e.bar.className = unk || v === 0 ? '' : kill ? 'kill' : v > 0 ? 'boost' : 'cut';
-  e.bar.style.width = unk ? '0' : (v > 0 ? v / 63 : -v / 64) * 50 + '%';
-  e.val.textContent = unk ? '—' : kill ? 'KILL' : (v > 0 ? '+' : '') + v;
+function buildKnob(band) {
+  const s = svg('svg'); s.setAttribute('viewBox', '0 0 38 38');
+  const trk = svg('path', 'trk'); trk.setAttribute('d', arc(-135, 135, 14));
+  const val = svg('path', 'val'), ptr = svg('line', 'ptr');
+  ptr.setAttribute('x1', 19); ptr.setAttribute('y1', 19);
+  s.append(trk, val, ptr);
+  const txt = h('b', null, '—');
+  return { band, el: h('div', 'knob', s, h('span', null, band.toUpperCase() + ' ', txt)), val, ptr, txt };
 }
 
-function renderMixer(mx) {
-  const box = $('mixer');
-  if (!mx || (caps && !caps.has('mixer'))) { box.hidden = true; return; }
-  box.hidden = false;
-  if (strips.length !== mx.length) {
-    strips = mx.map((_, i) => buildStrip(i));
-    $('mstrips').replaceChildren(...strips.map((st) => st.el));
+/**
+ * Shows an EQ offset (-64 to +63, centre 0) as a knob: -135° is full cut, +135° is full boost.
+ * -64 is a kill.
+ */
+function setKnob(k, v) {
+  const unk = v == null, kill = !unk && v <= -64;
+  const deg = unk ? 0 : (v > 0 ? v / 63 : v / 64) * 135;
+  k.el.classList.toggle('unk', unk);
+  k.el.classList.toggle('kill', kill);
+  k.val.setAttribute('d', unk || v === 0 ? '' : arc(0, deg, 14));
+  k.val.style.stroke = kill ? 'var(--danger)' : v > 0 ? 'var(--accent)' : 'var(--warn)';
+  const [px, py] = knobPt(deg, 9);
+  k.ptr.setAttribute('x2', px); k.ptr.setAttribute('y2', py);
+  k.txt.textContent = unk ? '—' : kill ? 'KILL' : (v > 0 ? '+' : '') + v;
+}
+
+function stripFor(i, c) {
+  let st = strips[i];
+  if (!st) {
+    const knobs = ['hi', 'mid', 'low'].map(buildKnob);
+    const fbar = h('i'), fval = h('span', 'num'), fdr = h('div', 'fdr', h('div', 'track', fbar), fval);
+    st = strips[i] = { el: h('div', 'ch', h('div', 'chn', 'CH' + (i + 1)), ...knobs.map((k) => k.el), fdr), knobs, fbar, fval, fdr };
   }
-  mx.forEach((c, i) => {
-    const st = strips[i];
-    for (const e of st.eqs) setEq(e, c[e.band]);
-    st.fdr.classList.toggle('unk', c.fader_pct == null);
-    st.fbar.style.height = (c.fader_pct ?? 0) + '%';
-    st.fval.textContent = c.fader_pct == null ? '—' : c.fader_pct + '%';
-  });
+  for (const k of st.knobs) setKnob(k, c[k.band]);
+  st.fdr.classList.toggle('unk', c.fader_pct == null);
+  st.fbar.style.height = (c.fader_pct ?? 0) + '%';
+  st.fval.textContent = c.fader_pct == null ? '—' : c.fader_pct + '%';
+  return st.el;
 }
 
 // Settings rows are built once per index, then updated in place, so that an input keeps its focus.
