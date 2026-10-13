@@ -1,6 +1,6 @@
 # xdj-midi
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](Cargo.toml)
 
 
 
@@ -18,6 +18,8 @@
 ### Pro DJ Link (Ethernet)
 - Joins the ProLink network as a Virtual CDJ (device #7 by default).
 - Supports CDJ-3000 and XDJ-AZ absolute-position packets and metadata.
+- Gets the waveform preview, the beat grid and the phrases of each loaded rekordbox track from the player.
+- Gets the hot cues, the memory cues and the saved loops of the track.
 - Tracks tempo master with explicit master flags and playing-state fallback.
 
 ### Ableton Link
@@ -45,8 +47,30 @@
 
 ### Web UI
 The app serves a dashboard in the browser at port 11111. The start-up log shows the address for each network interface, for example `http://192.168.1.20:11111`.
-- The dashboard shows the master, the decks, the XDJ-AZ mixer, the MIDI output and the log. The data comes over a WebSocket, about 30 times per second. Each beat comes at the moment it arrives.
+- The data comes over a WebSocket, about 30 times per second. Each beat comes at the moment it arrives.
 - You can change all settings and select the MIDI output port in the dashboard.
+
+The dashboard has these panels:
+
+| Panel | What it shows |
+|---|---|
+| Master | The master BPM, the beat in the bar, the pitch, the phrase of the master deck and its 16-beat position, and the clock state. |
+| Output Status | The MIDI port, the clock pulses, the notes and the CCs, the MTC state, and the OSC targets with the message count, the errors and the last message. |
+| Deck Information | One card for each player, two cards in one row. See below. |
+| Settings | All settings and the MIDI output port. |
+| Logs | The latest log lines. |
+
+Each deck card shows the play state, the BPM, the pitch, the beat, the playhead time and the track. When the track has rekordbox analysis data, the card also shows:
+- The colour waveform of the full track.
+- A white line at the playhead.
+- A yellow band on the active loop. The XDJ-AZ loop position is not confirmed yet.
+- Orange bands on the saved loops and red marks on the memory cues.
+- Green marks with a letter (A to H) on the hot cues.
+- A lane under the waveform with the phrases of the track (for example INTRO, VERSE, CHORUS, OUTRO). The phrase under the playhead is brighter. A light part at the end of a phrase is the fill-in.
+
+When the XDJ-AZ mixer sends data, the mixer channels are between the two decks of each row. Channel n is next to player n. Each channel shows HI, MID and LOW as knobs and the fader as a bar. A knob turns left for a cut and right for a boost. KILL shows a full cut. A grey control did not move since the app started.
+
+The page gets the waveform, the cues and the phrases of a deck from `GET /waveform/{deck}`, one time for each track.
 - When port 11111 is in use, the app uses the next free port, up to 11130.
 - Use `--web-bind 127.0.0.1:11111` or `[web] bind` in `config.toml` to change the address.
 
@@ -162,7 +186,7 @@ The player must send the phrase data over its dbserver. This needs at least one 
 
 ### XDJ-AZ mixer and NO_BASS
 
-The XDJ-AZ sends its EQ knobs and channel faders as MIDI over its USB-C cable. The app reads them from the "XDJ-AZ" MIDI port, and the web UI shows them in the Deck Information panel.
+The XDJ-AZ sends its EQ knobs and channel faders as MIDI over its USB-C cable. The app reads them from the "XDJ-AZ" MIDI port. The web UI shows each channel as knobs and a fader between the decks of the Deck Information panel.
 
 Note `no_bass` (default 39) pulses when the bass is cut on all live channels. It pulses again when the bass comes back. Use the first pulse to start a strobe or another effect, and the second pulse to stop it.
 
@@ -248,6 +272,7 @@ The project is a Rust workspace with shared core logic across desktop and embedd
 - **`host/`**: Desktop app and shared core library.
   - Pro DJ Link packet parsing and shared state management.
   - Web UI (`host/src/web/`) with device discovery, BPM/phase, settings and MIDI port selection.
+  - The waveform, the phrases and the cues of each deck, and the mixer channels.
   - Ableton Link engine with hybrid auto mode.
 - **`esp32/`**: ESP32 firmware.
   - WiFi AP setup.
@@ -265,7 +290,7 @@ Core outputs:
 - **Network auto-discovery** — picks a suitable interface automatically
 - **TOML config** — remappable MIDI channel, note, and CC numbers
 - **CLI overrides** — interface, MIDI port, source, device number, log level
-- **Web UI** — live status, settings, port selection, and logs in the browser, over one WebSocket
+- **Web UI** — live status, waveforms, phrases, cues, the mixer, settings, port selection, and logs in the browser, over one WebSocket
 
 ---
 
@@ -298,12 +323,16 @@ Open `http://localhost:8080` to view the responsive WebSocket dashboard.
 
 ---
 
-## 🛠 Project State (v1.2.9)
+## 🛠 Project State (v1.10.0)
 - v1.1.0: Migrated emulator to WebSockets.
 - v1.1.2: Added proactive Pro DJ Link participation.
 - v1.1.4: Fixed master handoff and play-state latching.
 - v1.1.7: Restored Ableton Link after `rusty_link` fixes.
 - v1.2.9: Tightened MIDI clock/MTC scheduling and pitch-correct beat timing.
+- v1.8.0: Added OSC output.
+- v1.9.0: Added the waveform, the playhead, the loops and the cues to the deck cards.
+  Added the OSC state to the Output Status panel.
+- v1.10.0: Added the phrase lane under the waveform and the mixer knobs between the decks.
 
 ---
 
