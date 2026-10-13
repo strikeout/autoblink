@@ -20,7 +20,8 @@ use tokio::time::timeout;
 
 use super::discovery::DeviceTable;
 use crate::state::{
-    Cue, PhraseEntry, PhraseKind, SharedState, SongStructure, TrackChange, TrackMood, TrackOverview,
+    Cue, PhraseEntry, PhraseKind, PhraseSpan, SharedState, SongStructure, TrackChange, TrackMood,
+    TrackOverview,
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -64,7 +65,9 @@ const MENU_DATA: u8 = 0x08;
 /// An analysis tag code or a file extension is sent as its ASCII bytes in reverse order.
 const TAG_PSSI: u32 = u32::from_le_bytes(*b"PSSI");
 const TAG_PWV4: u32 = u32::from_le_bytes(*b"PWV4");
+const TAG_PQTZ: u32 = u32::from_le_bytes(*b"PQTZ");
 const EXT_EXT: u32 = u32::from_le_bytes(*b"EXT\0");
+const EXT_DAT: u32 = u32::from_le_bytes(*b"DAT\0");
 
 // ── Field type tags ───────────────────────────────────────────────────────────
 
@@ -93,6 +96,8 @@ struct TrackAnalysis {
     song_structure: anyhow::Result<SongStructure>,
     preview: anyhow::Result<Vec<u8>>,
     cues: anyhow::Result<Vec<Cue>>,
+    /// The time in ms of each beat. Index 0 is beat 1.
+    beat_grid: anyhow::Result<Vec<u32>>,
 }
 
 // ── In-flight request dedup ───────────────────────────────────────────────────
@@ -234,6 +239,18 @@ pub async fn run(
                         key = %meta.key,
                         "Track metadata received"
                     );
+                    if let Err(e) = &analysis.beat_grid {
+                        tracing::warn!(
+                            device = change2.device_number,
+                            error = %format!("{e:#}"),
+                            "Beat grid is not available; the phrase times use the track BPM"
+                        );
+                    }
+                    let phrases = analysis
+                        .song_structure
+                        .as_ref()
+                        .map(|ss| phrase_spans(ss, analysis.beat_grid.as_deref().ok(), meta.bpm))
+                        .unwrap_or_default();
                     let mut st = state2.write();
                     st.set_track_metadata(
                         change2.device_number,
@@ -285,16 +302,18 @@ pub async fn run(
                     if let Err(e) = &analysis.cues {
                         warn("Cue list", e);
                     }
-                    if analysis.preview.is_ok() || analysis.cues.is_ok() {
+                    if analysis.preview.is_ok() || analysis.cues.is_ok() || !phrases.is_empty() {
                         let overview = TrackOverview {
                             rekordbox_id: change2.rekordbox_id,
                             preview: analysis.preview.unwrap_or_default(),
                             cues: analysis.cues.unwrap_or_default(),
+                            phrases,
                         };
                         tracing::info!(
                             device = change2.device_number,
                             columns = overview.preview.len() / 6,
                             cues = overview.cues.len(),
+                            phrases = overview.phrases.len(),
                             "Waveform and cues received"
                         );
                         st.set_overview(change2.device_number, overview);
@@ -462,13 +481,16 @@ async fn fetch_metadata(
     }
 
     // Step 8: Request the analysis data. A failure keeps the metadata. The caller shows the reason.
-    let song_structure = fetch_anlz_tag(&mut stream, &mut tx_id, asking, change, TAG_PSSI)
+    let song_structure = fetch_anlz_tag(&mut stream, &mut tx_id, asking, change, TAG_PSSI, EXT_EXT)
         .await
         .and_then(|blob| parse_pssi_tag(&blob));
-    let preview = fetch_anlz_tag(&mut stream, &mut tx_id, asking, change, TAG_PWV4)
+    let preview = fetch_anlz_tag(&mut stream, &mut tx_id, asking, change, TAG_PWV4, EXT_EXT)
         .await
         .and_then(|blob| parse_pwv4(&blob));
     let cues = fetch_cue_list(&mut stream, &mut tx_id, asking, change).await;
+    let beat_grid = fetch_anlz_tag(&mut stream, &mut tx_id, asking, change, TAG_PQTZ, EXT_DAT)
+        .await
+        .and_then(|blob| parse_pqtz(&blob));
 
     Ok((
         metadata,
@@ -476,20 +498,23 @@ async fn fetch_metadata(
             song_structure,
             preview,
             cues,
+            beat_grid,
         },
     ))
 }
 
 // ── Analysis tag fetch (PSSI, PWV4) ───────────────────────────────────────────
 
-/// Fetches one tag of the player's .EXT analysis file with the ANLZ_TAG_REQ (0x2c04) request.
-/// Returns the reply blob, with the dbserver length prefix and the tag header.
+/// Fetches one tag of the player's analysis file (`file_ext` is .EXT or .DAT) with the
+/// ANLZ_TAG_REQ (0x2c04) request. Returns the reply blob, with the dbserver length prefix and
+/// the tag header.
 async fn fetch_anlz_tag(
     stream: &mut TcpStream,
     tx_id: &mut u32,
     asking: u8,
     change: &TrackChange,
     tag_type: u32,
+    file_ext: u32,
 ) -> anyhow::Result<Vec<u8>> {
     *tx_id += 1;
     let tag_name = String::from_utf8_lossy(&tag_type.to_le_bytes()).into_owned();
@@ -499,7 +524,6 @@ async fn fetch_anlz_tag(
         | (0x01u32 << 16)
         | ((change.track_slot as u32) << 8)
         | (change.track_type as u32);
-    let file_ext = EXT_EXT;
 
     send_message(
         stream,
@@ -554,17 +578,7 @@ async fn fetch_anlz_tag(
 /// [len_entries u32][unknown u32][entries]`. The entries start `len_header` bytes after `PWV4`.
 /// Beat Link `WaveformPreview` skips the same 28 bytes.
 fn parse_pwv4(data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let start = if data.get(4..8) == Some(&b"PWV4"[..]) {
-        4
-    } else if data.get(0..4) == Some(&b"PWV4"[..]) {
-        0
-    } else {
-        let head: String = data.iter().take(16).map(|b| format!("{b:02x}")).collect();
-        anyhow::bail!(
-            "PWV4 blob {} bytes has no PWV4 code, head {head}",
-            data.len()
-        );
-    };
+    let start = tag_start(data, b"PWV4")?;
     let u32_at = |off: usize| {
         data.get(start + off..start + off + 4)
             .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
@@ -583,6 +597,78 @@ fn parse_pwv4(data: &[u8]) -> anyhow::Result<Vec<u8>> {
                 data.len()
             )
         })
+}
+
+/// Returns the start of a tag in a dbserver blob: byte 4 after the length prefix, or byte 0.
+fn tag_start(data: &[u8], fourcc: &[u8; 4]) -> anyhow::Result<usize> {
+    if data.get(4..8) == Some(&fourcc[..]) {
+        Ok(4)
+    } else if data.get(0..4) == Some(&fourcc[..]) {
+        Ok(0)
+    } else {
+        let name = String::from_utf8_lossy(fourcc);
+        let head: String = data.iter().take(16).map(|b| format!("{b:02x}")).collect();
+        anyhow::bail!(
+            "{name} blob {} bytes has no {name} code, head {head}",
+            data.len()
+        );
+    }
+}
+
+/// Returns the time in ms of each beat of a PQTZ (beat grid) tag blob. Index 0 is beat 1.
+///
+/// The tag is `[PQTZ][len_header u32][len_tag u32][unknown u32][unknown u32][len_beats u32]`.
+/// The entries start `len_header` bytes after `PQTZ`. Each entry is 8 bytes:
+/// `[beat_number u16][tempo u16][time u32]`, with the time in ms.
+fn parse_pqtz(data: &[u8]) -> anyhow::Result<Vec<u32>> {
+    let start = tag_start(data, b"PQTZ")?;
+    let u32_at = |off: usize| {
+        data.get(off..off + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+            .ok_or_else(|| anyhow::anyhow!("PQTZ blob {} bytes is too short", data.len()))
+    };
+    let len_header = u32_at(start + 4)? as usize;
+    let beats = u32_at(start + 20)? as usize;
+    let body = start + len_header;
+    let grid = (0..beats)
+        .map(|i| u32_at(body + i * 8 + 4))
+        .collect::<anyhow::Result<Vec<u32>>>()?;
+    if grid.is_empty() {
+        anyhow::bail!("PQTZ blob has no beats");
+    }
+    Ok(grid)
+}
+
+/// Puts the phrases of a song structure on the time axis.
+///
+/// A phrase beat N is at `grid[N - 1]`. Without a grid, or past its end, the beat time comes
+/// from the track BPM, with beat 1 at 0 ms. Returns no phrases when no beat time is known.
+fn phrase_spans(ss: &SongStructure, grid: Option<&[u32]>, bpm: Option<f64>) -> Vec<PhraseSpan> {
+    let beat_ms = |beat: u16| -> Option<u32> {
+        let i = usize::from(beat.max(1) - 1);
+        grid.and_then(|g| g.get(i).copied()).or_else(|| {
+            bpm.filter(|b| *b > 0.0)
+                .map(|b| (i as f64 * 60_000.0 / b).round() as u32)
+        })
+    };
+    let ends = ss
+        .phrases
+        .iter()
+        .skip(1)
+        .map(|p| p.beat)
+        .chain(std::iter::once(ss.end_beat));
+    ss.phrases
+        .iter()
+        .zip(ends)
+        .filter_map(|(p, end)| {
+            Some(PhraseSpan {
+                kind: p.kind,
+                start_ms: beat_ms(p.beat)?,
+                end_ms: beat_ms(end)?,
+                fill_ms: p.has_fill.then(|| beat_ms(p.fill_beat)).flatten(),
+            })
+        })
+        .collect()
 }
 
 // ── Extended cue list fetch ───────────────────────────────────────────────────
@@ -1499,6 +1585,68 @@ mod tests {
         let mut meta = TrackMetadata::default();
         parse_menu_item(4, &msg, &mut meta);
         assert_eq!(meta.duration_s, Some(312));
+    }
+
+    /// Builds a PQTZ blob as the dbserver sends it, with one entry per beat time.
+    fn pqtz_blob(times: &[u32]) -> Vec<u8> {
+        let mut b = ((24 + times.len() * 8) as u32).to_be_bytes().to_vec();
+        b.extend_from_slice(b"PQTZ");
+        b.extend_from_slice(&0x18u32.to_be_bytes());
+        b.extend_from_slice(&((24 + times.len() * 8) as u32).to_be_bytes());
+        b.extend_from_slice(&0u32.to_be_bytes());
+        b.extend_from_slice(&0x0008_0000u32.to_be_bytes());
+        b.extend_from_slice(&(times.len() as u32).to_be_bytes());
+        for (i, t) in times.iter().enumerate() {
+            b.extend_from_slice(&((i % 4 + 1) as u16).to_be_bytes());
+            b.extend_from_slice(&12800u16.to_be_bytes());
+            b.extend_from_slice(&t.to_be_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn pqtz_gives_the_time_of_each_beat() {
+        let blob = pqtz_blob(&[120, 589, 1058]);
+        assert_eq!(parse_pqtz(&blob).unwrap(), vec![120, 589, 1058]);
+        assert!(parse_pqtz(&blob[..blob.len() - 1]).is_err());
+        assert!(parse_pqtz(&pqtz_blob(&[])).is_err());
+    }
+
+    #[test]
+    fn phrases_use_the_grid_and_fall_back_to_the_bpm() {
+        let entry = |index, beat, kind, fill_beat| PhraseEntry {
+            index,
+            beat,
+            kind,
+            has_fill: fill_beat > 0,
+            fill_beat,
+        };
+        let mut ss = SongStructure {
+            mood: TrackMood::Mid,
+            end_beat: 5,
+            phrases: vec![
+                entry(1, 1, PhraseKind::Intro, 0),
+                entry(2, 3, PhraseKind::Chorus, 4),
+            ],
+        };
+        let grid = [100, 600, 1100, 1600, 2100];
+        let spans = phrase_spans(&ss, Some(&grid), Some(120.0));
+        let times: Vec<_> = spans
+            .iter()
+            .map(|p| (p.kind, p.start_ms, p.end_ms, p.fill_ms))
+            .collect();
+        assert_eq!(
+            times,
+            vec![
+                (PhraseKind::Intro, 100, 1100, None),
+                (PhraseKind::Chorus, 1100, 2100, Some(1600)),
+            ]
+        );
+        // 120 BPM is 500 ms for each beat, with beat 1 at 0 ms.
+        ss.end_beat = 9;
+        let spans = phrase_spans(&ss, None, Some(120.0));
+        assert_eq!((spans[1].start_ms, spans[1].end_ms), (1000, 4000));
+        assert!(phrase_spans(&ss, None, None).is_empty());
     }
 
     #[test]

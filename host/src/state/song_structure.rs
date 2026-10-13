@@ -103,11 +103,22 @@ pub struct Cue {
     pub end_ms: Option<u32>,
 }
 
-/// The waveform preview and the stored cues of one track.
+/// One phrase of a track on the time axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhraseSpan {
+    pub kind: PhraseKind,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    /// The start of the fill-in, when the phrase has one.
+    pub fill_ms: Option<u32>,
+}
+
+/// The waveform preview, the stored cues and the phrases of one track.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrackOverview {
     pub rekordbox_id: u32,
     /// The PWV4 colour preview: 6 bytes per column, usually 1200 columns.
     pub preview: Vec<u8>,
     pub cues: Vec<Cue>,
+    pub phrases: Vec<PhraseSpan>,
 }

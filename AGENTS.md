@@ -83,7 +83,7 @@ Plus `pub fn interface_priority()` for network interface ranking.
 - `midi/mapper.rs` — beat → MIDI CC/Note mapping
 - `midi/input.rs` — XDJ-AZ USB MIDI input. It stores the EQ and channel fader values in `DjState.mixer`.
 - `web/mod.rs` — axum server, WebSocket protocol v1 (documented in the module header), Origin check, port fallback
-- `prolink/metadata.rs` — the dbserver client. One TCP session gets the metadata, the PSSI phrases, the PWV4 waveform preview and the extended cue list (`0x2b04`). The web route `GET /waveform/{deck}` serves the waveform and the cues.
+- `prolink/metadata.rs` — the dbserver client. One TCP session gets the metadata, the PSSI phrases, the PWV4 waveform preview, the extended cue list (`0x2b04`) and the PQTZ beat grid. The beat grid puts the phrases on the time axis. The web route `GET /waveform/{deck}` serves the waveform and the cues.
 - `web/status.rs` — status snapshot; takes each lock alone, never two at once
 - `settings.rs` — the settings table and the validated changes
 - `webui/index.html` (repo root) — the one page that the host, the emulator and the ESP32 serve
