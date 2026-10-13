@@ -8,7 +8,7 @@ use crate::config::{CcConfig, NoteConfig, SharedConfig};
 use crate::midi::MidiTransport;
 use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
-use crate::state::SharedState;
+use crate::state::{BeatSource, SharedState};
 use crate::tui::state::MidiActivity;
 
 // ── MIDI byte helpers ─────────────────────────────────────────────────────────
@@ -102,6 +102,16 @@ mod tests {
     }
 
     #[test]
+    fn beat_notes_follow_the_active_master_source() {
+        assert!(prolink_beat_allowed(Some(BeatSource::ProLink), 1, 1));
+        assert!(!prolink_beat_allowed(Some(BeatSource::ProLink), 1, 2));
+        assert!(!prolink_beat_allowed(Some(BeatSource::AbletonLink), 0, 1));
+        assert!(link_beat_allowed(Some(BeatSource::AbletonLink)));
+        assert!(!link_beat_allowed(Some(BeatSource::ProLink)));
+        assert!(!link_beat_allowed(None));
+    }
+
+    #[test]
     fn test_beat_velocity() {
         assert_eq!(beat_velocity(1), 127);
         assert_eq!(beat_velocity(2), 80);
@@ -149,6 +159,7 @@ mod tests {
         let midi_transport: Arc<dyn MidiTransport> = midi.clone();
         let cfg = new_shared(Config::default());
         let state = new_shared_state(30);
+        state.write().master.source = Some(BeatSource::AbletonLink);
         let (_status_tx, status_rx) = broadcast::channel(8);
         let (beat_tx, beat_rx) = broadcast::channel(8);
         let activity = Arc::new(Mutex::new(MidiActivity::default()));
@@ -266,6 +277,22 @@ fn beat_velocity(beat_in_bar: u8) -> u8 {
     }
 }
 
+/// Return true if a ProLink beat from `device` may fire beat notes.
+/// The active master source must not be Ableton Link.
+fn prolink_beat_allowed(
+    master_source: Option<BeatSource>,
+    master_num: u8,
+    device: u8,
+) -> bool {
+    master_source != Some(BeatSource::AbletonLink) && (device == master_num || master_num == 0)
+}
+
+/// Return true if a Link beat may fire beat notes.
+/// Link must be the active master source.
+fn link_beat_allowed(master_source: Option<BeatSource>) -> bool {
+    master_source == Some(BeatSource::AbletonLink)
+}
+
 /// Fire beat + downbeat notes through the MIDI connection.
 fn fire_beat_notes(
     midi: &dyn MidiTransport,
@@ -319,9 +346,12 @@ async fn run_with_midi(
             evt = beat_rx.recv() => {
                 match evt {
                     Ok(BeatEvent::Beat { packet: bp, .. }) => {
-                        // Only trigger notes / CCs for the master deck.
-                        let master_num = state.read().master.device_number;
-                        if bp.device_number != master_num && master_num != 0 {
+                        // Only trigger notes / CCs for the master deck of the active source.
+                        let (master_num, master_source) = {
+                            let st = state.read();
+                            (st.master.device_number, st.master.source)
+                        };
+                        if !prolink_beat_allowed(master_source, master_num, bp.device_number) {
                             continue;
                         }
 
@@ -338,6 +368,9 @@ async fn run_with_midi(
                         // Phase updates handled via shared state CCs below.
                     }
                     Ok(BeatEvent::LinkBeat { bpm, beat_in_bar, .. }) => {
+                        if !link_beat_allowed(state.read().master.source) {
+                            continue;
+                        }
                         let note_cfg = cfg.read().midi.notes.clone();
                         fire_beat_notes(midi.as_ref(), &note_cfg, beat_in_bar, &activity);
                         tracing::debug!(

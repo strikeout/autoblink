@@ -3,7 +3,12 @@ use std::sync::Arc;
 use super::TaskContext;
 use crate::prolink::discovery::DeviceTable;
 
-pub fn spawn(ctx: &TaskContext, startup_cfg: crate::config::Config, device_table: DeviceTable) {
+pub fn spawn(
+    ctx: &TaskContext,
+    startup_cfg: crate::config::Config,
+    device_table: DeviceTable,
+    track_change_rx: tokio::sync::mpsc::Receiver<crate::state::TrackChange>,
+) {
     let TaskContext {
         dj_state: _,
         cfg: _,
@@ -14,7 +19,6 @@ pub fn spawn(ctx: &TaskContext, startup_cfg: crate::config::Config, device_table
         vcdjready_tx,
         midi_out: _,
         midi_activity: _,
-        track_change_tx: _,
     } = ctx;
 
     let bind_ip = startup_cfg.bind_ip;
@@ -23,8 +27,11 @@ pub fn spawn(ctx: &TaskContext, startup_cfg: crate::config::Config, device_table
 
     let disc_table = Arc::clone(&device_table);
     let disc_tx = device_tx.clone();
+    let disc_name = startup_cfg.device_name.clone();
     tokio::spawn(async move {
-        if let Err(e) = crate::prolink::discovery::run(bind_ip, disc_table, disc_tx).await {
+        if let Err(e) =
+            crate::prolink::discovery::run(bind_ip, disc_name, disc_table, disc_tx).await
+        {
             tracing::error!("Discovery task error: {e}");
         }
     });
@@ -57,9 +64,9 @@ pub fn spawn(ctx: &TaskContext, startup_cfg: crate::config::Config, device_table
     });
 
     let status_tx2 = status_tx.clone();
-    let vcdjready_tx2 = vcdjready_tx.clone();
+    // Subscribe before the virtual CDJ can announce, so the event is not lost.
+    let mut vcdjready_rx = vcdjready_tx.subscribe();
     tokio::spawn(async move {
-        let mut vcdjready_rx = vcdjready_tx2.subscribe();
         let ready = match vcdjready_rx.recv().await {
             Ok(ready) => ready,
             Err(e) => {
@@ -77,22 +84,17 @@ pub fn spawn(ctx: &TaskContext, startup_cfg: crate::config::Config, device_table
 
     let meta_table = Arc::clone(&device_table);
     let meta_state = Arc::clone(&ctx.dj_state);
-    let meta_dev_num = startup_cfg.device_number;
-    let (_meta_tx, meta_rx) = tokio::sync::mpsc::channel::<crate::state::TrackChange>(64);
+    let mut meta_ready_rx = vcdjready_tx.subscribe();
     tokio::spawn(async move {
-        crate::prolink::metadata::run(meta_dev_num, meta_table, meta_state, meta_rx).await;
-    });
-    let track_tx = ctx.track_change_tx.clone();
-    tokio::spawn(async move {
-        track_tx
-            .send(crate::state::TrackChange {
-                device_number: 0,
-                track_source_player: 0,
-                track_slot: 0,
-                track_type: 0,
-                rekordbox_id: 0,
-            })
-            .await
-            .ok();
+        // The dbserver setup needs the claimed device number, not the configured one.
+        let ready = match meta_ready_rx.recv().await {
+            Ok(ready) => ready,
+            Err(e) => {
+                tracing::error!("Metadata task could not receive virtual CDJ ready event: {e}");
+                return;
+            }
+        };
+        crate::prolink::metadata::run(ready.device_number, meta_table, meta_state, track_change_rx)
+            .await;
     });
 }

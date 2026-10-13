@@ -101,40 +101,45 @@ pub async fn run(
     tracing::info!(device = device_number, "Virtual CDJ: second-stage claim");
     let mut claimed = device_number;
     let mut buf = [0u8; 256];
-    for n in 1..=(CLAIM_ROUNDS as u8) {
-        let pkt = build_claim2(&name, &ip, &mac, claimed, n);
-        tracing::trace!(
-            len = pkt.len(),
-            iteration = n,
-            hex = %super::hex_preview(&pkt, 48),
-            "Sending claim2 packet"
-        );
-        sock.send_to(&pkt, bcast_addr6).await?;
-        // Listen briefly for conflict packets.
-        let deadline = tokio::time::Instant::now() + CLAIM_INTERVAL;
-        loop {
-            let sleep = tokio::time::sleep_until(deadline);
-            tokio::select! {
-                _ = sleep => break,
-                result = sock.recv_from(&mut buf) => {
-                    if let Ok((len, _)) = result {
-                        let data = &buf[..len];
-                        if has_magic(data) && data[0x0a] == PKT_CONFLICT && data[0x24] == claimed {
-                            // Our number is taken; increment and restart stage 3.
-                            claimed += 1;
-                            if claimed > 15 {
-                                anyhow::bail!("No free device numbers available");
+    'stage3: loop {
+        for n in 1..=(CLAIM_ROUNDS as u8) {
+            let pkt = build_claim2(&name, &ip, &mac, claimed, n);
+            tracing::trace!(
+                len = pkt.len(),
+                iteration = n,
+                hex = %super::hex_preview(&pkt, 48),
+                "Sending claim2 packet"
+            );
+            sock.send_to(&pkt, bcast_addr6).await?;
+            // Listen briefly for conflict packets.
+            let deadline = tokio::time::Instant::now() + CLAIM_INTERVAL;
+            loop {
+                let sleep = tokio::time::sleep_until(deadline);
+                tokio::select! {
+                    _ = sleep => break,
+                    result = sock.recv_from(&mut buf) => {
+                        if let Ok((len, _)) = result {
+                            let data = &buf[..len];
+                            if data.len() > 0x24
+                                && has_magic(data)
+                                && data[0x0a] == PKT_CONFLICT
+                                && data[0x24] == claimed
+                            {
+                                // Our number is taken. Increment it and restart stage 3.
+                                let old = claimed;
+                                claimed += 1;
+                                if claimed > 15 {
+                                    anyhow::bail!("No free device numbers available");
+                                }
+                                tracing::warn!(old, new = claimed, "Device number conflict, retrying");
+                                continue 'stage3;
                             }
-                            tracing::warn!(
-                                old = claimed - 1,
-                                new = claimed,
-                                "Device number conflict, retrying"
-                            );
                         }
                     }
                 }
             }
         }
+        break;
     }
 
     // ── Stage 4: Final claim ──────────────────────────────────────────────────

@@ -426,8 +426,9 @@ impl MtcScheduler {
             PlayingLikeState::Active => {}
         }
 
-        // If we just transitioned into playing-like, emit a full-frame and start QFs.
-        if playing_like && !self.last_playing_like {
+        // Emit a full-frame and start QFs on the transition into playing-like.
+        // Also restart after a pause from stale timing or a frame-rate change.
+        if playing_like && (!self.last_playing_like || !self.running) {
             let Some((pos_ms, _auth)) = self.derive_position_ms(
                 now,
                 master_source,
@@ -1197,6 +1198,86 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    fn link_wake(
+        sched: &mut MtcScheduler,
+        timing: &TimingModel,
+        now: Instant,
+        frame_rate: MtcFrameRate,
+    ) -> Vec<MtcOut> {
+        sched.on_wake(
+            now,
+            true,
+            frame_rate,
+            Some(BeatSource::AbletonLink),
+            0,
+            120.0,
+            0.0,
+            true,
+            Some(now),
+            timing.snapshot_at(now),
+        )
+    }
+
+    fn count_full_frames(out: &[MtcOut]) -> usize {
+        out.iter()
+            .filter(|m| matches!(m, MtcOut::FullFrame(_)))
+            .count()
+    }
+
+    #[test]
+    fn scheduler_restarts_after_stale_pause_while_still_playing_like() {
+        let base = Instant::now();
+        let frame_rate = MtcFrameRate::Fps25;
+        let mut timing = TimingModel::default();
+        timing.observe(TimingMeasurement::from_link(120.0, 1, 0.0, 0.0, true, base));
+        let mut sched = MtcScheduler::new(true, frame_rate);
+
+        assert_eq!(
+            count_full_frames(&link_wake(&mut sched, &timing, base, frame_rate)),
+            1
+        );
+        for _ in 0..7 {
+            let now = sched.next_wake().unwrap();
+            link_wake(&mut sched, &timing, now, frame_rate);
+        }
+
+        // Stale timing at the cycle boundary pauses output. The transport stays playing-like.
+        let stale_now = base + Duration::from_secs(2);
+        assert!(link_wake(&mut sched, &timing, stale_now, frame_rate).is_empty());
+        assert_eq!(sched.next_wake(), None);
+
+        // Fresh timing returns without a playing-like edge. Output must restart.
+        let resume_now = stale_now + Duration::from_millis(25);
+        timing.observe(TimingMeasurement::from_link(
+            120.0, 1, 0.0, 0.0, true, resume_now,
+        ));
+        let out = link_wake(&mut sched, &timing, resume_now, frame_rate);
+        assert_eq!(count_full_frames(&out), 1);
+        assert!(out.iter().any(|m| matches!(m, MtcOut::QuarterFrame(_))));
+        assert!(sched.next_wake().is_some());
+    }
+
+    #[test]
+    fn scheduler_restarts_after_frame_rate_change() {
+        let base = Instant::now();
+        let mut timing = TimingModel::default();
+        timing.observe(TimingMeasurement::from_link(120.0, 1, 0.0, 0.0, true, base));
+        let mut sched = MtcScheduler::new(true, MtcFrameRate::Fps25);
+
+        link_wake(&mut sched, &timing, base, MtcFrameRate::Fps25);
+        let now = sched.next_wake().unwrap();
+
+        let out = link_wake(&mut sched, &timing, now, MtcFrameRate::Fps30);
+        let full_frame = out.iter().find_map(|m| match m {
+            MtcOut::FullFrame(bytes) => Some(*bytes),
+            MtcOut::QuarterFrame(_) => None,
+        });
+        let full_frame = full_frame.expect("frame-rate change must emit a full-frame");
+        assert_eq!(full_frame[5] >> 5, MtcFrameRate::Fps30.rate_code());
+        assert!(out.iter().any(|m| matches!(m, MtcOut::QuarterFrame(_))));
+        assert!(sched.next_wake().is_some());
     }
 
     #[test]

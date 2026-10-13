@@ -90,8 +90,9 @@ fn draw_header(
         return;
     }
 
-    let st = dj_state.read();
+    // Take the config lock before the state lock, in the same order as the clock task.
     let cfg_r = cfg.read();
+    let st = dj_state.read();
     let master = &st.master;
     let version = env!("CARGO_PKG_VERSION");
 
@@ -198,12 +199,12 @@ fn draw_header(
             };
             let a = tui.midi_activity.lock();
 
-            let in16 = if master.phrase_16_beat > 0 {
-                master.phrase_16_beat
+            // DjState stores 0..=15. Show 1..=16, and 0 when no master is known.
+            let in16 = if master.bpm > 0.0 {
+                master.phrase_16_beat.min(15) + 1
             } else {
                 0
             };
-            let in16 = if in16 == 0 { 0 } else { in16.min(16) };
 
             let out16 = a.clock_phrase_beat.min(16);
             let stable = cfg_r.midi.phrase_lock_stable_beats;
@@ -299,8 +300,8 @@ fn draw_deck_panel(
         .border_style(Style::default().fg(CLR_DIM));
 
     let devices = device_table.lock();
-    let st = dj_state.read();
     let our_device_number = cfg.read().device_number;
+    let st = dj_state.read();
 
     let mut lines: Vec<Line> = Vec::new();
     let mut phrase_gauges: Vec<(usize, f64, String)> = Vec::new();
@@ -460,8 +461,10 @@ fn draw_deck_panel(
                     let track_info = parts.join(" - ");
 
                     let max_width = area.width.saturating_sub(8) as usize;
-                    let display = if track_info.len() > max_width && max_width > 3 {
-                        format!("{}…", &track_info[..max_width - 1])
+                    // Count chars, not bytes: a byte slice can split a UTF-8 character and panic.
+                    let display = if track_info.chars().count() > max_width && max_width > 3 {
+                        let head: String = track_info.chars().take(max_width - 1).collect();
+                        format!("{head}…")
                     } else {
                         track_info
                     };

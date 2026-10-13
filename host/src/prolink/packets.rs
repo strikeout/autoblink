@@ -7,7 +7,8 @@ use super::{
     PKT_BEAT, PKT_CDJ_STATUS, PKT_KEEPALIVE, PKT_MIXER_STATUS,
 };
 
-pub(crate) const CDJ_STATUS_PACKET_LEN: usize = 0xd4;
+/// The parser reads up to offset 0xa6.
+const CDJ_STATUS_MIN_LEN: usize = 0xa7;
 const CDJ_STATUS_STATE_OFFSET: usize = 0x88;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -166,13 +167,13 @@ pub struct AbsPositionPacket {
 }
 
 pub fn parse_abs_position(data: &[u8]) -> Option<AbsPositionPacket> {
-    if data.len() < 0x40 {
+    if data.len() < 0x3c {
         return None;
     }
     if !has_magic(data) || data[0x0a] != PKT_ABS_POSITION {
         return None;
     }
-    let bpm_x10 = u32be(data, 0x3a);
+    let bpm_x10 = u32be(data, 0x38);
     let pitch_raw = i32be(data, 0x2c);
     Some(AbsPositionPacket {
         device_number: data[0x21],
@@ -284,8 +285,9 @@ pub struct CdjStatus {
 }
 
 pub fn parse_cdj_status(data: &[u8]) -> Option<CdjStatus> {
-    // Minimum size for nexus-era packet (0xD4 bytes)
-    if data.len() < CDJ_STATUS_PACKET_LEN {
+    // The parser reads up to offset 0xa6. Older players send packets shorter than
+    // the nexus-era 0xd4 bytes, so the guard checks only the bytes that it reads.
+    if data.len() < CDJ_STATUS_MIN_LEN {
         return None;
     }
     if !has_magic(data) || data[0x0a] != PKT_CDJ_STATUS {
@@ -454,8 +456,23 @@ mod tests {
 
     #[test]
     fn parse_cdj_status_rejects_truncated_packet() {
-        let packet = magic_pkt(PKT_CDJ_STATUS, CDJ_STATUS_PACKET_LEN - 1);
+        let packet = magic_pkt(PKT_CDJ_STATUS, CDJ_STATUS_MIN_LEN - 1);
 
         assert!(parse_cdj_status(&packet).is_none());
+    }
+
+    #[test]
+    fn parse_abs_position_reads_cdj3000_length_packet() {
+        // A CDJ-3000 sends 0x3c bytes, with BPM x10 at offset 0x38 (Beat Link PrecisePosition).
+        let mut packet = magic_pkt(PKT_ABS_POSITION, 0x3c);
+        packet[0x21] = 2;
+        packet[0x28..0x2c].copy_from_slice(&5000u32.to_be_bytes());
+        packet[0x38..0x3c].copy_from_slice(&1245u32.to_be_bytes());
+
+        let p = parse_abs_position(&packet).expect("0x3c packet parses");
+        assert_eq!(p.device_number, 2);
+        assert_eq!(p.playhead_ms, 5000);
+        assert!((p.effective_bpm - 124.5).abs() < 1e-9);
+        assert!(parse_abs_position(&packet[..0x3b]).is_none());
     }
 }

@@ -66,6 +66,7 @@ const EXPIRY: Duration = Duration::from_secs(5);
 /// multiple consumers.
 pub async fn run(
     bind_addr: Ipv4Addr,
+    own_name: String,
     table: DeviceTable,
     tx: broadcast::Sender<DeviceEvent>,
 ) -> anyhow::Result<()> {
@@ -91,7 +92,7 @@ pub async fn run(
         tokio::select! {
             result = udp.recv_from(&mut buf) => {
                 match result {
-                    Ok((len, src)) => handle_packet(&buf[..len], src, &table, &tx),
+                    Ok((len, src)) => handle_packet(&buf[..len], src, bind_addr, &own_name, &table, &tx),
                     Err(e) => tracing::warn!("Discovery recv error: {e}"),
                 }
             }
@@ -105,6 +106,8 @@ pub async fn run(
 fn handle_packet(
     data: &[u8],
     src: std::net::SocketAddr,
+    own_ip: Ipv4Addr,
+    own_name: &str,
     table: &DeviceTable,
     tx: &broadcast::Sender<DeviceEvent>,
 ) {
@@ -122,6 +125,11 @@ fn handle_packet(
     }
 
     if let Some(ka) = super::packets::parse_keepalive(data) {
+        // The kernel loops our own broadcast keepalives back. Our virtual CDJ is not a peer.
+        // Compare the name too, because rekordbox can run on the same host.
+        if ka.ip == own_ip.octets() && ka.name == own_name {
+            return;
+        }
         let dev = Device::from_keepalive(ka);
         let num = dev.device_number;
         let mut t = table.lock();

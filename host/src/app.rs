@@ -105,6 +105,7 @@ pub struct AppContext {
     pub vcdjready_tx: broadcast::Sender<crate::prolink::virtual_cdj::VirtualCdjReady>,
     // track change
     pub track_change_tx: mpsc::Sender<TrackChange>,
+    pub track_change_rx: mpsc::Receiver<TrackChange>,
 }
 
 /// Initialize logging, load config, detect interface, open MIDI, build state.
@@ -141,6 +142,14 @@ pub fn init() -> anyhow::Result<AppContext> {
             .with_timer(tracing_subscriber::fmt::time::Uptime::default())
             .init();
     }
+
+    // A panic in a spawned task does not stop the process. Log it, so that the
+    // TUI log panel and the headless log show it.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        prev_hook(info);
+    }));
 
     // ── MIDI port list shortcut ──────────────────────────────────────────────
     if cli.list_midi {
@@ -210,6 +219,9 @@ pub fn init() -> anyhow::Result<AppContext> {
         };
     }
 
+    // The CLI overrides bypass the check in config::load, so check again.
+    config::validate(&initial_cfg)?;
+
     let cfg = config::new_shared(initial_cfg.clone());
     let mut startup_cfg = cfg.read().clone();
 
@@ -256,7 +268,7 @@ pub fn init() -> anyhow::Result<AppContext> {
 
     let device_table: DeviceTable = Arc::new(Mutex::new(HashMap::default()));
 
-    let (_track_change_tx, _track_change_rx) = mpsc::channel::<TrackChange>(64);
+    let (track_change_tx, track_change_rx) = mpsc::channel::<TrackChange>(64);
 
     Ok(AppContext {
         cli,
@@ -270,7 +282,8 @@ pub fn init() -> anyhow::Result<AppContext> {
         beat_tx,
         status_tx,
         vcdjready_tx,
-        track_change_tx: _track_change_tx,
+        track_change_tx,
+        track_change_rx,
     })
 }
 

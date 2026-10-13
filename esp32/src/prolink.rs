@@ -72,10 +72,10 @@ impl ProLinkStack {
     }
 
     fn parse_abs_position(&self, packet: &[u8]) -> Option<ProLinkPacket> {
-        if packet.len() < 0x40 {
+        if packet.len() < 0x3c {
             return None;
         }
-        let bpm_x10 = u32::from_be_bytes([packet[0x3a], packet[0x3b], packet[0x3c], packet[0x3d]]);
+        let bpm_x10 = u32::from_be_bytes([packet[0x38], packet[0x39], packet[0x3a], packet[0x3b]]);
         let pitch_raw =
             i32::from_be_bytes([packet[0x2c], packet[0x2d], packet[0x2e], packet[0x2f]]);
         Some(ProLinkPacket::AbsPosition(AbsPositionPacket {
