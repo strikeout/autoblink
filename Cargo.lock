@@ -3825,7 +3825,7 @@ dependencies = [
 
 [[package]]
 name = "xdj-clock-esp32"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "embassy-sync 0.8.0",
  "embassy-time",
@@ -3843,22 +3843,21 @@ dependencies = [
 
 [[package]]
 name = "xdj-clock-esp32-emulator"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "anyhow",
- "futures-util",
+ "axum",
  "serde",
  "serde_json",
  "socket2 0.5.10",
  "tokio",
- "tokio-tungstenite",
  "toml",
  "xdj-core-prolink",
 ]
 
 [[package]]
 name = "xdj-clock-host"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3884,7 +3883,7 @@ dependencies = [
 
 [[package]]
 name = "xdj-core-prolink"
-version = "1.7.0"
+version = "1.7.1"
 
 [[package]]
 name = "zerocopy"

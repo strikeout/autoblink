@@ -1,12 +1,39 @@
-use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
-use tokio::time::{interval, Duration};
-use anyhow::Result;
 use std::net::SocketAddr;
-use tokio_tungstenite::tungstenite::protocol::Message;
-use futures_util::{StreamExt, SinkExt};
+use std::sync::Arc;
+use std::time::Instant;
+
+use anyhow::Result;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use serde_json::{json, Value};
+use tokio::sync::{broadcast, watch, RwLock};
+use tokio::time::{interval, Duration};
+
+/// The shared page. The host and the ESP32 serve the same file.
+const PAGE: &str = include_str!("../../webui/index.html");
 
 const LOG_ENTRIES: usize = 100;
+
+/// The settings that the emulator models: (host index, label, section, kind).
+const SETTINGS: &[(usize, &str, Option<&str>, &str)] = &[
+    (3, "Clock Enabled", Some("MIDI Clock"), "toggle"),
+    (5, "BPM Smoothing", None, "number"),
+    (6, "Latency Comp", None, "number"),
+    (8, "Note Channel", Some("MIDI Notes"), "number"),
+    (9, "Beat Note", None, "number"),
+    (10, "Downbeat Note", None, "number"),
+    (12, "CC Channel", Some("MIDI CC"), "number"),
+    (13, "BPM Coarse CC", None, "number"),
+    (14, "BPM Fine CC", None, "number"),
+    (15, "Pitch CC", None, "number"),
+    (16, "Bar Phase CC", None, "number"),
+    (17, "Beat Phase CC", None, "number"),
+    (18, "Playing CC", None, "number"),
+];
 
 #[derive(Debug, Clone)]
 struct DeckState {
@@ -95,6 +122,9 @@ struct EmulatorState {
     tick: u64,
     master_idx: usize,
     logs: Vec<LogEntry>,
+    /// The number of log lines since the start. It is the sequence number of the next line.
+    log_total: u64,
+    started: Instant,
     midi_config: MidiConfig,
     midi_clock_count: u64,
     midi_note_count: u64,
@@ -119,6 +149,8 @@ impl EmulatorState {
             tick: 0,
             master_idx: 0,
             logs: Vec::with_capacity(LOG_ENTRIES),
+            log_total: 0,
+            started: Instant::now(),
             midi_config: MidiConfig::default(),
             midi_clock_count: 0,
             midi_note_count: 0,
@@ -142,15 +174,19 @@ impl EmulatorState {
     }
 
     fn add_log(&mut self, _level: u8, prefix: &str, msg: impl Into<String>) {
-        let full_msg = format!("{} {}", prefix, msg.into());
-        let entry = LogEntry {
-            message: full_msg.clone(),
-        };
+        // The host log format: "  12.345678s  INFO target: message".
+        let full_msg = format!(
+            "{:>12.6}s {:>5} emulator: {}",
+            self.started.elapsed().as_secs_f64(),
+            prefix,
+            msg.into()
+        );
+        println!("{}", full_msg);
         if self.logs.len() >= LOG_ENTRIES {
             self.logs.remove(0);
         }
-        self.logs.push(entry);
-        println!("  {}", full_msg);
+        self.logs.push(LogEntry { message: full_msg });
+        self.log_total += 1;
     }
 
     fn refresh_master(&mut self) {
@@ -434,54 +470,158 @@ impl EmulatorState {
         }
     }
 
-    fn get_status_json(&self) -> String {
-        let master_idx = self.decks.iter().position(|d| d.is_master)
-            .or_else(|| self.decks.iter().position(|d| d.is_playing && d.device_number != 0))
-            .unwrap_or(self.master_idx);
-        let master = if master_idx < self.decks.len() { &self.decks[master_idx] } else { &self.decks[0] };
-        let decks = self.visible_decks();
-        let cfg = &self.midi_config;
+    fn master(&self) -> Option<&DeckState> {
+        self.decks
+            .get(self.master_idx)
+            .filter(|d| d.device_number != 0)
+    }
 
-        let mut json = format!(
-            "{{\"bpm\":{:.2},\"beat\":{},\"phrase16\":{},\"playing\":{},\"master\":{},\"pitch\":{:.2},\"decks\":[",
-            master.bpm, master.beat, master.phrase_16, master.is_playing as u8, master.device_number, master.pitch
-        );
-
-        for (i, deck) in decks.iter().enumerate() {
-            if i > 0 { json.push(','); }
-            let safe_name = deck.name.replace('\0', " ");
-            json.push_str(&format!(
-                "{{\"num\":{},\"type\":{},\"typename\":\"{}\",\"name\":\"{}\",\"playing\":{},\"master\":{},\"sync\":{},\"onair\":{},\"bpm\":{:.2},\"beat\":{}}}",
-                deck.device_number, deck.device_type, Self::device_type_name(deck.device_type),
-                safe_name, deck.is_playing as u8,
-                deck.is_master as u8, deck.is_sync as u8,
-                deck.is_on_air as u8, deck.bpm, deck.beat
-            ));
-        }
-
-        json.push_str("],\"midi_counts\":[");
-        json.push_str(&format!("{},{},{}", self.midi_clock_count, self.midi_note_count, self.midi_cc_count));
-        json.push_str("],\"midi_last\":{");
-        json.push_str(&format!(
-            "\"note\":{},\"noteCh\":{},\"cc\":{},\"ccVal\":{},\"ccCh\":{}",
-            self.last_note, self.last_note_ch, self.last_cc, self.last_cc_val, self.last_cc_ch
-        ));
-        json.push_str("},\"midi\":{");
-        json.push_str(&format!(
-            "\"output\":\"{}\",\"clock\":{},\"smoothing\":{},\"latency\":{},\"noteCh\":{},\"beatNote\":{},\"downbeatNote\":{},\"ccCh\":{},\"bpmCoarse\":{},\"bpmFine\":{},\"pitchCc\":{},\"barPhaseCc\":{},\"beatPhaseCc\":{},\"playingCc\":{}",
-            cfg.output, cfg.clock_enabled as u8, cfg.smoothing_ms, cfg.latency_ms,
-            cfg.note_channel, cfg.beat_note, cfg.downbeat_note,
-            cfg.cc_channel, cfg.bpm_coarse, cfg.bpm_fine, cfg.pitch_cc,
-            cfg.bar_phase_cc, cfg.beat_phase_cc, cfg.playing_cc
-        ));
-        json.push_str("},\"logs\":[");
-
-        let logs: Vec<String> = self.logs.iter()
-            .map(|l| format!("\"{}\"", l.message.replace('"', "\\\"")))
+    /// Builds the protocol v1 status message. The emulator models a subset of the host fields.
+    fn status_json(&self) -> String {
+        let master = self.master();
+        let decks: Vec<Value> = self
+            .visible_decks()
+            .iter()
+            .map(|d| {
+                json!({
+                    "num": d.device_number,
+                    "name": if d.name.is_empty() { Self::device_type_name(d.device_type).to_string() } else { d.name.replace('\0', " ") },
+                    "playing": d.is_playing,
+                    "master": d.is_master,
+                    "virtual_master": false,
+                    "on_air": d.is_on_air,
+                    "sync": d.is_sync,
+                    "bpm": (d.bpm > 0.0).then_some(d.bpm),
+                    "pitch": d.pitch,
+                    "beat": (1..=4).contains(&d.beat).then_some(d.beat),
+                })
+            })
             .collect();
-        json.push_str(&logs.join(","));
-        json.push_str("]}");
-        json
+        let playing = master.is_some_and(|m| m.is_playing);
+        json!({
+            "type": "status",
+            "source": master.map(|_| "ProLink (network)"),
+            "mode": "ProLink (network)",
+            "iface": "emulated 10.10.10.50",
+            "master": {
+                "device": master.map_or(0, |m| m.device_number),
+                "virtual_master": false,
+                "bpm": master.map_or(0.0, |m| m.bpm),
+                "pitch": master.map_or(0.0, |m| m.pitch),
+                "beat": master.map_or(0, |m| m.beat),
+                "phrase16": master.map_or(0, |m| m.phrase_16),
+                "playing": playing,
+            },
+            "clock": {
+                "out16": master.map_or(0, |m| m.phrase_16),
+                "state": if playing && self.midi_config.clock_enabled { "lock" } else { "idle" },
+                "delta_ms": null,
+            },
+            "no_devices": decks.is_empty(),
+            "decks": decks,
+            "link_peers": 0,
+            "link_active": false,
+            "mixer": null,
+            "output": {
+                "port": self.midi_config.output,
+                "connected": true,
+                "dropped": 0,
+                "clock_enabled": self.midi_config.clock_enabled,
+                "pulses": self.midi_clock_count,
+                "notes": self.midi_note_count,
+                "ccs": self.midi_cc_count,
+                "last_note": (self.midi_note_count > 0).then_some(self.last_note),
+                "last_cc": (self.midi_cc_count > 0).then_some((self.last_cc, self.last_cc_val)),
+                "mtc": null,
+                "mtc_qf": 0,
+                "mtc_full": 0,
+            },
+        })
+        .to_string()
+    }
+
+    /// Builds the protocol v1 settings message. The indices match the host settings table.
+    fn settings_json(&self) -> String {
+        let c = &self.midi_config;
+        let items: Vec<Value> = SETTINGS
+            .iter()
+            .map(|&(idx, label, section, kind)| {
+                let raw = match idx {
+                    3 => return json!({"idx": idx, "label": label, "section": section, "kind": kind,
+                        "value": if c.clock_enabled { "✓" } else { "✗" }, "raw": null}),
+                    5 => c.smoothing_ms.to_string(),
+                    6 => c.latency_ms.to_string(),
+                    8 => c.note_channel.to_string(),
+                    9 => c.beat_note.to_string(),
+                    10 => c.downbeat_note.to_string(),
+                    12 => c.cc_channel.to_string(),
+                    13 => c.bpm_coarse.to_string(),
+                    14 => c.bpm_fine.to_string(),
+                    15 => c.pitch_cc.to_string(),
+                    16 => c.bar_phase_cc.to_string(),
+                    17 => c.beat_phase_cc.to_string(),
+                    _ => c.playing_cc.to_string(),
+                };
+                let value = match idx {
+                    5 | 6 => format!("{raw} ms"),
+                    _ => raw.clone(),
+                };
+                json!({"idx": idx, "label": label, "section": section, "kind": kind, "value": value, "raw": raw})
+            })
+            .collect();
+        json!({ "type": "settings", "items": items }).to_string()
+    }
+
+    /// Stores a numeric setting with the same ranges as the host. Returns false when the value
+    /// is not valid.
+    fn set_setting(&mut self, idx: usize, value: &str) -> bool {
+        let c = &mut self.midi_config;
+        let note = |v: &str| v.parse::<u8>().ok().filter(|v| *v <= 127);
+        let channel = |v: &str| v.parse::<u8>().ok().filter(|v| (1..=16).contains(v));
+        let ok = match idx {
+            5 => value.parse::<u64>().ok().filter(|v| *v <= 1000).map(|v| c.smoothing_ms = v),
+            6 => value.parse::<i64>().ok().filter(|v| (-1000..=1000).contains(v)).map(|v| c.latency_ms = v),
+            8 => channel(value).map(|v| c.note_channel = v),
+            9 => note(value).map(|v| c.beat_note = v),
+            10 => note(value).map(|v| c.downbeat_note = v),
+            12 => channel(value).map(|v| c.cc_channel = v),
+            13 => note(value).map(|v| c.bpm_coarse = v),
+            14 => note(value).map(|v| c.bpm_fine = v),
+            15 => note(value).map(|v| c.pitch_cc = v),
+            16 => note(value).map(|v| c.bar_phase_cc = v),
+            17 => note(value).map(|v| c.beat_phase_cc = v),
+            18 => note(value).map(|v| c.playing_cc = v),
+            _ => None,
+        }
+        .is_some();
+        if ok {
+            self.add_log(0, "INFO", format!("Setting {idx} changed to {value}"));
+        }
+        ok
+    }
+
+    /// Steps a toggle or a fixed-step setting. Returns false for other settings.
+    fn cycle_setting(&mut self, idx: usize, dir: i8) -> bool {
+        match idx {
+            3 => self.midi_config.clock_enabled = !self.midi_config.clock_enabled,
+            6 => {
+                let step = if dir < 0 { -5 } else { 5 };
+                self.midi_config.latency_ms = (self.midi_config.latency_ms + step).clamp(-1000, 1000);
+            }
+            _ => return false,
+        }
+        self.add_log(0, "INFO", format!("Setting {idx} changed"));
+        true
+    }
+
+    /// Returns the log lines with a sequence number of `seq` or more, and the next number.
+    fn logs_since(&self, seq: u64) -> (Vec<String>, u64) {
+        let first = self.log_total - self.logs.len() as u64;
+        let skip = seq.saturating_sub(first) as usize;
+        (
+            self.logs.iter().skip(skip).map(|l| l.message.clone()).collect(),
+            self.log_total,
+        )
     }
 }
 
@@ -508,7 +648,8 @@ pub async fn run_emulator() -> Result<()> {
     }
 
     let state = Arc::new(RwLock::new(EmulatorState::new()));
-    let (tx, _rx) = broadcast::channel::<String>(16);
+    // (device number, beat in bar) for each beat packet.
+    let (beat_tx, _) = broadcast::channel::<(u8, u8)>(64);
 
     let state_net = Arc::clone(&state);
     let sock_50000 = create_reuse_socket(50000, true).unwrap();
@@ -524,12 +665,19 @@ pub async fn run_emulator() -> Result<()> {
     });
 
     let state_net2 = Arc::clone(&state);
+    let beat_tx_net = beat_tx.clone();
     tokio::spawn(async move {
         let sock = create_reuse_socket(50001, false).unwrap();
         let mut buf = [0u8; 4096];
         loop {
             if let Ok((len, addr)) = sock.recv_from(&mut buf).await {
-                state_net2.write().await.handle_packet(addr, 50001, &buf[..len]);
+                let data = &buf[..len];
+                state_net2.write().await.handle_packet(addr, 50001, data);
+                if data.len() > 10 && data[10] == xdj_core_prolink::PKT_BEAT {
+                    if let Some(beat) = xdj_core_prolink::parse::parse_beat(data) {
+                        let _ = beat_tx_net.send((beat.device_number, beat.beat_in_bar));
+                    }
+                }
             }
         }
     });
@@ -580,11 +728,13 @@ pub async fn run_emulator() -> Result<()> {
         }
     });
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    println!("HTTP server listening on http://0.0.0.0:8080");
+    let (status_tx, _) = watch::channel(String::new());
+    let (settings_tx, _) = watch::channel(state.read().await.settings_json());
+    let status_tx = Arc::new(status_tx);
+    let settings_tx = Arc::new(settings_tx);
 
     let state_clone = Arc::clone(&state);
-    let tx_clone = tx.clone();
+    let (status_pub, settings_pub) = (Arc::clone(&status_tx), Arc::clone(&settings_tx));
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_millis(50));
         loop {
@@ -592,321 +742,192 @@ pub async fn run_emulator() -> Result<()> {
             let mut s = state_clone.write().await;
             s.tick();
             if s.tick % 2 == 0 {
-                let json = s.get_status_json();
-                let _ = tx_clone.send(json);
+                status_pub.send_replace(s.status_json());
+                let settings = s.settings_json();
+                settings_pub.send_if_modified(|cur| {
+                    let changed = *cur != settings;
+                    if changed {
+                        *cur = settings;
+                    }
+                    changed
+                });
             }
         }
     });
 
-    loop {
-        if let Ok((stream, _addr)) = listener.accept().await {
-            let state = Arc::clone(&state);
-            let tx = tx.clone();
-            let mut rx = tx.subscribe();
-            tokio::spawn(async move {
-                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                
-                let mut buf = [0u8; 8192];
-                let mut stream = stream;
-                let n = stream.peek(&mut buf).await.unwrap_or(0);
-                let request = String::from_utf8_lossy(&buf[..n]);
-                
-                if request.contains("Upgrade: websocket") {
-                    if let Ok(ws_stream) = tokio_tungstenite::accept_async(stream).await {
-                        let (mut ws_sender, mut _ws_receiver) = ws_stream.split();
-                        while let Ok(msg) = rx.recv().await {
-                            if ws_sender.send(Message::Text(msg.into())).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                } else if let Ok(n) = stream.read(&mut buf).await {
-                    if n > 0 {
-                        let request = String::from_utf8_lossy(&buf[..n]);
-                        if request.contains("/api/status") {
-                            let status = state.read().await.get_status_json();
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
-                                status.len(),
-                                status
-                            );
-                            let _ = stream.write_all(response.as_bytes()).await;
-                        } else if request.contains("/api/set-midi") {
-                            let body_parts: Vec<&str> = request.split("\r\n\r\n").collect();
-                            if body_parts.len() > 1 {
-                                let body = body_parts[1];
-                                if let Ok(new_cfg) = serde_json::from_str::<MidiConfig>(body) {
-                                    state.write().await.midi_config = new_cfg;
-                                    println!("MIDI config updated successfully");
-                                }
-                            }
-                            let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\n\r\n{}";
-                            let _ = stream.write_all(response.as_bytes()).await;
-                        } else if request.contains("GET / ") || request.contains("GET /index") {
-                            let html = get_dashboard_html();
-                            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}", html.len(), html);
-                            let _ = stream.write_all(response.as_bytes()).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
+    let app = Router::new()
+        .route("/", get(|| async { Html(PAGE) }))
+        .route("/index.html", get(|| async { Html(PAGE) }))
+        .route("/ws", get(ws_handler))
+        .with_state(Shared {
+            state,
+            status_tx,
+            settings_tx,
+            beat_tx,
+        });
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    println!("Web UI listening on http://0.0.0.0:8080");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
-fn get_dashboard_html() -> &'static str {
-    r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>xdj-clock ESP32</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0f;color:#e0e0e0;min-height:100vh;display:flex;flex-direction:column}
-header{background:#1a1a2e;padding:10px 20px;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between;align-items:center}
-h1{font-size:15px;font-weight:600;color:#fff}
-h1 span{color:#666;font-weight:400}
-.header-meta{display:flex;align-items:center;gap:12px}
-.version-tag{font-size:10px;color:#555;font-family:monospace}
-.emulator-badge{background:#ff6b35;color:#000;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700}
-main{flex:1;padding:12px;display:grid;grid-template-columns:260px 1fr;grid-template-rows:auto auto auto;gap:12px;max-width:1600px;margin:0 auto;width:100%}
-.panel{background:#12121c;border-radius:10px;padding:14px;border:1px solid #1e1e32;overflow:hidden}
-.panel-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #1e1e32}
-.panel h2{font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#666}
-.panel-badge{background:#00ff88;color:#000;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700}
-.deck-section{grid-column:1;grid-row:1/3;display:flex;flex-direction:column;min-height:0}
-.master-section{grid-column:2;grid-row:1}
-.midi-out-status{grid-column:2;grid-row:2}
-.log-section{grid-column:1/-1;grid-row:3;height:160px;display:flex;flex-direction:column}
-.midi-section{grid-column:1/-1;grid-row:4;background:#12121c;border-radius:10px;border:1px solid #1e1e32;padding:14px}
-.bpm-display{font-size:38px;font-weight:700;color:#00ff88;text-align:center;padding:8px 0 4px}
-.beat-display{text-align:center;font-size:12px;color:#666;margin-bottom:8px}
-.meter-row{display:flex;flex-direction:column;align-items:center;gap:4px}
-.meter{width:100%;display:flex;gap:2px;justify-content:center}
-.meter span{width:9px;height:16px;background:#1e1e32;border-radius:2px}
-.meter span.active{background:#00ff88;box-shadow:0 0 5px #00ff88}
-.meter16{width:100%;height:6px;background:#1a1a2e;border-radius:2px;margin-top:3px;overflow:hidden}
-.meter16-fill{height:100%;background:linear-gradient(90deg,#00ff88,#00cc6a);transition:width 0.1s}
-.phrase-label{font-size:9px;color:#555;text-align:center;margin-top:2px}
-.info-table{width:100%;font-size:11px;margin-top:8px}
-.info-row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1a1a2e}
-.info-row:last-child{border-bottom:none}
-.label{color:#666}
-.value{color:#fff;font-weight:500}
-.deck-list{flex:1;overflow-y:auto;min-height:0;padding-right:4px}
-.deck-card{display:flex;align-items:center;gap:8px;padding:8px;background:#1a1a2e;border-radius:8px;margin-bottom:6px}
-.deck-card.master{border:1px solid #00ff88;background:rgba(0,255,136,0.05)}
-.deck-card.playing{background:#1a2e1a}
-.deck-icon{width:32px;height:32px;background:#2a2a3e;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0}
-.deck-card.master .deck-icon{background:#00ff88;color:#000}
-.deck-info{flex:1;min-width:0}
-.deck-name{font-size:12px;font-weight:600;color:#fff;margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.deck-meta{font-size:10px;color:#666}
-.deck-status{display:flex;gap:4px;flex-wrap:wrap}
-.status-badge{padding:1px 5px;border-radius:3px;font-size:8px;font-weight:600;text-transform:uppercase}
-.badge-master{background:#00ff88;color:#000}
-.badge-sync{background:#444;color:#fff}
-.badge-onair{background:#ff4444;color:#fff}
-.badge-playing{background:#00ff88;color:#000}
-.deck-bpm{font-size:13px;font-weight:600;color:#00ff88;text-align:right;min-width:50px}
-.midi-out-status{background:#12121c;border-radius:10px;padding:14px;border:1px solid #1e1e32;display:flex;flex-direction:column;justify-content:center}
-.midi-types{display:flex;justify-content:space-around;margin-top:16px;gap:8px}
-.midi-type{display:flex;flex-direction:column;align-items:center;gap:6px}
-.midi-type-label{font-size:10px;color:#666;font-weight:600;letter-spacing:1px}
-.midi-indicator{width:40px;height:24px;background:#0d0d15;border-radius:6px;display:flex;justify-content:center;align-items:center;border:1px solid #1e1e32;overflow:hidden;position:relative}
-.midi-indicator-label{position:absolute;bottom:1px;font-size:7px;color:#444;width:100%;text-align:center}
-.anim-clock .dot{width:8px;height:8px;border-radius:50%;background:#1e1e32;transition:all 0.05s}
-.anim-clock.active .dot{background:#ffaa00;box-shadow:0 0 8px #ffaa00;transform:scale(1.2)}
-.anim-note{display:flex;gap:2px;padding:0 4px}
-.anim-note .bar{width:8px;height:12px;background:#1e1e32;border-radius:2px;transition:all 0.05s}
-.anim-note.active .bar{background:#00ff88;box-shadow:0 0 8px #00ff88}
-.anim-cc{display:flex;align-items:flex-end;height:16px;gap:2px}
-.anim-cc .bar{width:6px;height:4px;background:#1e1e32;border-radius:1px;transition:all 0.05s}
-.anim-cc.active .bar{background:#4a9eff;box-shadow:0 0 8px #4a9eff}
-.midi-stats{display:flex;justify-content:space-between;font-size:11px;color:#666;margin-top:16px;padding-top:12px;border-top:1px solid #1a1a2e}
-.midi-detail{font-size:9px;color:#00ff88;text-align:center;margin-top:4px;min-height:12px}
-.log-container{flex:1;overflow-y:auto;font-family:'SF Mono',Monaco,'Courier New',monospace;font-size:10px;background:#0a0a0f;border-radius:6px;padding:8px}
-.log-entry{padding:2px 0;border-bottom:1px solid #1a1a2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.log-entry:last-child{border-bottom:none}
-.log-time{color:#444;margin-right:5px}
-.log-info{color:#888}
-.log-debug{color:#555}
-.log-warn{color:#ffaa00}
-.log-error{color:#ff4444}
-.midi-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.midi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
-.midi-group{background:#1a1a2e;border-radius:6px;padding:10px}
-.midi-group h3{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#666;margin-bottom:8px}
-.midi-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:11px}
-.midi-row label{color:#888}
-.midi-row input{background:#0a0a0f;border:1px solid #2a2a4a;border-radius:4px;color:#fff;padding:3px 6px;font-size:11px;width:60px;text-align:right}
-.midi-row input[type="checkbox"]{width:auto}
-.midi-row select{background:#0a0a0f;border:1px solid #2a2a4a;border-radius:4px;color:#fff;padding:3px 6px;font-size:11px;width:80px}
-footer{background:#1a1a2e;padding:8px 20px;text-align:center;font-size:10px;color:#444;border-top:1px solid #2a2a4a}
-@media(max-width:768px){
-  main{grid-template-columns:1fr;grid-template-rows:auto auto auto auto auto}
-  .deck-section,.master-section,.midi-out-status,.log-section,.midi-section{grid-column:1}
-  .deck-section{grid-row:1;height:250px}
-  .master-section{grid-row:2}
-  .midi-out-status{grid-row:3}
-  .log-section{grid-row:4;height:150px}
-  .midi-section{grid-row:5}
-}
-</style>
-</head>
-<body>
-<header>
-<h1>xdj-clock <span>ESP32</span></h1>
-<div class="header-meta">
-<span class="version-tag">v1.1.2</span>
-<span class="emulator-badge">EMULATOR</span>
-</div>
-</header>
-<main>
-<div class="panel deck-section"><div class="panel-header"><h2>Discovered Decks</h2><span class="panel-badge" id="deck-count">0</span></div><div class="deck-list" id="deck-list"></div></div>
-<div class="panel master-section"><div class="panel-header"><h2>Tempo Master</h2></div><div class="bpm-display" id="bpm">---.-</div><div class="beat-display">BPM</div><div class="meter-row"><div class="meter" id="meter"><span></span><span></span><span></span><span></span></div><div class="phrase-label">Phrase <span id="phrase16">-</span>/16</div><div class="meter16"><div class="meter16-fill" id="meter16-fill" style="width:0%"></div></div></div><div class="info-table"><div class="info-row"><span class="label">Beat</span><span class="value" id="beat">-/4</span></div><div class="info-row"><span class="label">Status</span><span class="value" id="playing" style="color:#00ff88">STOP</span></div><div class="info-row"><span class="label">Master</span><span class="value" id="master">--</span></div><div class="info-row"><span class="label">Pitch</span><span class="value" id="pitch">+0.00%</span></div></div></div>
-<div class="panel midi-out-status"><div class="panel-header"><h2>MIDI Out Status</h2><span id="active-port" style="font-size:9px;color:#666">auto</span></div><div class="midi-types">
-<div class="midi-type"><span class="midi-type-label">CLOCK</span><div class="midi-indicator anim-clock" id="animClock"><div class="dot"></div></div><div class="midi-detail" id="midiDetailClock"></div></div><div class="midi-type"><span class="midi-type-label">NOTE</span><div class="midi-indicator anim-note" id="animNote"><div class="bar"></div><div class="bar"></div><div class="bar"></div></div><div class="midi-detail" id="midiDetailNote"></div></div><div class="midi-type"><span class="midi-type-label">CC</span><div class="midi-indicator anim-cc" id="animCc"><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div></div><div class="midi-detail" id="midiDetailCc"></div></div></div><div class="midi-stats"><span>Activity</span><span id="midiCount">0 CLK | 0 NOT | 0 CC</span></div></div>
-<div class="panel log-section"><div class="panel-header"><h2>Activity Log</h2></div><div class="log-container" id="log-container"></div></div>
-<div class="midi-section"><div class="midi-header"><h2>MIDI Configuration</h2><span class="panel-badge">ESP32</span></div><div class="midi-grid">
-<div class="midi-group"><h3>Output</h3><div class="midi-row"><label>Port</label><input type="text" id="midi-output"></div><div class="midi-row"><label>Clock</label><input type="checkbox" id="midi-clock"></div><div class="midi-row"><label>Smoothing</label><input type="number" id="midi-smoothing"> ms</div><div class="midi-row"><label>Latency</label><div style="display:flex;align-items:center;gap:8px;flex:1"><input type="range" id="midi-latency" min="-500" max="500" step="1" style="flex:1"><span id="latency-val" style="min-width:45px;text-align:right;font-variant-numeric:tabular-nums;font-size:10px;color:#00ff88">0 ms</span></div></div></div>
-<div class="midi-group"><h3>Note Messages</h3><div class="midi-row"><label>Channel</label><select id="midi-note-ch"><option value="0">1</option><option value="9">10</option><option value="15">16</option></select></div><div class="midi-row"><label>Beat Note</label><input type="number" id="midi-beat-note"></div><div class="midi-row"><label>Downbeat</label><input type="number" id="midi-downbeat"></div></div>
-<div class="midi-group"><h3>CC Messages</h3><div class="midi-row"><label>Channel</label><select id="midi-cc-ch"><option value="0" selected>1</option><option value="9">10</option></select></div><div class="midi-row"><label>BPM Coarse</label><input type="number" id="midi-bpm-coarse"></div><div class="midi-row"><label>BPM Fine</label><input type="number" id="midi-bpm-fine"></div><div class="midi-row"><label>Pitch</label><input type="number" id="midi-pitch-cc"></div><div class="midi-row"><label>Bar Phase</label><input type="number" id="midi-bar-cc"></div><div class="midi-row"><label>Beat Phase</label><input type="number" id="midi-beat-cc"></div><div class="midi-row"><label>Playing</label><input type="number" id="midi-playing-cc"></div></div>
-</div></div>
-</main>
-<script>
-let startTime=Date.now();
-function ts(){return ((Date.now()-startTime)/1000).toFixed(1)+'s';}
-let prevClock=0, prevNote=0, prevCc=0;
-let flashClock=0, flashNote=0, flashCc=0;
-let settingsLoaded=false;
-let debounceTimer;
-let ws;
-
-function updateMidiAnimations(){
-    if(flashClock>0){ document.getElementById('animClock').classList.add('active'); flashClock--; } else { document.getElementById('animClock').classList.remove('active'); }
-    if(flashNote>0){ document.getElementById('animNote').classList.add('active'); flashNote--; } else { document.getElementById('animNote').classList.remove('active'); }
-    if(flashCc>0){ 
-        const bars=document.querySelectorAll('#animCc .bar');
-        bars.forEach(b=>{b.style.height=(Math.random()*12+4)+'px';});
-        document.getElementById('animCc').classList.add('active'); flashCc--; 
-    } else { 
-        document.getElementById('animCc').classList.remove('active'); 
-        document.querySelectorAll('#animCc .bar').forEach(b=>{b.style.height='';});
-    }
+#[derive(Clone)]
+struct Shared {
+    state: Arc<RwLock<EmulatorState>>,
+    status_tx: Arc<watch::Sender<String>>,
+    settings_tx: Arc<watch::Sender<String>>,
+    beat_tx: broadcast::Sender<(u8, u8)>,
 }
 
-function handleData(data){
-    document.getElementById('bpm').textContent=data.bpm.toFixed(2);
-    document.getElementById('beat').textContent=data.beat+'/4';
-    document.getElementById('phrase16').textContent=data.phrase16||'-';
-    document.getElementById('master').textContent=data.master||'--';
-    document.getElementById('pitch').textContent=(data.pitch>=0?'+':'')+data.pitch.toFixed(2)+'%';
-    document.getElementById('playing').textContent=data.playing?'PLAYING':'STOP';
-    document.getElementById('playing').style.color=data.playing?'#00ff88':'#888';
-    let m=document.getElementById('meter').children;
-    for(let i=0;i<m.length;i++)m[i].className=i<data.beat?'active':'';
-    document.getElementById('meter16-fill').style.width=((data.phrase16||1)/16*100)+'%';
-    
-    let decks=data.decks||[];
-    document.getElementById('deck-count').textContent=decks.length;
-    let html='';
-    decks.forEach(d=>{
-        let cc='deck-card'+(d.master?' master':'')+(d.playing?' playing':'');
-        let badges=(d.master?'<span class="status-badge badge-master">M</span>':'')+(d.sync?'<span class="status-badge badge-sync">SY</span>':'')+(d.onair?'<span class="status-badge badge-onair">ON</span>':'')+(d.playing?'<span class="status-badge badge-playing">▶</span>':'');
-        html+=`<div class="${cc}"><div class="deck-icon">${d.type===1?'M':'D'}</div><div class="deck-info"><div class="deck-name">${d.name||d.typename+' #'+d.num}</div><div class="deck-meta">${d.typename} • Beat ${d.beat}/4</div></div><div class="deck-status">${badges}</div><div class="deck-bpm">${d.bpm.toFixed(1)}</div></div>`;
-    });
-    document.getElementById('deck-list').innerHTML=html||'<div style="color:#555;text-align:center;padding:20px">Waiting for packets...</div>';
-    
-    if(data.midi_counts){
-        if(data.midi_counts[0]>prevClock) flashClock=3;
-        if(data.midi_counts[1]>prevNote) flashNote=3;
-        if(data.midi_counts[2]>prevCc) flashCc=3;
-        prevClock=data.midi_counts[0]; prevNote=data.midi_counts[1]; prevCc=data.midi_counts[2];
-        document.getElementById('midiCount').textContent=prevClock+' CLK | '+prevNote+' NOT | '+prevCc+' CC';
-    }
-
-    if(data.midi_last){
-        document.getElementById('midiDetailNote').textContent=data.midi_last.note?'CH'+(data.midi_last.noteCh+1)+' N'+data.midi_last.note:'';
-        document.getElementById('midiDetailCc').textContent=data.midi_last.cc?'CH'+(data.midi_last.ccCh+1)+' CC'+data.midi_last.cc+' V'+data.midi_last.ccVal:'';
-        document.getElementById('midiDetailClock').textContent=data.bpm>0?'24PPQ':'';
-    }
-    
-        if(data.midi){
-        document.getElementById('active-port').textContent=data.midi.output;
-    }
-
-    if(data.midi && !settingsLoaded){
-            const set=(id,v,p='value')=>{const el=document.getElementById(id);if(el)el[p]=v;};
-            set('midi-output',data.midi.output); set('midi-clock',data.midi.clock,'checked'); set('midi-smoothing',data.midi.smoothing);
-            set('midi-latency',data.midi.latency); set('midi-note-ch',data.midi.noteCh); set('midi-beat-note',data.midi.beatNote);
-            set('midi-downbeat',data.midi.downbeatNote); set('midi-cc-ch',data.midi.ccCh); set('midi-bpm-coarse',data.midi.bpmCoarse);
-            set('midi-bpm-fine',data.midi.bpmFine); set('midi-pitch-cc',data.midi.pitchCc); set('midi-bar-cc',data.midi.barPhaseCc);
-            set('midi-beat-cc',data.midi.beatPhaseCc); set('midi-playing-cc',data.midi.playingCc);
-            
-            document.getElementById('latency-val').textContent=data.midi.latency+' ms';
-            document.getElementById('active-port').textContent=data.midi.output;
-
-            const inputs = ['midi-output', 'midi-clock', 'midi-smoothing', 'midi-latency', 'midi-note-ch', 'midi-beat-note', 'midi-downbeat', 'midi-cc-ch', 'midi-bpm-coarse', 'midi-bpm-fine', 'midi-pitch-cc', 'midi-bar-cc', 'midi-beat-cc', 'midi-playing-cc'];
-            inputs.forEach(id => {
-                const el = document.getElementById(id);
-                const event = el.type === 'range' || el.type === 'number' || el.type === 'text' ? 'input' : 'change';
-                el.addEventListener(event, (e) => {
-                    if (id === 'midi-latency') document.getElementById('latency-val').textContent=e.target.value+' ms';
-                    if (id === 'midi-output') document.getElementById('active-port').textContent=e.target.value;
-                    clearTimeout(debounceTimer);
-                    debounceTimer=setTimeout(saveMidiConfig,100);
-                });
-            });
-            
-            settingsLoaded=true;
-        }
-
-    
-    let logHtml='';
-    (data.logs||[]).forEach(l=>{
-        let cls='log-entry'+(l.includes('DEBUG')?' log-debug':l.includes('WARN')?' log-warn':l.includes('ERROR')?' log-error':' log-info');
-        logHtml+=`<div class="${cls}"><span class="log-time">${ts()}</span> ${l}</div>`;
-    });
-    document.getElementById('log-container').innerHTML=logHtml;
-    document.getElementById('log-container').scrollTop=document.getElementById('log-container').scrollHeight;
-}
-
-function initWS(){
-    ws=new WebSocket('ws://'+location.host);
-    ws.onmessage=(e)=>handleData(JSON.parse(e.data));
-    ws.onclose=()=>setTimeout(initWS,1000);
-}
-
-function saveMidiConfig(){
-    let cfg={
-        output:document.getElementById('midi-output').value,
-        clock:document.getElementById('midi-clock').checked,
-        smoothing:parseInt(document.getElementById('midi-smoothing').value)||0,
-        latency:parseInt(document.getElementById('midi-latency').value)||0,
-        noteCh:parseInt(document.getElementById('midi-note-ch').value)||0,
-        beatNote:parseInt(document.getElementById('midi-beat-note').value)||0,
-        downbeatNote:parseInt(document.getElementById('midi-downbeat').value)||0,
-        ccCh:parseInt(document.getElementById('midi-cc-ch').value)||0,
-        bpmCoarse:parseInt(document.getElementById('midi-bpm-coarse').value)||0,
-        bpmFine:parseInt(document.getElementById('midi-bpm-fine').value)||0,
-        pitchCc:parseInt(document.getElementById('midi-pitch-cc').value)||0,
-        barPhaseCc:parseInt(document.getElementById('midi-bar-cc').value)||0,
-        beatPhaseCc:parseInt(document.getElementById('midi-beat-cc').value)||0,
-        playingCc:parseInt(document.getElementById('midi-playing-cc').value)||0
+/// Returns true when the request may open the socket. See `origin_allowed` in the host web module.
+fn origin_allowed(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
     };
-    fetch('/api/set-midi',{method:'POST',body:JSON.stringify(cfg)}).catch(e=>console.error('Save error:',e));
+    let (Ok(origin), Some(Ok(host))) = (
+        origin.to_str(),
+        headers.get(header::HOST).map(|h| h.to_str()),
+    ) else {
+        return false;
+    };
+    origin
+        .split_once("://")
+        .is_some_and(|(_, rest)| rest.trim_end_matches('/').eq_ignore_ascii_case(host))
 }
 
-initWS();
-setInterval(updateMidiAnimations,50);
-</script>
-</body>
-</html>"#
+async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(sh): State<Shared>) -> Response {
+    if !origin_allowed(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    ws.on_upgrade(move |socket| client(socket, sh))
+}
+
+async fn send(socket: &mut WebSocket, msg: String) -> bool {
+    socket.send(Message::Text(msg.into())).await.is_ok()
+}
+
+async fn client(mut socket: WebSocket, sh: Shared) {
+    let hello = json!({
+        "type": "hello",
+        "proto": 1,
+        "version": env!("CARGO_PKG_VERSION"),
+        "device": "emulator",
+        "caps": ["beat", "decks", "output", "settings", "logs"],
+    });
+    let mut status_rx = sh.status_tx.subscribe();
+    let mut settings_rx = sh.settings_tx.subscribe();
+    let mut beat_rx = sh.beat_tx.subscribe();
+    let mut log_seq = 0;
+    let settings = settings_rx.borrow_and_update().clone();
+    if !send(&mut socket, hello.to_string()).await || !send(&mut socket, settings).await {
+        return;
+    }
+
+    loop {
+        let msg = tokio::select! {
+            r = status_rx.changed() => {
+                if r.is_err() {
+                    return;
+                }
+                let (lines, next) = sh.state.read().await.logs_since(log_seq);
+                log_seq = next;
+                if !lines.is_empty() && !send(&mut socket, json!({"type": "log", "lines": lines}).to_string()).await {
+                    return;
+                }
+                status_rx.borrow_and_update().clone()
+            }
+            r = settings_rx.changed() => {
+                if r.is_err() {
+                    return;
+                }
+                settings_rx.borrow_and_update().clone()
+            }
+            beat = beat_rx.recv() => match beat {
+                Ok((device, beat)) => json!({"type": "beat", "device": device, "beat": beat}).to_string(),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Text(text))) => match handle_command(&sh, text.as_str()).await {
+                    Some(err) => json!({"type": "error", "text": err}).to_string(),
+                    None => continue,
+                },
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                Some(Ok(_)) => continue,
+            },
+        };
+        if !send(&mut socket, msg).await {
+            return;
+        }
+    }
+}
+
+/// Runs one client command. Returns an error text for the page, or `None` on success.
+async fn handle_command(sh: &Shared, text: &str) -> Option<String> {
+    let cmd: Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(e) => return Some(format!("Unknown command: {e}")),
+    };
+    let idx = cmd["idx"].as_u64().unwrap_or(u64::MAX) as usize;
+    let mut s = sh.state.write().await;
+    match cmd["type"].as_str() {
+        Some("cycle") => {
+            let dir = if cmd["dir"].as_i64().unwrap_or(1) < 0 { -1 } else { 1 };
+            s.cycle_setting(idx, dir);
+            None
+        }
+        Some("set") => {
+            let value = cmd["value"].as_str().unwrap_or("").trim().to_string();
+            if s.set_setting(idx, &value) {
+                None
+            } else {
+                Some(format!("{value:?} is not a valid value"))
+            }
+        }
+        Some("rescan") => None,
+        _ => Some("The emulator does not support this command".to_string()),
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     run_emulator().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_apply_the_host_ranges() {
+        let mut s = EmulatorState::new();
+        assert!(s.set_setting(5, "20"));
+        assert_eq!(s.midi_config.smoothing_ms, 20);
+        assert!(!s.set_setting(5, "5000"));
+        assert!(!s.set_setting(8, "0"));
+        assert!(!s.set_setting(99, "1"));
+        let before = s.midi_config.clock_enabled;
+        assert!(s.cycle_setting(3, 1));
+        assert_ne!(s.midi_config.clock_enabled, before);
+        let v: Value = serde_json::from_str(&s.settings_json()).unwrap();
+        assert_eq!(v["items"][1]["raw"], "20");
+    }
+
+    #[test]
+    fn logs_since_returns_only_new_lines_in_the_host_format() {
+        let s = EmulatorState::new();
+        let (lines, next) = s.logs_since(0);
+        assert_eq!(next, lines.len() as u64);
+        // The page reads the level from the second word.
+        assert_eq!(lines[0].split_whitespace().nth(1), Some("INFO"));
+        assert!(s.logs_since(next).0.is_empty());
+    }
+
+    #[test]
+    fn status_is_valid_protocol_json_without_decks() {
+        let v: Value = serde_json::from_str(&EmulatorState::new().status_json()).unwrap();
+        assert_eq!(v["type"], "status");
+        assert_eq!(v["no_devices"], true);
+        assert_eq!(v["master"]["phrase16"], 0);
+    }
 }
