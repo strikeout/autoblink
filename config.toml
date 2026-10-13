@@ -13,11 +13,12 @@ source = "auto"
 interface = "auto"
 
 # Virtual CDJ device number advertised on the Pro DJ Link network.
-# 1–4 are standard CDJ slots; 5–6 are CDJ-3000 extended slots; 7+ are safe
+# 1–4 are standard CDJ slots. 5–6 are CDJ-3000 extended slots. 7+ are
 # "observer" numbers that never conflict with real hardware.
-# Use 1–6 only if you need dbserver metadata queries and have fewer than 4
-# (or 6) real CDJs connected.
-device_number = 5
+# Use 7 or higher with an XDJ-AZ. The XDJ-AZ sends no track ID to device 5 or 6.
+# Without the track ID, the app gets no metadata and no phrase analysis.
+# Metadata queries work with 7+. The app uses the number of a real player for them.
+device_number = 7
 
 # Name broadcast on the network (max 16 bytes, ASCII).
 device_name = "xdj-clock"

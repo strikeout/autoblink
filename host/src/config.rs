@@ -43,7 +43,7 @@ impl Default for Config {
         Self {
             source: Source::default(),
             interface: "auto".into(),
-            device_number: 5,
+            device_number: 7,
             device_name: "xdj-clock".into(),
             midi: MidiConfig::default(),
             link: LinkConfig::default(),

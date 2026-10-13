@@ -26,8 +26,12 @@ use crate::state::{PhraseEntry, PhraseKind, SharedState, SongStructure, TrackCha
 /// TCP port used to discover each player's dbserver port.
 const DB_SERVER_QUERY_PORT: u16 = 12523;
 
-/// Magic bytes that start every dbserver message.
-const DB_MAGIC: [u8; 4] = [0x87, 0x23, 0x49, 0xae];
+/// The number that starts every dbserver message. It is sent as a u32 field.
+const DB_MAGIC: u32 = 0x8723_49ae;
+/// The argument type tag of a number, a string and a blob.
+const ARG_TAG_NUMBER: u8 = 0x06;
+const ARG_TAG_STRING: u8 = 0x02;
+const ARG_TAG_BLOB: u8 = 0x03;
 /// A dbserver message has at most 12 arguments. A larger count is a bad peer.
 const MAX_ARG_COUNT: usize = 64;
 
@@ -214,14 +218,30 @@ pub async fn run(
                         meta.key,
                         meta.bpm,
                     );
-                    if let Some(ss) = song_struct {
-                        tracing::info!(
-                            device = change2.device_number,
-                            phrases = ss.phrases.len(),
-                            mood = ?ss.mood,
-                            "Song structure received"
-                        );
-                        st.set_song_structure(change2.device_number, change2.rekordbox_id, ss);
+                    match song_struct {
+                        Ok(ss) => {
+                            tracing::info!(
+                                device = change2.device_number,
+                                phrases = ss.phrases.len(),
+                                mood = ?ss.mood,
+                                "Song structure received"
+                            );
+                            st.set_song_structure(change2.device_number, change2.rekordbox_id, ss);
+                        }
+                        Err(e) => {
+                            let reason = format!("{e:#}");
+                            tracing::warn!(
+                                device = change2.device_number,
+                                rekordbox_id = change2.rekordbox_id,
+                                error = %reason,
+                                "Phrase analysis is not available"
+                            );
+                            st.set_phrase_error(
+                                change2.device_number,
+                                change2.rekordbox_id,
+                                reason,
+                            );
+                        }
                     }
                 }
                 Ok(Err(e)) if e.downcast_ref::<SetupRefused>().is_some() => {
@@ -260,7 +280,7 @@ async fn fetch_metadata(
     player_ip: Ipv4Addr,
     asking: u8,
     change: &TrackChange,
-) -> anyhow::Result<(TrackMetadata, Option<SongStructure>)> {
+) -> anyhow::Result<(TrackMetadata, anyhow::Result<SongStructure>)> {
     // Step 1: Discover the dbserver port.
     let db_port = discover_db_port(player_ip).await?;
     tracing::debug!(%player_ip, db_port, "dbserver port discovered");
@@ -279,10 +299,11 @@ async fn fetch_metadata(
     tracing::debug!("dbserver greeting OK");
 
     // Step 4: Setup exchange — message type 0x0000 with the asking player number.
+    // The setup message has transaction ID 0xfffffffe. An XDJ-AZ closes the connection on ID 1.
     let mut tx_id: u32 = 1;
     send_message(
         &mut stream,
-        tx_id,
+        0xffff_fffe,
         MSG_SETUP_REQ,
         &[Field::Number(asking as u32)],
         &[FIELD_U32],
@@ -306,7 +327,6 @@ async fn fetch_metadata(
     tracing::debug!("dbserver setup handshake OK");
 
     // Step 5: Request metadata — message type 0x2002.
-    tx_id += 1;
     // Build the DMST argument: D|01|Sr|Tr packed as a u32.
     let dmst = ((asking as u32) << 24)
         | (0x01u32 << 16)
@@ -374,17 +394,8 @@ async fn fetch_metadata(
     }
 
     // Step 8: Request PSSI (song structure / phrase analysis) from .EXT file.
-    let song_structure = match fetch_pssi(&mut stream, &mut tx_id, asking, change).await {
-        Ok(ss) => Some(ss),
-        Err(e) => {
-            tracing::debug!(
-                device = change.device_number,
-                error = %e,
-                "PSSI fetch failed (phrase analysis not available)"
-            );
-            None
-        }
-    };
+    // A PSSI failure keeps the metadata. The caller shows the reason.
+    let song_structure = fetch_pssi(&mut stream, &mut tx_id, asking, change).await;
 
     Ok((metadata, song_structure))
 }
@@ -441,9 +452,10 @@ async fn fetch_pssi(
 
     if resp.msg_type != MSG_ANLZ_TAG_RESP {
         anyhow::bail!(
-            "Expected PSSI response 0x{:04x}, got 0x{:04x}",
+            "Expected PSSI response 0x{:04x}, got 0x{:04x} [{}]",
             MSG_ANLZ_TAG_RESP,
-            resp.msg_type
+            resp.msg_type,
+            describe_args(&resp.args)
         );
     }
 
@@ -456,9 +468,23 @@ async fn fetch_pssi(
             Field::Blob(data) if data.len() > 20 => Some(data.clone()),
             _ => None,
         })
-        .ok_or_else(|| anyhow::anyhow!("No PSSI blob in response"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("No PSSI blob in response [{}]", describe_args(&resp.args))
+        })?;
 
     parse_pssi_tag(&blob)
+}
+
+/// Summarises dbserver arguments for an error message: a number in hex, the length of a blob.
+fn describe_args(args: &[Field]) -> String {
+    args.iter()
+        .map(|a| match a {
+            Field::Number(n) => format!("0x{n:x}"),
+            Field::Blob(b) => format!("blob {} bytes", b.len()),
+            Field::Text(t) => format!("text {t:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Parse a raw PSSI tag blob into a SongStructure.
@@ -482,6 +508,14 @@ async fn fetch_pssi(
 ///   [13]     padding
 ///   [14..]   entries (each 24 bytes)
 fn parse_pssi_tag(data: &[u8]) -> anyhow::Result<SongStructure> {
+    use anyhow::Context;
+    parse_pssi_tag_inner(data).with_context(|| {
+        let head: String = data.iter().take(24).map(|b| format!("{b:02x}")).collect();
+        format!("PSSI blob {} bytes, head {head}", data.len())
+    })
+}
+
+fn parse_pssi_tag_inner(data: &[u8]) -> anyhow::Result<SongStructure> {
     let start = if data.get(4..8) == Some(&b"PSSI"[..]) {
         16
     } else if data.get(0..4) == Some(&b"PSSI"[..]) {
@@ -613,7 +647,10 @@ fn parse_pssi_tag(data: &[u8]) -> anyhow::Result<SongStructure> {
     }
 
     if phrases.is_empty() {
-        anyhow::bail!("PSSI: no phrase entries parsed");
+        anyhow::bail!(
+            "PSSI: no phrase entries parsed (len_entries {len_entries}, raw_mood {raw_mood}, body {} bytes)",
+            body.len()
+        );
     }
 
     Ok(SongStructure {
@@ -643,8 +680,9 @@ async fn try_discover_db_port(player_ip: Ipv4Addr) -> anyhow::Result<u16> {
     let addr = SocketAddrV4::new(player_ip, DB_SERVER_QUERY_PORT);
     let mut stream = timeout(IO_TIMEOUT, TcpStream::connect(addr)).await??;
 
-    // Send the discovery query: length-prefixed "RemoteDBServ\0".
-    let payload = b"RemoteDBServ\0";
+    // Send the discovery query: length-prefixed "RemoteDBServer\0".
+    // An XDJ-AZ replies with port 0xffff to a shorter name.
+    let payload = b"RemoteDBServer\0";
     let mut pkt = Vec::with_capacity(4 + payload.len());
     pkt.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     pkt.extend_from_slice(payload);
@@ -730,7 +768,8 @@ async fn read_field(stream: &mut TcpStream) -> anyhow::Result<Field> {
         FIELD_STRING => {
             let mut len_buf = [0u8; 4];
             timeout(IO_TIMEOUT, stream.read_exact(&mut len_buf)).await??;
-            let len = u32::from_be_bytes(len_buf) as usize;
+            // The length counts UTF-16 code units, including the null terminator. It does not count bytes.
+            let len = (u32::from_be_bytes(len_buf) as usize).saturating_mul(2);
             // A bad peer can send any length. Refuse a length that is too large to allocate.
             if len > MAX_FIELD_LEN {
                 anyhow::bail!("dbserver field length {len} is larger than {MAX_FIELD_LEN}");
@@ -777,15 +816,21 @@ async fn send_message(
     let arg_count = args.len() as u8;
 
     // Build type-tag area (12 bytes, padded with 0x00).
+    // An argument type tag is not the field type tag: a number of any size has tag 0x06.
     let mut tags = [0u8; 12];
-    for (i, &t) in type_tags.iter().enumerate().take(12) {
-        tags[i] = t;
+    for (tag, arg) in tags.iter_mut().zip(args) {
+        *tag = match arg {
+            Field::Number(_) => ARG_TAG_NUMBER,
+            Field::Text(_) => ARG_TAG_STRING,
+            Field::Blob(_) => ARG_TAG_BLOB,
+        };
     }
 
     let mut buf = Vec::with_capacity(64);
 
     // Magic.
-    buf.extend_from_slice(&DB_MAGIC);
+    buf.push(FIELD_U32);
+    buf.extend_from_slice(&DB_MAGIC.to_be_bytes());
     // Transaction ID (as a u32 field: type tag + value).
     buf.push(FIELD_U32);
     buf.extend_from_slice(&tx_id.to_be_bytes());
@@ -826,7 +871,8 @@ async fn send_message(
             Field::Text(s) => {
                 let encoded = encode_utf16be(s);
                 buf.push(FIELD_STRING);
-                buf.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+                // The length counts UTF-16 code units, not bytes.
+                buf.extend_from_slice(&((encoded.len() / 2) as u32).to_be_bytes());
                 buf.extend_from_slice(&encoded);
             }
         }
@@ -838,17 +884,10 @@ async fn send_message(
 
 /// Read a dbserver message from the stream.
 async fn read_message(stream: &mut TcpStream) -> anyhow::Result<DbMessage> {
-    // Read magic.
-    let mut magic = [0u8; 4];
-    timeout(IO_TIMEOUT, stream.read_exact(&mut magic)).await??;
-    if magic != DB_MAGIC {
-        anyhow::bail!(
-            "Bad dbserver magic: {:02x}{:02x}{:02x}{:02x}",
-            magic[0],
-            magic[1],
-            magic[2],
-            magic[3]
-        );
+    // Read magic. It is a u32 field.
+    let magic = read_field(stream).await?;
+    if magic != Field::Number(DB_MAGIC) {
+        anyhow::bail!("Bad dbserver magic: {magic:?}");
     }
 
     // Transaction ID (field).
@@ -922,7 +961,7 @@ fn extract_menu_count(msg: &DbMessage) -> anyhow::Result<u32> {
 /// Item types we care about:
 ///   0x0004 = Track title  (item #1, label 1 = title)
 ///   0x0007 = Artist       (item #2, label 1 = artist)
-///   0x000d = Tempo        (item #5, numeric 1 = BPM × 100)
+///   0x000d = Tempo        (item #5, numeric 2 = BPM × 100)
 ///   0x000f = Key          (item #7, label 1 = key)
 fn parse_menu_item(item_index: u32, msg: &DbMessage, meta: &mut TrackMetadata) {
     // We need at least 7 args to get the item type.
@@ -956,8 +995,8 @@ fn parse_menu_item(item_index: u32, msg: &DbMessage, meta: &mut TrackMetadata) {
             meta.key = label1.clone();
         }
         0x000d => {
-            // Tempo — numeric 1 (arg[0]) contains BPM × 100.
-            if let Some(Field::Number(raw)) = msg.args.first() {
+            // Tempo — numeric 2 (arg[1]) contains BPM × 100.
+            if let Some(Field::Number(raw)) = msg.args.get(1) {
                 if *raw > 0 {
                     meta.bpm = Some(*raw as f64 / 100.0);
                 }
@@ -1064,6 +1103,103 @@ mod tests {
         check(&parse_pssi_tag(&t).unwrap());
     }
 
+    /// The PSSI blob that an XDJ-AZ sent for a rekordbox track with 20 phrases.
+    #[test]
+    fn pssi_from_an_xdj_az() {
+        let ss = parse_pssi_tag(include_bytes!("testdata/xdj_az_pssi.bin")).unwrap();
+        assert_eq!(ss.mood, TrackMood::High);
+        assert_eq!(ss.end_beat, 1008);
+        assert_eq!(ss.phrases.len(), 20);
+        let first = &ss.phrases[0];
+        assert_eq!((first.beat, first.kind), (1, PhraseKind::Intro));
+        let last = &ss.phrases[19];
+        assert_eq!((last.beat, last.kind), (947, PhraseKind::Outro));
+        assert_eq!(
+            (ss.phrases[14].has_fill, ss.phrases[14].fill_beat),
+            (true, 689)
+        );
+    }
+
+    #[test]
+    fn tempo_is_the_second_number_of_the_menu_item() {
+        // The tempo item of an XDJ-AZ.
+        let msg = DbMessage {
+            msg_type: MSG_MENU_ITEM,
+            args: vec![
+                Field::Number(0),
+                Field::Number(12300),
+                Field::Number(2),
+                Field::Text(String::new()),
+                Field::Number(2),
+                Field::Text(String::new()),
+                Field::Number(0x0d),
+            ],
+        };
+        let mut meta = TrackMetadata::default();
+        parse_menu_item(5, &msg, &mut meta);
+        assert_eq!(meta.bpm, Some(123.0));
+    }
+
+    /// An XDJ-AZ accepts these setup bytes from asking player 1.
+    #[tokio::test]
+    async fn setup_message_matches_the_wire_format() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut peer, _) = listener.accept().await.unwrap();
+            let mut got = vec![0u8; 37];
+            peer.read_exact(&mut got).await.unwrap();
+            got
+        });
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        send_message(
+            &mut stream,
+            0xffff_fffe,
+            MSG_SETUP_REQ,
+            &[Field::Number(1)],
+            &[FIELD_U32],
+        )
+        .await
+        .unwrap();
+        let mut want = vec![0x11, 0x87, 0x23, 0x49, 0xae, 0x11, 0xff, 0xff, 0xff, 0xfe];
+        want.extend([
+            0x10, 0x00, 0x00, 0x0f, 0x01, 0x14, 0x00, 0x00, 0x00, 0x0c, 0x06,
+        ]);
+        want.extend([0; 11]);
+        want.extend([0x11, 0x00, 0x00, 0x00, 0x01]);
+        assert_eq!(peer.await.unwrap(), want);
+    }
+
+    #[tokio::test]
+    async fn read_field_counts_string_length_in_utf16_units() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut peer, _) = listener.accept().await.unwrap();
+            // "5A" and the null terminator are 3 code units, 6 bytes.
+            let mut msg = vec![FIELD_STRING, 0, 0, 0, 3, 0, b'5', 0, b'A', 0, 0];
+            msg.extend([FIELD_U32, 0, 0, 0, 7]);
+            peer.write_all(&msg).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        assert_eq!(
+            read_field(&mut stream).await.unwrap(),
+            Field::Text("5A".into())
+        );
+        assert_eq!(read_field(&mut stream).await.unwrap(), Field::Number(7));
+    }
+
+    #[test]
+    fn pssi_error_names_the_blob() {
+        let t = tag(&body(2, 65, &[]), 0, false);
+        let e = format!("{:#}", parse_pssi_tag(&with_header(&t)).unwrap_err());
+        assert!(e.contains("len_entries 0"), "{e}");
+        assert!(e.contains("head 000000205053534900000020"), "{e}");
+    }
+
     #[test]
     fn pssi_without_length_prefix() {
         let t = tag(&body(2, 65, &[(1, 1), (33, 2)]), 2, false);
@@ -1117,7 +1253,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (mut peer, _) = listener.accept().await.unwrap();
-            let mut msg = DB_MAGIC.to_vec();
+            let mut msg = vec![FIELD_U32];
+            msg.extend(DB_MAGIC.to_be_bytes());
             msg.extend([FIELD_U32, 0, 0, 0, 1]); // transaction ID
             msg.extend([FIELD_U16, 0x40, 0x00]); // message type
             msg.extend([FIELD_U32, 0xFF, 0xFF, 0xFF, 0xFF]); // argument count

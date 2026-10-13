@@ -57,6 +57,8 @@ pub struct DeviceState {
     pub track_key: String,
     pub track_bpm_meta: Option<f64>,
     pub song_structure: Option<SongStructure>,
+    /// The reason that the song structure fetch failed for the loaded track.
+    pub phrase_error: Option<String>,
     pub current_phrase_idx: Option<usize>,
     pub prev_phrase_idx: Option<usize>,
 }
@@ -89,6 +91,7 @@ impl DeviceState {
             track_key: String::new(),
             track_bpm_meta: None,
             song_structure: None,
+            phrase_error: None,
             current_phrase_idx: None,
             prev_phrase_idx: None,
         }
