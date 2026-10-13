@@ -9,7 +9,7 @@ use crate::midi::MidiTransport;
 use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::state::{BeatSource, SharedState};
-use crate::tui::state::MidiActivity;
+use crate::midi::activity::MidiActivity;
 
 // ── MIDI byte helpers ─────────────────────────────────────────────────────────
 

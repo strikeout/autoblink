@@ -30,6 +30,7 @@ pub struct Config {
     pub device_name: String,
     pub midi: MidiConfig,
     pub link: LinkConfig,
+    pub web: WebConfig,
 }
 
 pub type SharedConfig = Arc<RwLock<Config>>;
@@ -47,6 +48,24 @@ impl Default for Config {
             device_name: "xdj-clock".into(),
             midi: MidiConfig::default(),
             link: LinkConfig::default(),
+            web: WebConfig::default(),
+        }
+    }
+}
+
+// ── Web UI config ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct WebConfig {
+    /// The address of the web UI. When the port is in use, the app tries the next 19 ports.
+    pub bind: String,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            bind: "0.0.0.0:11111".into(),
         }
     }
 }

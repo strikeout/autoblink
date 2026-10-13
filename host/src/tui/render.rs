@@ -6,9 +6,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 
-use super::state::{
-    get_value, selected_interface_name_ip, ActivePanel, SettingKind, TuiState, MIDI_SETTINGS_START,
-    SETTINGS,
+use super::state::{ActivePanel, TuiState};
+use crate::settings::{
+    get_value, selected_interface_name_ip, SettingKind, MIDI_SETTINGS_START, SETTINGS,
 };
 use crate::config::SharedConfig;
 use crate::prolink::discovery::DeviceTable;

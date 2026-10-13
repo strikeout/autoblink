@@ -59,15 +59,23 @@ pub fn open_midi_output(port_name: &str) -> anyhow::Result<(MidiOutputConnection
             .map_err(|e| anyhow::anyhow!("{}", e));
     }
 
-    for port in &ports {
-        let name = midi_out.port_name(port)?;
-        if name.to_lowercase().contains(&port_name.to_lowercase()) {
-            tracing::info!(%name, "Selected MIDI output port");
-            return midi_out
-                .connect(port, "xdj-clock")
-                .map(|conn| (conn, name))
-                .map_err(|e| anyhow::anyhow!("{}", e));
-        }
+    // An exact name wins over a substring match, so that "Bus 1" does not open "Bus 10".
+    let wanted = port_name.to_lowercase();
+    let names: Vec<String> = ports
+        .iter()
+        .map(|p| midi_out.port_name(p).unwrap_or_default())
+        .collect();
+    let pick = names
+        .iter()
+        .position(|n| n.to_lowercase() == wanted)
+        .or_else(|| names.iter().position(|n| n.to_lowercase().contains(&wanted)));
+    if let Some(i) = pick {
+        let name = names[i].clone();
+        tracing::info!(%name, "Selected MIDI output port");
+        return midi_out
+            .connect(&ports[i], "xdj-clock")
+            .map(|conn| (conn, name))
+            .map_err(|e| anyhow::anyhow!("{}", e));
     }
 
     anyhow::bail!("MIDI port matching {:?} not found", port_name)

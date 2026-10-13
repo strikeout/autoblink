@@ -3,11 +3,14 @@
 mod app;
 mod config;
 mod link;
+mod logbuf;
 mod midi;
 mod prolink;
 mod runtime;
+mod settings;
 mod state;
 mod tui;
+mod web;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

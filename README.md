@@ -39,6 +39,15 @@
 1. download the latest release on the right
 2. run it.
 
+### Web UI
+The app serves a dashboard in the browser at port 11111. The start-up log shows the address for each network interface, for example `http://192.168.1.20:11111`.
+- The dashboard shows the master, the decks, the XDJ-AZ mixer, the MIDI output and the log. The data comes over a WebSocket, about 30 times per second. Each beat comes at the moment it arrives.
+- You can change all settings and select the MIDI output port in the dashboard.
+- When port 11111 is in use, the app uses the next free port, up to 11130.
+- Use `--web-bind 127.0.0.1:11111` or `[web] bind` in `config.toml` to change the address.
+
+**Warning:** The dashboard has no login. By default, it listens on all interfaces. Anyone on the same network can change the MIDI settings. To allow access from this computer only, use `--web-bind 127.0.0.1:11111`.
+
 ### Raspberry Pi and unattended use
 The `xdj-clock-linux-aarch64` release runs on a Raspberry Pi 3, 4 or 5 with a 64-bit OS.
 

@@ -11,7 +11,7 @@ use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::prolink::virtual_cdj::VirtualCdjReady;
 use crate::state::SharedState;
-use crate::tui::state::MidiActivity;
+use crate::midi::activity::MidiActivity;
 
 pub mod applier;
 pub mod link;
@@ -43,7 +43,7 @@ fn source_flags(source: crate::config::Source) -> (bool, bool) {
 
 pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
     let AppContext {
-        cli: _,
+        cli,
         startup_cfg,
         midi_conn,
         dj_state,
@@ -133,6 +133,29 @@ pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
     ));
 
     crate::midi::input::spawn(Arc::clone(&dj_state));
+
+    let web_bind = cli
+        .web_bind
+        .clone()
+        .unwrap_or_else(|| startup_cfg.web.bind.clone());
+    let web_addr = web_bind.parse().unwrap_or_else(|e| {
+        tracing::error!(%web_bind, error = %e, "Invalid web UI address; using 0.0.0.0:11111");
+        std::net::SocketAddr::from(([0, 0, 0, 0], 11111))
+    });
+    crate::web::spawn(
+        crate::web::WebCtx {
+            dj_state: Arc::clone(&dj_state),
+            cfg: Arc::clone(&cfg),
+            device_table: device_table.clone(),
+            midi_activity: Arc::clone(&midi_activity),
+            log_buf: log_buf.clone(),
+            beat_tx: beat_tx.clone(),
+            midi_out: midi_out.clone(),
+            cfg_change_tx: cfg_change_tx.clone(),
+        },
+        web_addr,
+    )
+    .await;
 
     if use_tui {
         crate::tui::run(

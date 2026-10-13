@@ -130,7 +130,7 @@ mod tests {
     use crate::config::{new_shared, Config};
     use crate::state::timing::TimingMeasurement;
     use crate::state::{new_shared as new_shared_state, BeatSource, MasterState};
-    use crate::tui::state::MidiActivity;
+    use crate::midi::activity::MidiActivity;
 
     #[tokio::test]
     async fn mtc_can_be_enabled_and_disabled_after_startup() {

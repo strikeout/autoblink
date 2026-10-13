@@ -21,10 +21,10 @@ use crate::config::SharedConfig;
 use crate::midi::{MidiOutConnection, MidiOutHandle, MidirOutConnection};
 use crate::prolink::discovery::DeviceTable;
 use crate::state::SharedState;
-use state::{
-    apply_change, apply_numeric_input, numeric_edit_value, setting_kind, ActivePanel, LogBuffer,
-    MidiActivity, SettingKind, TuiState, MIDI_SETTINGS_START,
-};
+use crate::logbuf::LogBuffer;
+use crate::midi::activity::MidiActivity;
+use crate::settings::{numeric_edit_value, setting_kind, SettingKind, MIDI_SETTINGS_START};
+use state::{ActivePanel, TuiState};
 
 /// Run the TUI.  This replaces the status-display + ctrl-c loop in main.
 ///
@@ -167,11 +167,7 @@ fn handle_settings_key(
                 tui.edit_buffer.pop();
             }
             KeyCode::Enter => {
-                let mut guard = cfg.write();
-                if apply_numeric_input(&mut guard, tui.settings_cursor, &tui.edit_buffer) {
-                    log_setting_change(tui.settings_cursor, &guard);
-                    let _ = cfg_change_tx.send(());
-                }
+                crate::settings::set_numeric(cfg, cfg_change_tx, tui.settings_cursor, &tui.edit_buffer);
                 tui.editing = false;
                 tui.edit_buffer.clear();
             }
@@ -215,33 +211,7 @@ fn cycle_setting(
     cfg_change_tx: &watch::Sender<()>,
     direction: i8,
 ) {
-    let interfaces = tui.interfaces.clone();
-    let mut guard = cfg.write();
-    if apply_change(&mut guard, &interfaces, tui.settings_cursor, direction) {
-        let _ = cfg_change_tx.send(());
-        match tui.settings_cursor {
-            0 => {
-                tracing::info!(interface = %guard.interface, "Network interface changed; the network tasks re-bind within 2 s")
-            }
-            1 => {
-                tracing::info!(mode = ?guard.source, "Source mode changed; restart may be required for running engines")
-            }
-            3 => tracing::info!(
-                enabled = guard.midi.clock_enabled,
-                "MIDI clock setting changed"
-            ),
-            4 => tracing::info!(
-                enabled = guard.midi.clock_loop_enabled,
-                "MIDI clock loop setting changed"
-            ),
-            21 => tracing::info!(enabled = guard.midi.mtc.enabled, "MTC setting changed"),
-            22 => tracing::info!(
-                frame_rate = guard.midi.mtc.frame_rate.label(),
-                "MTC frame rate changed"
-            ),
-            _ => {}
-        }
-    }
+    crate::settings::cycle(cfg, &tui.interfaces, cfg_change_tx, tui.settings_cursor, direction);
 }
 
 fn activate_setting(tui: &mut TuiState, cfg: &SharedConfig, cfg_change_tx: &watch::Sender<()>) {
@@ -256,53 +226,6 @@ fn activate_setting(tui: &mut TuiState, cfg: &SharedConfig, cfg_change_tx: &watc
                 tui.edit_buffer = value;
             }
         }
-    }
-}
-
-fn log_setting_change(idx: usize, cfg: &crate::config::Config) {
-    match idx {
-        2 => tracing::info!(
-            device_number = cfg.device_number,
-            "Device number changed; restart required for network tasks"
-        ),
-        4 => tracing::info!(
-            enabled = cfg.midi.clock_loop_enabled,
-            "MIDI clock loop setting changed"
-        ),
-        5 => tracing::info!(
-            smoothing_ms = cfg.midi.smoothing_ms,
-            "BPM smoothing setting changed"
-        ),
-        6 => tracing::info!(
-            latency_ms = cfg.midi.latency_compensation_ms,
-            "Latency compensation changed"
-        ),
-        7 => tracing::info!(
-            bars = cfg.midi.phrase_lock_stable_beats,
-            "Phrase-lock bar resync interval changed"
-        ),
-        8 => tracing::info!(channel = cfg.midi.notes.channel + 1, "Note channel changed"),
-        9 => tracing::info!(note = cfg.midi.notes.beat, "Beat note changed"),
-        10 => tracing::info!(note = cfg.midi.notes.downbeat, "Downbeat note changed"),
-        11 => tracing::info!(
-            note = cfg.midi.notes.phrase_change,
-            "Phrase change note changed"
-        ),
-        12 => tracing::info!(channel = cfg.midi.cc.channel + 1, "CC channel changed"),
-        13 => tracing::info!(cc = cfg.midi.cc.bpm_coarse, "BPM coarse CC changed"),
-        14 => tracing::info!(cc = cfg.midi.cc.bpm_fine, "BPM fine CC changed"),
-        15 => tracing::info!(cc = cfg.midi.cc.pitch, "Pitch CC changed"),
-        16 => tracing::info!(cc = cfg.midi.cc.bar_phase, "Bar phase CC changed"),
-        17 => tracing::info!(cc = cfg.midi.cc.beat_phase, "Beat phase CC changed"),
-        18 => tracing::info!(cc = cfg.midi.cc.playing, "Playing CC changed"),
-        19 => tracing::info!(cc = cfg.midi.cc.master_deck, "Master deck CC changed"),
-        20 => tracing::info!(cc = cfg.midi.cc.phrase_16, "Phrase 16 CC changed"),
-        21 => tracing::info!(enabled = cfg.midi.mtc.enabled, "MTC setting changed"),
-        22 => tracing::info!(
-            frame_rate = cfg.midi.mtc.frame_rate.label(),
-            "MTC frame rate changed"
-        ),
-        _ => {}
     }
 }
 

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>xdj-clock</title>
+<!--
+  The shared xdj-clock dashboard. The host, the emulator and the ESP32 serve this file.
+  It speaks protocol v1 over one WebSocket at /ws (see host/src/web/mod.rs).
+  The page shows only the panels that the server names in the "caps" of its hello message.
+  Network text (deck names, track titles, log lines) goes into textContent, never innerHTML.
+-->
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0f;--panel:#12121c;--border:#1e1e32;--text:#e0e0e0;--muted:#7a7a8c;--dim:#4a4a5c;--accent:#00e0ff;--play:#00ff88;--flash:#ffd000;--danger:#ff4d4d;--warn:#ffaa00}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:13px}
+.mono,.log,.num{font-family:'SF Mono',Menlo,Monaco,'Cascadia Mono',monospace}
+header{background:#151524;padding:10px 16px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
+header h1{font-size:15px;color:var(--accent)}
+header .kv{color:var(--muted)}
+header .kv b{color:var(--text);font-weight:500}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:6px}
+.dot.on{background:var(--play)}
+#state.play{color:var(--play)}#state.stop{color:var(--danger)}
+#toast{margin-left:auto;color:var(--danger);font-weight:600}
+main{padding:12px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));max-width:1600px;margin:0 auto}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}
+.panel h2{font-size:11px;text-transform:uppercase;letter-spacing:1.4px;color:var(--muted);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.wide{grid-column:1/-1}
+[hidden]{display:none!important}
+/* master */
+#bpm{font-size:58px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;transition:color .05s}
+#bpm.flash{color:var(--flash)}
+.beats{display:flex;gap:6px;margin:6px 0 10px}
+.beats span{width:22px;height:22px;border-radius:4px;background:#1c1c2c}
+.beats span.on{background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.beats.flash span.on{background:var(--flash);box-shadow:0 0 12px var(--flash)}
+.row{display:flex;flex-wrap:wrap;gap:4px 16px;color:var(--muted);margin-top:4px}
+.row b{color:var(--text);font-weight:500}
+.bar{height:6px;background:#1c1c2c;border-radius:3px;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--accent)}
+/* decks */
+.decks{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.deck{background:#0d0d16;border:1px solid var(--border);border-radius:8px;padding:10px}
+.deck.master{border-color:var(--flash)}
+.deck.vmaster{border-color:var(--accent)}
+.deck .top{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.deck .name{font-weight:600}
+.deck .bpm{color:var(--accent);font-variant-numeric:tabular-nums}
+.deck .tag{font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;background:#222236;color:var(--muted)}
+.deck .tag.m{background:var(--flash);color:#000}.deck .tag.vm{background:var(--accent);color:#000}
+.deck .tag.air{color:var(--play)}.deck .tag.sync{color:var(--accent)}
+.deck .ps{color:var(--muted);margin-left:auto}
+.deck .play{color:var(--play)}.deck .stopped{color:var(--dim)}
+.deck .line{color:var(--muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.deck .track{color:var(--accent)}
+.deck .phrase{position:relative;height:16px;background:#1c1c2c;border-radius:3px;margin-top:6px;overflow:hidden}
+.deck .phrase i{position:absolute;inset:0 auto 0 0;background:#0a5a6a}
+.deck .phrase span{position:relative;font-size:11px;padding-left:6px;line-height:16px}
+.empty{color:var(--dim);padding:8px 0}
+table.mixer{border-collapse:collapse;margin-top:10px;font-variant-numeric:tabular-nums}
+table.mixer td,table.mixer th{padding:2px 12px 2px 0;text-align:right;color:var(--muted);font-weight:400}
+table.mixer td:first-child,table.mixer th:first-child{text-align:left;color:var(--text)}
+/* output */
+.act{display:flex;gap:10px;min-height:20px;margin-top:6px}
+.act .note{color:var(--flash);font-weight:700}.act .cc{color:var(--accent)}
+/* settings */
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px 20px}
+.section{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin:10px 0 4px}
+.set{display:flex;align-items:center;gap:6px;padding:3px 0}
+.set label{flex:1;color:var(--muted)}
+.set .val{color:var(--text);text-align:right}
+button{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:3px 9px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.val{min-width:44px}
+input.num{width:78px;background:#0d0d16;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:3px 6px;text-align:right}
+input.num:focus{outline:none;border-color:var(--accent)}
+input.num.bad{border-color:var(--danger)}
+/* ports */
+.ports{display:flex;flex-direction:column;gap:4px}
+.port{text-align:left;display:flex;gap:8px}
+.port.active{border-color:var(--play)}
+.port .mark{width:10px;color:var(--play)}
+/* logs */
+.log{background:#08080d;border-radius:6px;padding:8px;height:200px;overflow-y:auto;font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-all}
+.log .ERROR{color:var(--danger)}.log .WARN{color:var(--warn)}.log .DEBUG,.log .TRACE{color:var(--dim)}
+</style>
+</head>
+<body>
+<header>
+  <h1>xdj-clock <span id="version" class="kv"></span></h1>
+  <span class="kv"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  <span class="kv">source <b id="source">—</b></span>
+  <span class="kv">mode <b id="mode">—</b></span>
+  <span class="kv">iface <b id="iface">—</b></span>
+  <b id="state" class="stop">■ STOP</b>
+  <span id="toast"></span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Master</h2>
+    <div id="bpm" class="num">---.-</div>
+    <div id="beats" class="beats"><span></span><span></span><span></span><span></span></div>
+    <div class="row">
+      <span>pitch <b id="pitch" class="num">±0.00%</b></span>
+      <span>deck <b id="mdeck">—</b></span>
+    </div>
+    <div class="row num">
+      <span>in <b id="in16">00</b></span>
+      <span>out <b id="out16">00</b></span>
+      <span>Δ <b id="delta">—</b></span>
+      <span>clock <b id="cstate">idle</b></span>
+    </div>
+    <div class="bar"><i id="phrasebar" style="width:0"></i></div>
+  </section>
+
+  <section class="panel" data-cap="output">
+    <h2>Output Status</h2>
+    <div class="row">port <b id="oport">—</b> <span id="oconn"></span></div>
+    <div class="row">clock <b id="oclock">—</b> <span class="num">pulses <b id="opulses">0</b></span></div>
+    <div class="row num">notes <b id="onotes">0</b> CCs <b id="occs">0</b> <span id="odropped"></span></div>
+    <div class="row">MTC <b id="omtc">—</b></div>
+    <div class="act num"><span id="anote" class="note"></span><span id="acc" class="cc"></span><span id="aidle" class="empty">idle</span></div>
+  </section>
+
+  <section class="panel" data-cap="ports">
+    <h2>Output Port <button id="rescan">Rescan</button></h2>
+    <div id="ports" class="ports"></div>
+  </section>
+
+  <section class="panel wide" data-cap="decks">
+    <h2>Deck Information <span id="link" class="kv"></span></h2>
+    <div id="decks" class="decks"></div>
+    <table id="mixer" class="mixer" data-cap="mixer" hidden></table>
+  </section>
+
+  <section class="panel wide" data-cap="settings">
+    <h2>Settings</h2>
+    <div class="cols">
+      <div><div class="section">Input</div><div id="set-input"></div></div>
+      <div id="set-midi"></div>
+    </div>
+  </section>
+
+  <section class="panel wide" data-cap="logs">
+    <h2>Logs</h2>
+    <div id="log" class="log"></div>
+  </section>
+</main>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const MIDI_SETTINGS_START = 3; // indices below this are the input settings
+const LOG_MAX = 200;
+
+/** Creates an element. Children are nodes or strings; strings become text nodes. */
+function h(tag, cls, ...children) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  for (const c of children) if (c !== null && c !== undefined && c !== false) e.append(c);
+  return e;
+}
+const set = (id, text) => { const e = $(id); if (e.textContent !== text) e.textContent = text; };
+const pad2 = (n) => String(n).padStart(2, '0');
+
+let ws = null, backoff = 500, caps = null, status = null, beatCap = false, lastBeat = 0, toastTimer = 0;
+
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+function toast(text) {
+  set('toast', text);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => set('toast', ''), 4000);
+}
+
+function flash() {
+  $('bpm').classList.add('flash'); $('beats').classList.add('flash');
+  setTimeout(() => { $('bpm').classList.remove('flash'); $('beats').classList.remove('flash'); }, 100);
+}
+
+function onHello(m) {
+  caps = new Set(m.caps || []);
+  beatCap = caps.has('beat');
+  set('version', 'v' + m.version + (m.device && m.device !== 'host' ? ' · ' + m.device : ''));
+  document.querySelectorAll('[data-cap]').forEach((e) => { e.hidden = !caps.has(e.dataset.cap); });
+}
+
+function onStatus(s) {
+  status = s;
+  const m = s.master;
+  set('source', s.source || '—');
+  set('mode', s.mode || '—');
+  set('iface', s.iface || '—');
+  set('state', m.playing ? '▶ PLAY' : '■ STOP');
+  $('state').className = m.playing ? 'play' : 'stop';
+
+  set('bpm', m.bpm > 0 ? m.bpm.toFixed(2) : '---.-');
+  [...$('beats').children].forEach((e, i) => e.classList.toggle('on', i + 1 === m.beat));
+  if (!beatCap && m.beat !== lastBeat && m.beat > 0) flash();
+  lastBeat = m.beat;
+  set('pitch', Math.abs(m.pitch) < 0.005 ? '±0.00%' : (m.pitch > 0 ? '+' : '') + m.pitch.toFixed(2) + '%');
+  set('mdeck', m.device ? '#' + m.device + (m.virtual_master ? ' (virtual)' : '') : (s.link_active ? 'Link' : '—'));
+  set('in16', pad2(m.phrase16));
+  $('phrasebar').style.width = (m.phrase16 / 16 * 100) + '%';
+  if (s.clock) {
+    set('out16', pad2(s.clock.out16));
+    set('delta', s.clock.delta_ms == null ? '—' : s.clock.delta_ms.toFixed(1) + 'ms');
+    set('cstate', s.clock.state);
+  }
+
+  if (s.output) renderOutput(s.output);
+  if (s.decks) renderDecks(s);
+  if (s.mixer !== undefined) renderMixer(s.mixer);
+}
+
+function renderOutput(o) {
+  set('oport', o.port || '—');
+  set('oconn', o.connected ? '' : '(not connected)');
+  set('oclock', o.clock_enabled ? '✓ enabled' : '✗ disabled');
+  set('opulses', String(o.pulses));
+  set('onotes', String(o.notes));
+  set('occs', String(o.ccs));
+  set('odropped', o.dropped ? 'dropped ' + o.dropped : '');
+  set('omtc', o.mtc ? '✓ ' + o.mtc + ' (qf ' + o.mtc_qf + ', full ' + o.mtc_full + ')' : '✗ disabled');
+  set('anote', o.last_note == null ? '' : '♪ note ' + o.last_note);
+  set('acc', o.last_cc == null ? '' : '↗ CC' + o.last_cc[0] + '=' + o.last_cc[1]);
+  $('aidle').hidden = o.last_note != null || o.last_cc != null;
+}
+
+function fmtTime(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + pad2(s % 60); }
+
+function renderDecks(s) {
+  set('link', s.link_peers > 0 ? 'Ableton Link: ' + s.link_peers + ' peer(s)' + (s.link_active ? ' · active' : '') : (s.link_active ? 'Ableton Link active' : ''));
+  const cards = s.decks.map((d) => {
+    const top = h('div', 'top',
+      h('span', d.playing ? 'play' : 'stopped', d.playing ? '▶' : '■'),
+      h('span', 'name', '#' + d.num + ' ' + d.name),
+      d.master && h('span', 'tag m', 'MASTER'),
+      d.virtual_master && h('span', 'tag vm', 'vM'),
+      d.bpm != null && h('span', 'bpm num', d.bpm.toFixed(1) + ' bpm'),
+      d.bpm != null && Math.abs(d.pitch) > 0.005 && h('span', 'num', '(' + (d.pitch > 0 ? '+' : '') + d.pitch.toFixed(2) + '%)'),
+      d.play_state && h('span', 'ps', d.play_state));
+    const flags = [];
+    if (d.on_air) flags.push(h('span', 'tag air', 'ON-AIR'));
+    if (d.sync) flags.push(h('span', 'tag sync', 'SYNC'));
+    if (d.beat) flags.push('beat ' + [1, 2, 3, 4].map((i) => (i === d.beat ? '▮' : '▯')).join(''));
+    if (d.beat_count != null) flags.push(' #' + d.beat_count);
+    if (d.playhead_ms != null) flags.push(' ' + fmtTime(d.playhead_ms));
+    let phrase = null;
+    if (d.phrase) {
+      const bar = h('i'); bar.style.width = (d.phrase.progress * 100) + '%';
+      phrase = h('div', 'phrase', bar, h('span', 'num', d.phrase.kind + ' ' + Math.floor(d.phrase.progress * 100) + '%' + (d.phrase.fill ? ' [FILL]' : '')));
+    }
+    return h('div', 'deck' + (d.master ? ' master' : d.virtual_master ? ' vmaster' : ''),
+      top,
+      flags.length > 0 && h('div', 'line num', ...flags),
+      d.track && h('div', 'line track', '♫ ' + d.track),
+      d.src && h('div', 'line', 'src: ' + d.src),
+      phrase,
+      d.phrase_note && h('div', 'line', d.phrase_note));
+  });
+  if (cards.length === 0) cards.push(h('div', 'empty', s.no_devices ? 'No devices on network' : ''));
+  $('decks').replaceChildren(...cards);
+}
+
+function renderMixer(mx) {
+  const t = $('mixer');
+  if (!mx || (caps && !caps.has('mixer'))) { t.hidden = true; return; }
+  t.hidden = false;
+  const eq = (v) => (v == null ? '--' : (v > 0 ? '+' : '') + v);
+  const rows = [h('tr', null, h('th', null, 'Mixer (XDJ-AZ)'), h('th', null, 'HI'), h('th', null, 'MID'), h('th', null, 'LOW'), h('th', null, 'FDR'))];
+  mx.forEach((c, i) => rows.push(h('tr', null, h('td', null, 'CH' + (i + 1)), h('td', null, eq(c.hi)), h('td', null, eq(c.mid)), h('td', null, eq(c.low)), h('td', null, c.fader_pct == null ? '--' : c.fader_pct + '%'))));
+  t.replaceChildren(...rows);
+}
+
+// Settings rows are built once per index, then updated in place, so that an input keeps its focus.
+const setRows = new Map();
+let lastSection = null;
+function onSettings(m) {
+  for (const it of m.items) {
+    let row = setRows.get(it.idx);
+    if (!row) {
+      const parent = it.idx < MIDI_SETTINGS_START ? $('set-input') : $('set-midi');
+      if (it.section && it.idx >= MIDI_SETTINGS_START && it.section !== lastSection) {
+        parent.append(h('div', 'section', it.section));
+        lastSection = it.section;
+      }
+      row = buildSetting(it);
+      setRows.set(it.idx, row);
+      parent.append(row.el);
+    }
+    row.update(it);
+  }
+}
+
+function buildSetting(it) {
+  const label = h('label', null, it.label);
+  if (it.kind === 'number') {
+    const input = h('input', 'num');
+    input.inputMode = 'numeric';
+    input.title = it.label;
+    const commit = () => {
+      if (input.value.trim() === input.dataset.raw) return;
+      send({ type: 'set', idx: it.idx, value: input.value.trim() });
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { commit(); input.blur(); }
+      if (e.key === 'Escape') { input.value = input.dataset.raw; input.blur(); }
+    });
+    input.addEventListener('change', commit);
+    const shown = h('span', 'val num');
+    return {
+      el: h('div', 'set', label, shown, input),
+      update(it) {
+        input.dataset.raw = it.raw ?? '';
+        // The shown value carries the unit; the input holds the raw number.
+        shown.textContent = it.value === it.raw ? '' : it.value;
+        if (document.activeElement !== input) { input.value = it.raw ?? ''; input.classList.remove('bad'); }
+      },
+    };
+  }
+  const val = h('button', 'val', '');
+  val.addEventListener('click', (e) => send({ type: 'cycle', idx: it.idx, dir: e.shiftKey ? -1 : 1 }));
+  const parts = [label];
+  if (it.kind === 'cycle') {
+    const prev = h('button', null, '◀');
+    prev.addEventListener('click', () => send({ type: 'cycle', idx: it.idx, dir: -1 }));
+    parts.push(prev);
+  }
+  parts.push(val);
+  return { el: h('div', 'set', ...parts), update(it) { val.textContent = it.value; } };
+}
+
+function onPorts(m) {
+  const items = m.ports.map((name) => {
+    const active = name === m.active;
+    const b = h('button', 'port' + (active ? ' active' : ''), h('span', 'mark', active ? '●' : ''), name);
+    b.addEventListener('click', () => send({ type: 'port', name }));
+    return b;
+  });
+  if (!m.ports.includes(m.active) && m.active) {
+    items.unshift(h('div', 'empty', 'configured: ' + m.active + (m.connected ? '' : ' (not connected)')));
+  }
+  if (items.length === 0) items.push(h('div', 'empty', 'No MIDI ports found'));
+  $('ports').replaceChildren(...items);
+}
+
+function logLevel(line) {
+  // "  12.3s  INFO target: msg": the level is the second word.
+  const w = line.trim().split(/\s+/)[1] || '';
+  return ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'].includes(w) ? w : 'INFO';
+}
+
+function onLog(m) {
+  const box = $('log');
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+  for (const line of m.lines) box.append(h('div', logLevel(line), line));
+  while (box.childElementCount > LOG_MAX) box.firstElementChild.remove();
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function onBeat(m) {
+  if (!status) return;
+  const master = status.master.device;
+  if (m.device === master || (m.device === 0 && status.link_active)) flash();
+}
+
+const handlers = { hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, error: (m) => toast(m.text) };
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  ws = new WebSocket(proto + location.host + '/ws');
+  ws.onopen = () => { backoff = 500; $('dot').classList.add('on'); set('conn', 'live'); };
+  ws.onmessage = (e) => {
+    let m;
+    try { m = JSON.parse(e.data); } catch { return; }
+    const f = handlers[m.type];
+    if (f) f(m);
+  };
+  ws.onclose = () => {
+    $('dot').classList.remove('on');
+    set('conn', 'reconnecting…');
+    setTimeout(connect, backoff);
+    backoff = Math.min(backoff * 2, 5000);
+  };
+}
+
+$('rescan').addEventListener('click', () => send({ type: 'rescan' }));
+connect();
+</script>
+</body>
+</html>

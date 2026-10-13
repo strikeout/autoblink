@@ -65,6 +65,11 @@ pub struct Cli {
     #[arg(long)]
     pub no_tui: bool,
 
+    /// Web UI address (default from config `web.bind`, else 0.0.0.0:11111).
+    /// When the port is in use, the next free port is used.
+    #[arg(long, value_name = "ADDR")]
+    pub web_bind: Option<String>,
+
     /// Run a non-interactive MIDI output soak and write a JSON report.
     #[arg(long, value_enum)]
     pub soak: Option<SoakMode>,
@@ -97,7 +102,7 @@ pub struct AppContext {
     pub dj_state: SharedState,
     pub cfg: config::SharedConfig,
     pub device_table: DeviceTable,
-    pub log_buf: crate::tui::state::LogBuffer,
+    pub log_buf: crate::logbuf::LogBuffer,
     // broadcast senders
     pub device_tx: broadcast::Sender<crate::prolink::discovery::DeviceEvent>,
     pub beat_tx: broadcast::Sender<crate::prolink::beat_listener::BeatEvent>,
@@ -114,7 +119,7 @@ pub fn init() -> anyhow::Result<AppContext> {
 
     // ── Logging ──────────────────────────────────────────────────────────────
     let use_tui = !cli.no_tui;
-    let log_buf = crate::tui::state::LogBuffer::new();
+    let log_buf = crate::logbuf::LogBuffer::new();
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         tracing_subscriber::EnvFilter::from_str(&cli.log_level).unwrap_or_default()
@@ -132,14 +137,29 @@ pub fn init() -> anyhow::Result<AppContext> {
                     .with_target(true)
                     .with_ansi(false)
                     .with_timer(fmt::time::Uptime::default())
-                    .with_writer(crate::tui::state::MakeLogWriter::new(log_buf.clone())),
+                    .with_writer(crate::logbuf::MakeLogWriter::new(log_buf.clone())),
             )
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_target(true)
-            .with_timer(tracing_subscriber::fmt::time::Uptime::default())
+        use tracing_subscriber::fmt;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        // Stdout for the journal, and the buffer for the web UI log panel.
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(
+                fmt::layer()
+                    .with_target(true)
+                    .with_timer(fmt::time::Uptime::default()),
+            )
+            .with(
+                fmt::layer()
+                    .with_target(true)
+                    .with_ansi(false)
+                    .with_timer(fmt::time::Uptime::default())
+                    .with_writer(crate::logbuf::MakeLogWriter::new(log_buf.clone())),
+            )
             .init();
     }
 
