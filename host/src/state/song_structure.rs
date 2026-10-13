@@ -26,6 +26,28 @@ pub enum PhraseKind {
     Unknown(u16),
 }
 
+impl PhraseKind {
+    /// MIDI code of the phrase kind: Intro 0, Verse 1–6, Bridge 7, Chorus 8, Up 9, Down 10, Outro 11.
+    /// Returns `None` for an unknown kind.
+    pub fn code(self) -> Option<u8> {
+        match self {
+            PhraseKind::Intro => Some(0),
+            PhraseKind::Verse1 => Some(1),
+            PhraseKind::Verse2 => Some(2),
+            PhraseKind::Verse3 => Some(3),
+            PhraseKind::Verse4 => Some(4),
+            PhraseKind::Verse5 => Some(5),
+            PhraseKind::Verse6 => Some(6),
+            PhraseKind::Bridge => Some(7),
+            PhraseKind::Chorus => Some(8),
+            PhraseKind::Up => Some(9),
+            PhraseKind::Down => Some(10),
+            PhraseKind::Outro => Some(11),
+            PhraseKind::Unknown(_) => None,
+        }
+    }
+}
+
 impl std::fmt::Display for PhraseKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

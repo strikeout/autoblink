@@ -7,7 +7,7 @@
 //! Protocol reference:
 //!   <https://djl-analysis.deepsymmetry.org/djl-analysis/track_metadata.html>
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,8 +48,8 @@ const MSG_MENU_HEADER: u16 = 0x4001;
 const MSG_MENU_ITEM: u16 = 0x4101;
 const MSG_MENU_FOOTER: u16 = 0x4201;
 const MSG_ANLZ_TAG_REQ: u16 = 0x2c04;
-#[allow(dead_code)]
-const MSG_ANLZ_TAG_RESP: u16 = 0x2c04; // response uses same type
+/// The response to the analysis tag request has type 0x4f02, not 0x2c04.
+const MSG_ANLZ_TAG_RESP: u16 = 0x4f02;
 
 // ── Field type tags ───────────────────────────────────────────────────────────
 
@@ -77,6 +77,51 @@ pub struct TrackMetadata {
 /// don't fire duplicate TCP queries for the same track.
 type InflightMap = Arc<Mutex<HashMap<(u8, u32), ()>>>;
 
+// ── Setup refusal ─────────────────────────────────────────────────────────────
+
+/// The dbserver did not accept the player number in the setup message.
+#[derive(Debug)]
+struct SetupRefused {
+    player: u8,
+}
+
+impl std::fmt::Display for SetupRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "dbserver refused player number {}", self.player)
+    }
+}
+
+impl std::error::Error for SetupRefused {}
+
+/// Choose the player number for the dbserver setup message.
+///
+/// The rules follow Beat Link `ConnectionManager.chooseAskingPlayerNumber`.
+/// The dbserver accepts a player number from 1 to 4 that is present on the network.
+/// A CDJ-3000 class player also accepts its own number.
+/// A target above 15 is rekordbox, and it gets the own number.
+/// The dbserver keeps one session for each player number. A player that plays a track
+/// from the target holds that session, so the virtual CDJ does not pose as that player.
+/// When no player is available, the own number is used, and the target can refuse it.
+fn asking_player(
+    own: u8,
+    target: u8,
+    target_name: &str,
+    players: impl IntoIterator<Item = (u8, u8)>,
+) -> u8 {
+    if target > 15 || (1..=4).contains(&own) {
+        return own;
+    }
+    if target_name.starts_with("CDJ-3000") || target_name.starts_with("XDJ-AZ") {
+        return target;
+    }
+    players
+        .into_iter()
+        .filter(|&(n, source)| (1..=4).contains(&n) && n != target && source != target)
+        .map(|(n, _)| n)
+        .min()
+        .unwrap_or(own)
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Spawns the metadata fetcher loop.
@@ -90,13 +135,30 @@ pub async fn run(
     rx: &mut mpsc::Receiver<TrackChange>,
 ) {
     let inflight: InflightMap = Arc::new(Mutex::new(HashMap::new()));
+    // The (target, asking player) pairs that already produced a refusal warning.
+    let warned: Arc<Mutex<HashSet<(u8, u8)>>> = Arc::new(Mutex::new(HashSet::new()));
 
     while let Some(change) = rx.recv().await {
-        let player_ip = {
+        // The track source player of each deck. Read it before the device table lock.
+        let sources: HashMap<u8, u8> = state
+            .read()
+            .devices
+            .iter()
+            .map(|(n, d)| (*n, d.track_source_player))
+            .collect();
+        let (player_ip, asking) = {
             let table = device_table.lock();
-            table
-                .get(&change.track_source_player)
-                .map(|d| Ipv4Addr::from(d.ip))
+            let target = table.get(&change.track_source_player);
+            let ip = target.map(|d| Ipv4Addr::from(d.ip));
+            let asking = asking_player(
+                our_device_number,
+                change.track_source_player,
+                target.map_or("", |d| d.name.as_str()),
+                table
+                    .keys()
+                    .map(|n| (*n, sources.get(n).copied().unwrap_or(0))),
+            );
+            (ip, asking)
         };
         let Some(ip) = player_ip else {
             tracing::warn!(
@@ -129,15 +191,11 @@ pub async fn run(
 
         let inflight2 = Arc::clone(&inflight);
         let state2 = Arc::clone(&state);
+        let warned2 = Arc::clone(&warned);
         let change2 = change.clone();
 
         tokio::spawn(async move {
-            match timeout(
-                FETCH_TIMEOUT,
-                fetch_metadata(ip, our_device_number, &change2),
-            )
-            .await
-            {
+            match timeout(FETCH_TIMEOUT, fetch_metadata(ip, asking, &change2)).await {
                 Ok(Ok((meta, song_struct))) => {
                     tracing::info!(
                         device = change2.device_number,
@@ -166,6 +224,15 @@ pub async fn run(
                         st.set_song_structure(change2.device_number, change2.rekordbox_id, ss);
                     }
                 }
+                Ok(Err(e)) if e.downcast_ref::<SetupRefused>().is_some() => {
+                    if warned2.lock().insert((change2.track_source_player, asking)) {
+                        tracing::warn!(
+                            target_player = change2.track_source_player,
+                            %ip,
+                            "dbserver refused player number {asking}; phrase and metadata are not available"
+                        );
+                    }
+                }
                 Ok(Err(e)) => {
                     tracing::debug!(
                         device = change2.device_number,
@@ -191,7 +258,7 @@ pub async fn run(
 
 async fn fetch_metadata(
     player_ip: Ipv4Addr,
-    our_device_number: u8,
+    asking: u8,
     change: &TrackChange,
 ) -> anyhow::Result<(TrackMetadata, Option<SongStructure>)> {
     // Step 1: Discover the dbserver port.
@@ -211,29 +278,37 @@ async fn fetch_metadata(
     }
     tracing::debug!("dbserver greeting OK");
 
-    // Step 4: Setup exchange — message type 0x0000 with our player number.
+    // Step 4: Setup exchange — message type 0x0000 with the asking player number.
     let mut tx_id: u32 = 1;
     send_message(
         &mut stream,
         tx_id,
         MSG_SETUP_REQ,
-        &[Field::Number(our_device_number as u32)],
+        &[Field::Number(asking as u32)],
         &[FIELD_U32],
     )
     .await?;
-    let setup_resp = read_message(&mut stream).await?;
+    // A player that refuses the number usually closes the connection and sends no reply.
+    let setup_resp = match read_message(&mut stream).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::debug!(error = %e, "dbserver sent no setup response");
+            return Err(SetupRefused { player: asking }.into());
+        }
+    };
     if setup_resp.msg_type != 0x4000 {
-        anyhow::bail!(
-            "Expected setup response 0x4000, got 0x{:04x}",
-            setup_resp.msg_type
+        tracing::debug!(
+            msg_type = format!("0x{:04x}", setup_resp.msg_type).as_str(),
+            "dbserver setup response is not 0x4000"
         );
+        return Err(SetupRefused { player: asking }.into());
     }
     tracing::debug!("dbserver setup handshake OK");
 
     // Step 5: Request metadata — message type 0x2002.
     tx_id += 1;
     // Build the DMST argument: D|01|Sr|Tr packed as a u32.
-    let dmst = ((our_device_number as u32) << 24)
+    let dmst = ((asking as u32) << 24)
         | (0x01u32 << 16)
         | ((change.track_slot as u32) << 8)
         | (change.track_type as u32);
@@ -299,8 +374,7 @@ async fn fetch_metadata(
     }
 
     // Step 8: Request PSSI (song structure / phrase analysis) from .EXT file.
-    let song_structure = match fetch_pssi(&mut stream, &mut tx_id, our_device_number, change).await
-    {
+    let song_structure = match fetch_pssi(&mut stream, &mut tx_id, asking, change).await {
         Ok(ss) => Some(ss),
         Err(e) => {
             tracing::debug!(
@@ -322,13 +396,13 @@ async fn fetch_metadata(
 async fn fetch_pssi(
     stream: &mut TcpStream,
     tx_id: &mut u32,
-    our_device_number: u8,
+    asking: u8,
     change: &TrackChange,
 ) -> anyhow::Result<SongStructure> {
     *tx_id += 1;
 
     // Build DMST argument: D|01|Sr|Tr
-    let dmst = ((our_device_number as u32) << 24)
+    let dmst = ((asking as u32) << 24)
         | (0x01u32 << 16)
         | ((change.track_slot as u32) << 8)
         | (change.track_type as u32);
@@ -365,6 +439,14 @@ async fn fetch_pssi(
         "PSSI response received"
     );
 
+    if resp.msg_type != MSG_ANLZ_TAG_RESP {
+        anyhow::bail!(
+            "Expected PSSI response 0x{:04x}, got 0x{:04x}",
+            MSG_ANLZ_TAG_RESP,
+            resp.msg_type
+        );
+    }
+
     // The response should contain a blob with the PSSI tag body.
     // Find the blob argument.
     let blob = resp
@@ -381,7 +463,12 @@ async fn fetch_pssi(
 
 /// Parse a raw PSSI tag blob into a SongStructure.
 ///
-/// Layout (from Kaitai Struct spec):
+/// The dbserver blob starts with a header:
+///   [len u32][PSSI][len_header u32][len_tag u32]
+/// The parser skips 16 bytes when `PSSI` is at bytes 4..8. It skips 12 bytes when `PSSI` is at
+/// bytes 0..4. Otherwise the blob is the bare tag body.
+///
+/// Layout of the tag body (from Kaitai Struct spec):
 ///   [0..4]   len_entry_bytes (u32be) — always 24
 ///   [4..6]   len_entries (u16be) — number of phrases
 ///   [6..]    body — XOR-masked if raw_mood > 20
@@ -395,6 +482,14 @@ async fn fetch_pssi(
 ///   [13]     padding
 ///   [14..]   entries (each 24 bytes)
 fn parse_pssi_tag(data: &[u8]) -> anyhow::Result<SongStructure> {
+    let start = if data.get(4..8) == Some(&b"PSSI"[..]) {
+        16
+    } else if data.get(0..4) == Some(&b"PSSI"[..]) {
+        12
+    } else {
+        0
+    };
+    let data = data.get(start..).unwrap_or_default();
     if data.len() < 6 {
         anyhow::bail!("PSSI tag too short: {} bytes", data.len());
     }
@@ -889,6 +984,132 @@ fn parse_menu_item(item_index: u32, msg: &DbMessage, meta: &mut TrackMetadata) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MASK: [u8; 19] = [
+        0xCB, 0xE1, 0xEE, 0xFA, 0xE5, 0xEE, 0xAD, 0xEE, 0xE9, 0xD2, 0xE9, 0xEB, 0xE1, 0xE9, 0xF3,
+        0xE8, 0xE9, 0xF4, 0xE1,
+    ];
+
+    /// Builds the tag body: 14 bytes of header and one 24-byte entry per (beat, kind id).
+    fn body(mood: u16, end_beat: u16, entries: &[(u16, u16)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&mood.to_be_bytes());
+        b.extend_from_slice(&[0; 6]);
+        b.extend_from_slice(&end_beat.to_be_bytes());
+        b.extend_from_slice(&[0; 4]);
+        for (i, (beat, kind)) in entries.iter().enumerate() {
+            let mut e = [0u8; 24];
+            e[0..2].copy_from_slice(&(i as u16 + 1).to_be_bytes());
+            e[2..4].copy_from_slice(&beat.to_be_bytes());
+            e[4..6].copy_from_slice(&kind.to_be_bytes());
+            b.extend_from_slice(&e);
+        }
+        b
+    }
+
+    /// Builds [len_entry_bytes][len_entries][body], with the body masked on request.
+    fn tag(body: &[u8], len_entries: u16, masked: bool) -> Vec<u8> {
+        let mut t = 24u32.to_be_bytes().to_vec();
+        t.extend_from_slice(&len_entries.to_be_bytes());
+        for (i, b) in body.iter().enumerate() {
+            t.push(if masked {
+                b ^ MASK[i % 19].wrapping_add(len_entries as u8)
+            } else {
+                *b
+            });
+        }
+        t
+    }
+
+    /// Adds the dbserver header: [len][PSSI][len_header][len_tag].
+    fn with_header(tag: &[u8]) -> Vec<u8> {
+        let mut b = ((tag.len() + 12) as u32).to_be_bytes().to_vec();
+        b.extend_from_slice(b"PSSI");
+        // The PSSI header is 0x20 bytes long. The tag length includes the 12-byte common header.
+        b.extend_from_slice(&0x20u32.to_be_bytes());
+        b.extend_from_slice(&((tag.len() + 12) as u32).to_be_bytes());
+        b.extend_from_slice(tag);
+        b
+    }
+
+    fn check(ss: &SongStructure) {
+        assert_eq!(ss.mood, TrackMood::Mid);
+        assert_eq!(ss.end_beat, 65);
+        assert_eq!(ss.phrases.len(), 2);
+        assert_eq!(
+            (ss.phrases[0].beat, ss.phrases[0].kind),
+            (1, PhraseKind::Intro)
+        );
+        assert_eq!(
+            (ss.phrases[1].beat, ss.phrases[1].kind),
+            (33, PhraseKind::Verse1)
+        );
+    }
+
+    #[test]
+    fn pssi_with_header_unmasked() {
+        let t = tag(&body(2, 65, &[(1, 1), (33, 2)]), 2, false);
+        check(&parse_pssi_tag(&with_header(&t)).unwrap());
+    }
+
+    #[test]
+    fn pssi_with_header_masked() {
+        let t = tag(&body(2, 65, &[(1, 1), (33, 2)]), 2, true);
+        check(&parse_pssi_tag(&with_header(&t)).unwrap());
+    }
+
+    #[test]
+    fn pssi_body_only() {
+        let t = tag(&body(2, 65, &[(1, 1), (33, 2)]), 2, false);
+        check(&parse_pssi_tag(&t).unwrap());
+    }
+
+    #[test]
+    fn pssi_without_length_prefix() {
+        let t = tag(&body(2, 65, &[(1, 1), (33, 2)]), 2, false);
+        let mut b = b"PSSI".to_vec();
+        b.extend_from_slice(&16u32.to_be_bytes());
+        b.extend_from_slice(&(t.len() as u32).to_be_bytes());
+        b.extend_from_slice(&t);
+        check(&parse_pssi_tag(&b).unwrap());
+    }
+
+    #[test]
+    fn asking_player_keeps_a_real_player_number() {
+        assert_eq!(asking_player(2, 1, "CDJ-2000NXS2", [(1, 1), (3, 3)]), 2);
+    }
+
+    #[test]
+    fn asking_player_poses_as_the_lowest_other_player() {
+        assert_eq!(
+            asking_player(5, 1, "CDJ-2000NXS2", [(1, 1), (3, 3), (5, 0), (16, 0)]),
+            3
+        );
+    }
+
+    #[test]
+    fn asking_player_skips_a_player_that_plays_from_the_target() {
+        assert_eq!(
+            asking_player(5, 1, "CDJ-2000NXS2", [(1, 1), (2, 1), (3, 3)]),
+            3
+        );
+    }
+
+    #[test]
+    fn asking_player_uses_the_number_of_a_cdj_3000_target() {
+        assert_eq!(asking_player(5, 2, "CDJ-3000", [(1, 1), (2, 2)]), 2);
+        assert_eq!(asking_player(5, 1, "XDJ-AZ", [(1, 1)]), 1);
+    }
+
+    #[test]
+    fn asking_player_keeps_the_own_number_for_a_rekordbox_target() {
+        assert_eq!(asking_player(5, 17, "rekordbox", [(1, 1)]), 5);
+    }
+
+    #[test]
+    fn asking_player_falls_back_to_the_own_number() {
+        assert_eq!(asking_player(5, 1, "CDJ-2000NXS2", [(1, 1)]), 5);
+    }
 
     #[tokio::test]
     async fn read_message_refuses_a_huge_argument_count() {

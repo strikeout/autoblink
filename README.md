@@ -1,6 +1,6 @@
 # xdj-midi
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](Cargo.toml)
 
 
 
@@ -29,6 +29,7 @@
 - Stable MIDI Clock (0xF8) pulses with Start/Stop/Continue support.
 - Remappable CCs for BPM, pitch, bar phase, beat phase, playing state, master deck, and phrase-16.
 - MIDI notes on every beat and on each downbeat.
+- Phrase kind of the master deck as CC 20 (kind code times 10), as notes 40–51 and as Program Change (off by default). CC 21 sends the phrase progress. CC 22 sends the beats left in the phrase.
 
 ---
 
@@ -91,6 +92,7 @@ channel = 9
 beat = 36
 downbeat = 37
 phrase_change = 38
+phrase_base = 40       # phrase kind notes: phrase_base + kind code (40–51)
 
 [midi.cc]
 channel = 0
@@ -102,6 +104,13 @@ beat_phase = 4
 playing = 5
 master_deck = 6
 phrase_16 = 7
+phrase_kind = 20       # kind code x 10
+phrase_progress = 21
+phrase_beats_left = 22
+
+[midi.program]
+enabled = false        # Program Change = kind code at each new phrase
+channel = 0
 
 [midi.mtc]
 enabled = false
@@ -112,6 +121,28 @@ enabled = false
 quantum = 4.0
 poll_interval_us = 500
 ```
+
+### Phrase output
+
+The mapper reads the rekordbox phrase analysis of the master deck. At each new phrase it sends the phrase kind. It also sends the kind when a track loads and when the master deck changes.
+
+| Kind | Code |
+|---|---|
+| Intro | 0 |
+| Verse 1–6 | 1–6 |
+| Bridge | 7 |
+| Chorus | 8 |
+| Up | 9 |
+| Down | 10 |
+| Outro | 11 |
+
+- CC `phrase_kind` (default 20) sends the code times 10.
+- Note `phrase_base` plus the code (default 40–51) fires on `midi.notes.channel`.
+- Program Change sends the code on `midi.program.channel`. It is off by default, because a Program Change switches the patch of a synth.
+- CC `phrase_progress` (default 21) sends the position in the phrase.
+- CC `phrase_beats_left` (default 22) sends the beats until the next phrase, up to 127.
+
+The player must send the phrase data over its dbserver. This needs at least one real player (1–4) on the network, or a CDJ-3000 class player. The log shows a warning when a player refuses the connection.
 
 ---
 
@@ -169,6 +200,7 @@ Core outputs:
 - **24-PPQ MIDI clock** — Start / Stop / Continue + 0xF8 pulses from DJ tempo
 - **MIDI CC** — BPM coarse/fine, pitch, bar phase, beat phase, playing state, master deck, phrase-16
 - **MIDI notes** — beat trigger and downbeat trigger with velocity accents
+- **Phrase output** — kind of the master phrase as CC, note and optional Program Change, plus phrase progress and beats left (see below)
 - **Source modes** — Pro DJ Link, Ableton Link, or auto
 - **Network auto-discovery** — picks a suitable interface automatically
 - **TOML config** — remappable MIDI channel, note, and CC numbers

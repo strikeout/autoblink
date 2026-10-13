@@ -4,7 +4,18 @@ use std::time::Instant;
 use crate::prolink::packets::PlayState;
 
 use super::beat_source::BeatSource;
-use super::song_structure::SongStructure;
+use super::song_structure::{PhraseKind, SongStructure};
+
+/// The phrase that a deck plays now, with its position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhraseInfo {
+    pub idx: usize,
+    pub kind: PhraseKind,
+    /// Position in the phrase, 0.0 to 1.0.
+    pub progress: f64,
+    /// Beats until the next phrase starts.
+    pub beats_left: u32,
+}
 
 /// Per-device state tracked for each CDJ/mixer on the network.
 #[derive(Debug, Clone)]
@@ -71,6 +82,27 @@ impl DeviceState {
         }
     }
 
+    /// Returns the current phrase and its position.
+    /// Returns `None` when the deck has no song structure, no phrase index or no beat count.
+    pub fn phrase_info(&self) -> Option<PhraseInfo> {
+        let ss = self.song_structure.as_ref()?;
+        let idx = self.current_phrase_idx?;
+        let phrase = ss.phrases.get(idx)?;
+        if self.beat_count == u32::MAX {
+            return None;
+        }
+        let start = u32::from(phrase.beat);
+        let end = u32::from(ss.phrases.get(idx + 1).map_or(ss.end_beat, |p| p.beat));
+        let len = end.saturating_sub(start).max(1);
+        let pos = self.beat_count.saturating_sub(start);
+        Some(PhraseInfo {
+            idx,
+            kind: phrase.kind,
+            progress: (f64::from(pos) / f64::from(len)).clamp(0.0, 1.0),
+            beats_left: end.saturating_sub(self.beat_count),
+        })
+    }
+
     pub(crate) fn smooth_bpm(&mut self, raw: f64, window: usize) -> f64 {
         if window == 0 || raw <= 0.0 {
             return raw;
@@ -80,6 +112,68 @@ impl DeviceState {
             self.bpm_history.pop_front();
         }
         self.bpm_history.iter().sum::<f64>() / self.bpm_history.len() as f64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{PhraseEntry, TrackMood};
+
+    fn phrase(beat: u16, kind: PhraseKind) -> PhraseEntry {
+        PhraseEntry {
+            index: 1,
+            beat,
+            kind,
+            has_fill: false,
+            fill_beat: 0,
+        }
+    }
+
+    fn deck(beat_count: u32, idx: Option<usize>, end_beat: u16) -> DeviceState {
+        let mut d = DeviceState::new(1);
+        d.beat_count = beat_count;
+        d.current_phrase_idx = idx;
+        d.song_structure = Some(SongStructure {
+            mood: TrackMood::Mid,
+            end_beat,
+            phrases: vec![phrase(1, PhraseKind::Intro), phrase(33, PhraseKind::Verse1)],
+        });
+        d
+    }
+
+    #[test]
+    fn first_phrase_ends_at_the_next_phrase() {
+        let info = deck(17, Some(0), 65).phrase_info().unwrap();
+        assert_eq!(info.idx, 0);
+        assert_eq!(info.kind, PhraseKind::Intro);
+        assert_eq!(info.progress, 0.5);
+        assert_eq!(info.beats_left, 16);
+    }
+
+    #[test]
+    fn last_phrase_ends_at_end_beat() {
+        let info = deck(49, Some(1), 65).phrase_info().unwrap();
+        assert_eq!(info.kind, PhraseKind::Verse1);
+        assert_eq!(info.progress, 0.5);
+        assert_eq!(info.beats_left, 16);
+    }
+
+    #[test]
+    fn end_beat_below_last_start_gives_no_nan() {
+        let info = deck(40, Some(1), 10).phrase_info().unwrap();
+        assert!(info.progress.is_finite());
+        assert_eq!(info.progress, 1.0);
+        assert_eq!(info.beats_left, 0);
+    }
+
+    #[test]
+    fn no_info_without_structure_index_or_beat_count() {
+        let mut d = deck(17, Some(0), 65);
+        d.song_structure = None;
+        assert!(d.phrase_info().is_none());
+        assert!(deck(17, None, 65).phrase_info().is_none());
+        assert!(deck(u32::MAX, Some(0), 65).phrase_info().is_none());
     }
 }
 

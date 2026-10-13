@@ -75,6 +75,15 @@ beat = 36     # C1 — kick drum in GM
 # Note fired on beat 1 of every bar only (downbeat / 1-beat).
 downbeat = 37 # C#1
 
+# Note fired when the phrase of the master deck changes (any phrase to any phrase).
+phrase_change = 38
+
+# First note of the phrase-kind range.
+# At each new phrase the mapper fires the note phrase_base + kind code (40–51).
+# Kind codes: Intro 0, Verse 1–6 = 1–6, Bridge 7, Chorus 8, Up 9, Down 10, Outro 11.
+# The value must be 116 or lower.
+phrase_base = 40
+
 # ── MIDI CC mapping ──────────────────────────────────────────────────────────
 
 [midi.cc]
@@ -102,6 +111,29 @@ beat_phase = 4
 playing = 5
 
 # Which deck is tempo master (device number, 0 = none).
-master_deck = 1
+master_deck = 6
 
+# Sent as 0 at the start of each 16-beat block.
 phrase_16 = 8
+
+# Phrase kind of the master deck. The value is the kind code times 10 (0, 10 ... 110).
+# The code table is at midi.notes.phrase_base. The phrase data needs the rekordbox
+# analysis of the track and a dbserver connection to the player.
+phrase_kind = 20
+
+# Progress through the current phrase of the master deck (0.0–1.0 maps to 0–127).
+phrase_progress = 21
+
+# Beats left until the next phrase starts (capped at 127).
+phrase_beats_left = 22
+
+# ── MIDI Program Change ──────────────────────────────────────────────────────
+
+[midi.program]
+# Send a Program Change with the phrase kind code (0–11) at each new phrase.
+# A Program Change switches the patch of a synth on that channel.
+# The program default is false. This file sets it to true.
+# Use a channel that no synth uses for its sound.
+enabled = true
+# MIDI channel (0-indexed, 0-15).
+channel = 0
