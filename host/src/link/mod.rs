@@ -12,6 +12,14 @@ use crate::config::LinkConfig;
 use crate::prolink::beat_listener::BeatEvent;
 use crate::state::SharedState;
 
+/// Return true if the beat floor moved forward, then store the new floor.
+/// The floor advances on every change, also while the transport is stopped.
+fn advance_beat_floor(last_beat_floor: &mut i64, beat_floor: i64) -> bool {
+    let crossed = *last_beat_floor >= 0 && beat_floor > *last_beat_floor;
+    *last_beat_floor = beat_floor;
+    crossed
+}
+
 /// Run the Ableton Link polling engine.
 pub async fn run(
     link_cfg: LinkConfig,
@@ -82,11 +90,7 @@ pub async fn run(
 
         let beat_floor = beat.floor() as i64;
         let first_sample = last_beat_floor < 0;
-        let beat_crossed = !first_sample && beat_floor > last_beat_floor;
-
-        if first_sample {
-            last_beat_floor = beat_floor;
-        }
+        let beat_crossed = advance_beat_floor(&mut last_beat_floor, beat_floor);
 
         let beat_in_bar = (phase.floor() as u8).saturating_add(1);
         let bar_phase = (phase / quantum).clamp(0.0, 1.0);
@@ -125,7 +129,6 @@ pub async fn run(
                     beat_phase,
                     received_at,
                 });
-                last_beat_floor = beat_floor;
                 tracing::debug!(
                     bpm = %format!("{:.2}", bpm),
                     beat_in_bar,
@@ -139,5 +142,21 @@ pub async fn run(
             tracing::info!(is_playing, "Ableton Link transport state changed");
             last_is_playing = is_playing;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopped_transport_reports_one_crossing_per_beat() {
+        let mut floor = -1;
+        assert!(!advance_beat_floor(&mut floor, 4));
+        assert!(advance_beat_floor(&mut floor, 5));
+        // The caller does not report the crossing as a beat while stopped.
+        // The next poll in the same beat must not cross again.
+        assert!(!advance_beat_floor(&mut floor, 5));
+        assert_eq!(floor, 5);
     }
 }

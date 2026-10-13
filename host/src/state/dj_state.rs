@@ -146,8 +146,8 @@ impl DjState {
             dev.song_structure = None;
             dev.current_phrase_idx = None;
             dev.prev_phrase_idx = None;
-            dev.rekordbox_id = s.rekordbox_id;
-            Some(TrackChange {
+            // An eject has rekordbox_id 0. It clears the metadata but loads no track.
+            (s.rekordbox_id != 0).then(|| TrackChange {
                 device_number: s.device_number,
                 track_source_player: s.track_source_player,
                 track_slot: s.track_slot,
@@ -155,17 +155,6 @@ impl DjState {
                 rekordbox_id: s.rekordbox_id,
             })
         } else {
-            if s.rekordbox_id == 0 && dev.rekordbox_id != 0 {
-                dev.rekordbox_id = 0;
-                dev.track_title.clear();
-                dev.track_artist.clear();
-                dev.track_key.clear();
-                dev.track_bpm_meta = None;
-                dev.song_structure = None;
-                dev.current_phrase_idx = None;
-                dev.prev_phrase_idx = None;
-            }
-            dev.rekordbox_id = s.rekordbox_id;
             None
         };
 
@@ -287,7 +276,9 @@ impl DjState {
         let prev_master = self.master.device_number;
 
         let m = TimingMeasurement::from_prolink_beat(bp, received_at);
-        self.timing.observe(m.clone());
+        if self.prolink_may_observe() {
+            self.timing.observe(m.clone());
+        }
 
         self.refresh_master();
         let master = self.master.device_number;
@@ -330,7 +321,9 @@ impl DjState {
         let prev_master = self.master.device_number;
 
         let m = TimingMeasurement::from_prolink_abs_position(ap, received_at);
-        self.timing.observe(m.clone());
+        if self.prolink_may_observe() {
+            self.timing.observe(m.clone());
+        }
 
         self.refresh_master();
         let master = self.master.device_number;
@@ -361,6 +354,17 @@ impl DjState {
         }
 
         master == ap.device_number
+    }
+
+    /// ProLink must not overwrite the timing slot while Link is the active master source.
+    fn prolink_may_observe(&self) -> bool {
+        match self.source_mode {
+            Source::Link => false,
+            Source::ProLink => true,
+            Source::Auto => !(self.link_peer_count > 0
+                && self.master.source == Some(BeatSource::AbletonLink)
+                && self.master.bpm > 0.0),
+        }
     }
 
     fn refresh_master(&mut self) {
@@ -408,7 +412,7 @@ impl DjState {
                     .devices
                     .values()
                     .filter(|d| d.device_number < 16 && d.effective_bpm > 0.0)
-                    .min_by_key(|d| d.device_number);
+                    .min_by_key(|d| (!d.is_playing, d.device_number));
                 if let Some(d) = real_cdj {
                     let reason = format!(
                         "fallback(cdj) → device {} (is_playing={}, bpm={:.2})",
@@ -438,7 +442,11 @@ impl DjState {
                 beat_in_bar: dev.beat_in_bar,
                 bar_phase: dev.bar_phase,
                 beat_phase: dev.beat_phase,
-                is_playing: dev.is_playing,
+                is_playing: if dev.device_number >= 16 {
+                    mixer_is_playing(dev)
+                } else {
+                    dev.is_playing
+                },
                 last_beat_at: dev.last_beat_at,
                 is_virtual_master: is_virtual,
                 phrase_16_beat: dev.phrase_16_beat,
@@ -480,14 +488,6 @@ impl DjState {
             phrase_16_beat: 0,
         };
 
-        self.timing.observe(TimingMeasurement::from_link(
-            bpm,
-            beat_in_bar,
-            bar_phase,
-            beat_phase,
-            is_playing,
-            received_at,
-        ));
         self.last_link_master = Some(link_master.clone());
 
         // Bounded ingest TRACE (beat crossings and/or at most 1Hz), regardless of
@@ -548,14 +548,26 @@ impl DjState {
             return;
         }
 
+        // Link writes to the timing model only when it is the active master source.
+        self.timing.observe(TimingMeasurement::from_link(
+            bpm,
+            beat_in_bar,
+            bar_phase,
+            beat_phase,
+            is_playing,
+            received_at,
+        ));
         self.master = link_master;
     }
 
     pub fn remove_device(&mut self, num: u8) {
         self.devices.remove(&num);
-        if self.master_device_num == num {
+        let was_master = self.master_device_num == num
+            || (self.master.source == Some(BeatSource::ProLink) && self.master.device_number == num);
+        if was_master {
             self.master_device_num = 0;
             self.master = MasterState::default();
+            self.refresh_master();
         }
     }
 
@@ -636,6 +648,15 @@ impl DjState {
         dev.prev_phrase_idx = dev.current_phrase_idx;
         dev.current_phrase_idx = new_idx;
         changed
+    }
+}
+
+/// The mixer status packet has no play flag.
+/// A mixer plays when its last beat is newer than two beat durations.
+fn mixer_is_playing(dev: &DeviceState) -> bool {
+    match (dev.last_beat_at, dev.effective_bpm > 0.0) {
+        (Some(at), true) => at.elapsed().as_secs_f64() < 2.0 * 60.0 / dev.effective_bpm,
+        _ => false,
     }
 }
 
@@ -805,5 +826,120 @@ mod tests {
 
         assert_eq!(state.master.beat_phase, 0.0);
         assert_eq!(state.master.bar_phase, 0.0);
+    }
+
+    fn cdj(device: u8, playing: bool, bpm: f64, rekordbox_id: u32) -> CdjStatus {
+        CdjStatus {
+            device_number: device,
+            play_state: if playing {
+                crate::prolink::packets::PlayState::Playing
+            } else {
+                crate::prolink::packets::PlayState::Paused
+            },
+            is_master: false,
+            is_sync: false,
+            is_on_air: false,
+            is_playing_flag: false,
+            pitch_raw: crate::prolink::PITCH_NORMAL,
+            bpm_raw: (bpm * 100.0) as u16,
+            track_bpm: Some(bpm),
+            effective_bpm: bpm,
+            pitch_pct: 0.0,
+            beat_count: u32::MAX,
+            beat_in_bar: 1,
+            track_source_player: 1,
+            track_slot: 3,
+            track_type: 1,
+            rekordbox_id,
+        }
+    }
+
+    fn beat_from(device: u8, bpm: f64) -> BeatPacket {
+        BeatPacket {
+            device_number: device,
+            next_beat_ms: 250,
+            second_beat_ms: 500,
+            next_bar_ms: 1000,
+            pitch_raw: crate::prolink::PITCH_NORMAL,
+            bpm_raw: (bpm * 100.0) as u16,
+            beat_in_bar: 1,
+            track_bpm: Some(bpm),
+            effective_bpm: bpm,
+            pitch_pct: 0.0,
+        }
+    }
+
+    #[test]
+    fn fallback_master_prefers_a_playing_deck() {
+        let mut state = DjState::new(30);
+        state.apply_cdj_status(&cdj(1, false, 120.0, 10));
+        state.apply_cdj_status(&cdj(2, true, 125.0, 20));
+
+        assert_eq!(state.master.device_number, 2);
+        assert!(state.master.is_playing);
+    }
+
+    #[test]
+    fn removing_a_fallback_master_selects_a_new_master() {
+        let mut state = DjState::new(30);
+        state.apply_cdj_status(&cdj(1, false, 120.0, 10));
+        state.apply_cdj_status(&cdj(2, true, 125.0, 20));
+        assert_eq!(state.master.device_number, 2);
+
+        state.remove_device(2);
+        assert_eq!(state.master.device_number, 1);
+
+        state.remove_device(1);
+        assert_eq!(state.master.source, None);
+    }
+
+    #[test]
+    fn link_does_not_overwrite_prolink_timing_without_peers() {
+        let mut state = DjState::new(30);
+        state.apply_beat(&beat_from(1, 125.0), Instant::now());
+        state.apply_link_state(120.0, 1, 0.0, 0.5, true, true, Instant::now());
+
+        let last = state.timing.last().unwrap();
+        assert_eq!(last.device_number, Some(1));
+        assert_eq!(last.bpm, 125.0);
+    }
+
+    #[test]
+    fn prolink_does_not_overwrite_link_timing_in_link_mode() {
+        let mut state = DjState::new(30);
+        state.set_source_mode(Source::Link);
+        state.apply_link_state(120.0, 1, 0.0, 0.5, true, true, Instant::now());
+        state.apply_beat(&beat_from(1, 125.0), Instant::now());
+
+        assert_eq!(state.timing.last().unwrap().bpm, 120.0);
+    }
+
+    #[test]
+    fn mixer_master_plays_only_while_beats_are_recent() {
+        let mut state = DjState::new(30);
+        state.apply_mixer_status(&MixerStatus {
+            device_number: 33,
+            is_master: true,
+            bpm_raw: 12000,
+            track_bpm: Some(120.0),
+            beat_in_bar: 1,
+        });
+        assert!(!state.master.is_playing);
+
+        state.apply_beat(&beat_from(33, 120.0), Instant::now());
+        assert!(state.master.is_playing);
+
+        let old = Instant::now() - std::time::Duration::from_secs(5);
+        state.apply_beat(&beat_from(33, 120.0), old);
+        assert!(!state.master.is_playing);
+    }
+
+    #[test]
+    fn eject_clears_the_track_without_a_track_change() {
+        let mut state = DjState::new(30);
+        assert!(state.apply_cdj_status(&cdj(1, true, 120.0, 10)).is_some());
+
+        assert!(state.apply_cdj_status(&cdj(1, false, 120.0, 0)).is_none());
+        assert_eq!(state.devices[&1].rekordbox_id, 0);
     }
 }
