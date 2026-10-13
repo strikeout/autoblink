@@ -63,6 +63,9 @@ struct ClockState {
     bars_since_realign: u8,
     /// Optional active phase resync slew used when smoothing is enabled.
     phase_slew: Option<PhaseSlew>,
+    /// The catch-up logic dropped full beats, so the receiver's bar position
+    /// is wrong. The next downbeat must do a hard resync.
+    beats_dropped: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +99,7 @@ impl ClockState {
             last_timing_beat_in_bar: None,
             bars_since_realign: 0,
             phase_slew: None,
+            beats_dropped: false,
         }
     }
 
@@ -301,11 +305,8 @@ fn handle_timing_snapshot(
         }
     }
 
-    let phrase_beat = if master.phrase_16_beat > 0 {
-        master.phrase_16_beat as u32
-    } else {
-        ((cs.beat_count as u32) % 16) + 1
-    };
+    // DjState stores the phrase beat as 0..=15, with 0 at the phrase start.
+    let phrase_beat = master.phrase_16_beat as u32 + 1;
 
     let beat_in_bar = measurement.beat_in_bar.unwrap_or(master.beat_in_bar);
     let is_beat_edge = timing_snapshot_beat_edge(cs, &measurement);
@@ -397,6 +398,7 @@ fn apply_full_bar_resync_hard(
     beat_at: Instant,
 ) {
     cs.phase_slew = None;
+    cs.beats_dropped = false;
     let _ = midi.send_message(&[MSG_STOP]);
     let _ = midi.send_message(&[MSG_START]);
     let _ = midi.send_message(&[MSG_CLOCK]);
@@ -430,7 +432,10 @@ fn start_full_bar_resync_slewed(
         return;
     }
 
-    let duration = Duration::from_millis(smoothing_ms.max(1));
+    // A short slew of a large error is a tempo spike. The slew lasts at least
+    // ten times the error, so the tempo changes by 10 % or less.
+    let min_duration_ns = (correction_ns.unsigned_abs() * 10).min(u64::MAX as u128) as u64;
+    let duration = Duration::from_millis(smoothing_ms.max(1)).max(Duration::from_nanos(min_duration_ns));
     cs.phase_slew = Some(PhaseSlew {
         started_at: beat_at,
         duration,
@@ -449,6 +454,12 @@ fn maybe_resync_on_bar_boundary(
     beat_at: Instant,
 ) {
     if beat_in_bar != 1 {
+        return;
+    }
+
+    if cs.beats_dropped {
+        apply_full_bar_resync_hard(cs, midi, activity, beat_at);
+        cs.bars_since_realign = 0;
         return;
     }
 
@@ -514,11 +525,8 @@ fn handle_beat_event(
                     }
                 }
 
-                let phrase_beat = if master.phrase_16_beat > 0 {
-                    master.phrase_16_beat as u32
-                } else {
-                    ((cs.beat_count as u32) % 16) + 1
-                };
+                // DjState stores the phrase beat as 0..=15, with 0 at the phrase start.
+                let phrase_beat = master.phrase_16_beat as u32 + 1;
                 let is_phrase_start = phrase_beat == 1 && bp.beat_in_bar == 1;
 
                 if cs.waiting_for_downbeat {
@@ -600,11 +608,8 @@ fn handle_beat_event(
             }
 
             let master = state.read().master.clone();
-            let phrase_beat = if master.phrase_16_beat > 0 {
-                master.phrase_16_beat as u32
-            } else {
-                ((cs.beat_count as u32) % 16) + 1
-            };
+            // DjState stores the phrase beat as 0..=15, with 0 at the phrase start.
+            let phrase_beat = master.phrase_16_beat as u32 + 1;
             let is_phrase_start = phrase_beat == 1 && beat_in_bar == 1;
 
             if cs.waiting_for_downbeat {
@@ -839,6 +844,7 @@ fn emit_overdue_clock_pulses(
     // It sends only the pulses that move the receiver to the same position
     // in the beat as `pulse_index`. Thus one wake sends a maximum of PPQ pulses.
     let pulses_to_send = if intervals_elapsed > PPQ {
+        cs.beats_dropped = true;
         intervals_elapsed % PPQ
     } else {
         intervals_elapsed
@@ -1115,7 +1121,7 @@ mod tests {
         state.master.source = Some(source);
         state.master.bpm = 120.0;
         state.master.is_playing = true;
-        state.master.phrase_16_beat = 1;
+        state.master.phrase_16_beat = 0;
         state.master.beat_in_bar = 1;
         Arc::new(parking_lot::RwLock::new(state))
     }
@@ -1207,7 +1213,7 @@ mod tests {
         state.master.source = Some(BeatSource::ProLink);
         state.master.bpm = 120.0;
         state.master.is_playing = true;
-        state.master.phrase_16_beat = 2; // Not start of 16-beat phrase
+        state.master.phrase_16_beat = 2; // Not the start of a 16-beat phrase.
         state.master.beat_in_bar = 2;
         let state = Arc::new(parking_lot::RwLock::new(state));
 
@@ -1584,6 +1590,30 @@ mod tests {
         assert_eq!(midi.get_messages().len() as u64, 1000 % PPQ);
         assert_eq!(cs.pulse_index, (22 + 1000) % PPQ);
         assert_eq!(cs.last_pulse, t0 + interval * 1000);
+        assert!(cs.beats_dropped);
+
+        // The next downbeat restarts the receiver, although smoothing is on.
+        midi.clear_messages();
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let beat_at = cs.last_pulse;
+        maybe_resync_on_bar_boundary(&mut cs, &transport, &activity, 4, 200, 1, beat_at);
+        assert_eq!(
+            midi.get_messages(),
+            vec![vec![MSG_STOP], vec![MSG_START], vec![MSG_CLOCK]]
+        );
+        assert!(!cs.beats_dropped);
+    }
+
+    #[test]
+    fn slew_of_large_error_lasts_ten_times_the_error() {
+        let beat_at = Instant::now();
+        let mut cs = running_clock_at(beat_at, 0);
+
+        start_full_bar_resync_slewed(&mut cs, beat_at, -250_000_000, 30);
+        assert_eq!(cs.phase_slew.unwrap().duration, Duration::from_millis(2500));
+
+        start_full_bar_resync_slewed(&mut cs, beat_at, 1_000_000, 30);
+        assert_eq!(cs.phase_slew.unwrap().duration, Duration::from_millis(30));
     }
 
     #[test]

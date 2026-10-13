@@ -199,12 +199,12 @@ fn draw_header(
             };
             let a = tui.midi_activity.lock();
 
-            let in16 = if master.phrase_16_beat > 0 {
-                master.phrase_16_beat
+            // DjState stores 0..=15. Show 1..=16, and 0 when no master is known.
+            let in16 = if master.bpm > 0.0 {
+                master.phrase_16_beat.min(15) + 1
             } else {
                 0
             };
-            let in16 = if in16 == 0 { 0 } else { in16.min(16) };
 
             let out16 = a.clock_phrase_beat.min(16);
             let stable = cfg_r.midi.phrase_lock_stable_beats;

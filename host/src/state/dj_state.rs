@@ -562,10 +562,11 @@ impl DjState {
 
     pub fn remove_device(&mut self, num: u8) {
         self.devices.remove(&num);
-        let was_master = self.master_device_num == num
-            || (self.master.source == Some(BeatSource::ProLink) && self.master.device_number == num);
-        if was_master {
+        if self.master_device_num == num {
             self.master_device_num = 0;
+        }
+        // Reset only a ProLink master. A Link master does not depend on this device.
+        if self.master.source == Some(BeatSource::ProLink) && self.master.device_number == num {
             self.master = MasterState::default();
             self.refresh_master();
         }
@@ -891,6 +892,20 @@ mod tests {
 
         state.remove_device(1);
         assert_eq!(state.master.source, None);
+    }
+
+    #[test]
+    fn removing_a_device_keeps_a_link_master() {
+        let mut state = DjState::new(30);
+        state.set_link_peer_count(1);
+        state.apply_link_state(120.0, 1, 0.0, 0.5, true, true, Instant::now());
+        assert_eq!(state.master.source, Some(BeatSource::AbletonLink));
+        state.master_device_num = 3;
+
+        state.remove_device(3);
+
+        assert_eq!(state.master_device_num, 0);
+        assert_eq!(state.master.source, Some(BeatSource::AbletonLink));
     }
 
     #[test]

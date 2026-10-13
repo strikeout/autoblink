@@ -27,8 +27,11 @@ pub fn spawn(
 
     let disc_table = Arc::clone(&device_table);
     let disc_tx = device_tx.clone();
+    let disc_name = startup_cfg.device_name.clone();
     tokio::spawn(async move {
-        if let Err(e) = crate::prolink::discovery::run(bind_ip, disc_table, disc_tx).await {
+        if let Err(e) =
+            crate::prolink::discovery::run(bind_ip, disc_name, disc_table, disc_tx).await
+        {
             tracing::error!("Discovery task error: {e}");
         }
     });
