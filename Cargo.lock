@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "xdj-clock-esp32"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "embassy-sync 0.8.0",
  "embassy-time",
@@ -2990,7 +2990,7 @@ dependencies = [
 
 [[package]]
 name = "xdj-clock-esp32-emulator"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3004,7 +3004,7 @@ dependencies = [
 
 [[package]]
 name = "xdj-clock-host"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3027,7 +3027,7 @@ dependencies = [
 
 [[package]]
 name = "xdj-core-prolink"
-version = "1.9.0"
+version = "1.9.1"
 
 [[package]]
 name = "zerocopy"
