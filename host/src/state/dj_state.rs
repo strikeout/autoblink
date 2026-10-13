@@ -10,7 +10,7 @@ use crate::prolink::BEAT_NONE;
 
 use super::beat_source::BeatSource;
 use super::device::{DeviceState, MasterState, MixerChannel, PhraseInfo};
-use super::song_structure::SongStructure;
+use super::song_structure::{SongStructure, TrackOverview};
 use super::timing::{LogThrottle, TimingMeasurement, TimingModel};
 use super::track_change::TrackChange;
 
@@ -150,6 +150,7 @@ impl DjState {
         dev.track_slot = s.track_slot;
         dev.track_type = s.track_type;
         dev.rekordbox_id = s.rekordbox_id;
+        dev.loop_ms = s.loop_ms;
 
         let track_changed = prev_rbid != s.rekordbox_id
             || prev_slot != s.track_slot
@@ -163,6 +164,8 @@ impl DjState {
             dev.track_bpm_meta = None;
             dev.song_structure = None;
             dev.phrase_error = None;
+            dev.overview = None;
+            dev.track_length_ms = None;
             dev.current_phrase_idx = None;
             dev.prev_phrase_idx = None;
             // An eject has rekordbox_id 0. It clears the metadata but loads no track.
@@ -330,6 +333,9 @@ impl DjState {
         let window = self.bpm_smooth_window;
         let dev = self.device_mut(ap.device_number);
         dev.playhead_ms = Some(ap.playhead_ms);
+        if dev.track_length_ms.is_none() && ap.track_length_s > 0 {
+            dev.track_length_ms = Some(ap.track_length_s.saturating_mul(1000));
+        }
         dev.pitch_pct = ap.pitch_pct;
         if ap.effective_bpm > 0.0 {
             dev.effective_bpm = dev.smooth_bpm(ap.effective_bpm, window);
@@ -630,6 +636,24 @@ impl DjState {
                 dev.track_artist = artist;
                 dev.track_key = key;
                 dev.track_bpm_meta = bpm;
+            }
+        }
+    }
+
+    /// Stores the track length from the metadata. It replaces the length of the position packet.
+    pub fn set_track_length(&mut self, device_number: u8, rekordbox_id: u32, length_s: u32) {
+        if let Some(dev) = self.devices.get_mut(&device_number) {
+            if dev.rekordbox_id == rekordbox_id && length_s > 0 {
+                dev.track_length_ms = Some(length_s.saturating_mul(1000));
+            }
+        }
+    }
+
+    /// Stores the waveform preview and the cues, when the deck still has the same track.
+    pub fn set_overview(&mut self, device_number: u8, overview: TrackOverview) {
+        if let Some(dev) = self.devices.get_mut(&device_number) {
+            if dev.rekordbox_id == overview.rekordbox_id {
+                dev.overview = Some(Arc::new(overview));
             }
         }
     }
@@ -968,6 +992,7 @@ mod tests {
             track_slot: 3,
             track_type: 1,
             rekordbox_id,
+            loop_ms: None,
         }
     }
 

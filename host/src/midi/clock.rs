@@ -774,7 +774,8 @@ fn handle_prolink_beat_loop_disabled(
 
     cs.set_bpm(bp.effective_bpm);
     if cs.running {
-        cs.beat_count = cs.beat_count.wrapping_add(1).max(1);
+        // The counter stays in 1..=16. A u8 that wraps at 255 makes the shown phrase beat jump.
+        cs.beat_count = cs.beat_count % 16 + 1;
         maybe_resync_on_bar_boundary(
             cs,
             midi,
@@ -1588,6 +1589,33 @@ mod tests {
         assert!(cs.phase_slew.is_none());
         assert_eq!(cs.pulse_index, 0);
         assert_eq!(cs.last_pulse, beat_at);
+    }
+
+    #[test]
+    fn loop_disabled_phrase_beat_counts_1_to_16_without_a_gap() {
+        let mut cs = ClockState::new();
+        cs.transition_to_running();
+        cs.has_started = true;
+        let midi: Arc<dyn MidiTransport> = Arc::new(MockMidiTransport::new());
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let state = make_test_state(1, BeatSource::ProLink);
+
+        let mut seen = Vec::new();
+        for i in 0..300u32 {
+            handle_prolink_beat_loop_disabled(
+                &mut cs,
+                &state,
+                &midi,
+                &activity,
+                0,
+                0,
+                make_beat_at(1, (i % 4 + 1) as u8, Instant::now()),
+            );
+            seen.push(activity.lock().clock_phrase_beat);
+        }
+        for pair in seen.windows(2) {
+            assert_eq!(pair[1], pair[0] % 16 + 1, "{seen:?}");
+        }
     }
 
     fn running_clock_at(last_pulse: Instant, pulse_index: u64) -> ClockState {

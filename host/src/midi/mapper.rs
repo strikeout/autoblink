@@ -86,6 +86,7 @@ mod tests {
             track_slot: 3,
             track_type: 1,
             rekordbox_id,
+            loop_ms: None,
         }
     }
 
@@ -545,7 +546,7 @@ async fn run_with_midi(
     let mut prev_phrase_key: Option<(u8, u32, usize)> = None;
     let mut prev_phrase_16_beat: u8 = 0;
     let mut prev_no_bass = false;
-    let osc = OscOut::new();
+    let osc = OscOut::with_activity(Arc::clone(&activity));
     let mut prev_osc_bpm = 0.0f32;
     let mut prev_osc_beats_left = u32::MAX;
     // (device, rekordbox_id, title) of the last track that was sent over OSC.

@@ -1,10 +1,11 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::prolink::packets::PlayState;
 
 use super::beat_source::BeatSource;
-use super::song_structure::{PhraseKind, SongStructure};
+use super::song_structure::{PhraseKind, SongStructure, TrackOverview};
 
 /// The phrase that a deck plays now, with its position.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +44,10 @@ pub struct DeviceState {
     pub beat_in_bar: u8,
     pub beat_count: u32,
     pub playhead_ms: Option<u32>,
+    /// The track length. The metadata gives it, or else the absolute position packet.
+    pub track_length_ms: Option<u32>,
+    /// The active loop as (start, end) in ms.
+    pub loop_ms: Option<(u32, u32)>,
     pub bar_phase: f64,
     pub beat_phase: f64,
     pub phrase_16_beat: u8,
@@ -59,6 +64,8 @@ pub struct DeviceState {
     pub song_structure: Option<SongStructure>,
     /// The reason that the song structure fetch failed for the loaded track.
     pub phrase_error: Option<String>,
+    /// The waveform preview and the cues. An `Arc`, because the web status clones each device.
+    pub overview: Option<Arc<TrackOverview>>,
     pub current_phrase_idx: Option<usize>,
     pub prev_phrase_idx: Option<usize>,
 }
@@ -77,6 +84,8 @@ impl DeviceState {
             beat_in_bar: 0,
             beat_count: u32::MAX,
             playhead_ms: None,
+            track_length_ms: None,
+            loop_ms: None,
             bar_phase: 0.0,
             beat_phase: 0.0,
             phrase_16_beat: 0,
@@ -92,6 +101,7 @@ impl DeviceState {
             track_bpm_meta: None,
             song_structure: None,
             phrase_error: None,
+            overview: None,
             current_phrase_idx: None,
             prev_phrase_idx: None,
         }

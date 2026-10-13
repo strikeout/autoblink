@@ -73,6 +73,12 @@ pub async fn run(
                             track_slot = s.track_slot,
                             track_type = s.track_type,
                             track_source = s.track_source_player,
+                            loop_ms = ?s.loop_ms,
+                            // The raw loop bytes. The XDJ-AZ offsets are not documented.
+                            loop_raw = data
+                                .get(0x1b6..0x1ca)
+                                .map(|b| b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+                                .unwrap_or_default(),
                             "CDJ status"
                         );
                     }
