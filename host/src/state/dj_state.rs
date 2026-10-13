@@ -9,10 +9,17 @@ use crate::prolink::packets::{AbsPositionPacket, BeatPacket, CdjStatus, MixerSta
 use crate::prolink::BEAT_NONE;
 
 use super::beat_source::BeatSource;
-use super::device::{DeviceState, MasterState, PhraseInfo};
+use super::device::{DeviceState, MasterState, MixerChannel, PhraseInfo};
 use super::song_structure::SongStructure;
 use super::timing::{LogThrottle, TimingMeasurement, TimingModel};
 use super::track_change::TrackChange;
+
+// ponytail: the NO_BASS thresholds are constants. If a user must tune them, move them into
+// `midi.notes` next to `no_bass`.
+/// The lowest fader value (0–127) that counts as "up" for NO_BASS. 13 is about 10 %.
+const NO_BASS_FADER_MIN: u8 = 13;
+/// The highest LOW EQ value (0–127, centre 64) that counts as "bass cut" for NO_BASS.
+const NO_BASS_LOW_MAX: u8 = 16;
 
 #[derive(Debug)]
 pub struct DjState {
@@ -25,6 +32,8 @@ pub struct DjState {
     pub link_peer_count: usize,
     source_mode: Source,
     last_link_master: Option<MasterState>,
+    /// The mixer channels CH1 to CH4, from the MIDI input of the XDJ-AZ.
+    pub mixer: [MixerChannel; 4],
 
     // Bounded observability: avoid per-packet TRACE spam.
     abspos_ingest_trace: LogThrottle,
@@ -45,6 +54,7 @@ impl DjState {
             link_peer_count: 0,
             source_mode: Source::Auto,
             last_link_master: None,
+            mixer: [MixerChannel::default(); 4],
 
             abspos_ingest_trace: LogThrottle::default(),
             link_ingest_trace: LogThrottle::default(),
@@ -628,6 +638,26 @@ impl DjState {
         }
     }
 
+    /// Returns true when at least one mixer channel is live and every live channel has its
+    /// bass cut. A channel is live when its deck plays and its fader is up.
+    /// Mixer channel CHn takes its play state from player number n.
+    pub fn no_bass(&self) -> bool {
+        let mut live = self
+            .mixer
+            .iter()
+            .enumerate()
+            .filter(|&(i, ch)| {
+                let Some(dev) = self.devices.get(&(i as u8 + 1)) else {
+                    return false;
+                };
+                // Until the fader moves, the on-air flag of the player tells if the fader is up.
+                let fader_up = ch.fader.map_or(dev.is_on_air, |v| v >= NO_BASS_FADER_MIN);
+                dev.is_playing && fader_up
+            })
+            .peekable();
+        live.peek().is_some() && live.all(|(_, ch)| ch.low.is_some_and(|v| v <= NO_BASS_LOW_MAX))
+    }
+
     /// Returns the phrase that the master deck plays now.
     pub fn master_phrase(&self) -> Option<PhraseInfo> {
         self.devices.get(&self.master.device_number)?.phrase_info()
@@ -682,6 +712,60 @@ pub fn new_shared(smoothing_ms: u64) -> SharedState {
 mod tests {
     use super::*;
     use crate::state::beat_source::BeatSource;
+
+    /// Sets mixer channel CHn (1-based) and the play state of player n.
+    fn set_channel(st: &mut DjState, n: u8, playing: bool, fader: u8, low: u8) {
+        st.device_mut(n).is_playing = playing;
+        st.mixer[usize::from(n - 1)] = MixerChannel {
+            fader: Some(fader),
+            low: Some(low),
+            ..Default::default()
+        };
+    }
+
+    #[test]
+    fn no_bass_needs_a_live_channel() {
+        let mut st = DjState::new(30);
+        assert!(!st.no_bass());
+        // The LOW knob is at 0, but player 1 does not play and the CH2 fader is down.
+        set_channel(&mut st, 1, false, 127, 0);
+        set_channel(&mut st, 2, true, 0, 0);
+        assert!(!st.no_bass());
+    }
+
+    #[test]
+    fn no_bass_with_one_live_channel_follows_its_low_eq() {
+        let mut st = DjState::new(30);
+        set_channel(&mut st, 1, true, 127, 64);
+        assert!(!st.no_bass());
+        set_channel(&mut st, 1, true, 127, NO_BASS_LOW_MAX);
+        assert!(st.no_bass());
+        set_channel(&mut st, 1, true, 127, NO_BASS_LOW_MAX + 1);
+        assert!(!st.no_bass());
+    }
+
+    #[test]
+    fn no_bass_with_two_live_channels_needs_both_cut() {
+        let mut st = DjState::new(30);
+        set_channel(&mut st, 1, true, 127, 0);
+        set_channel(&mut st, 3, true, 100, 64);
+        assert!(!st.no_bass());
+        set_channel(&mut st, 3, true, 100, 0);
+        assert!(st.no_bass());
+        // A channel that is not live does not block NO_BASS.
+        set_channel(&mut st, 2, true, 0, 64);
+        assert!(st.no_bass());
+    }
+
+    #[test]
+    fn no_bass_uses_the_on_air_flag_until_the_fader_moves() {
+        let mut st = DjState::new(30);
+        set_channel(&mut st, 1, true, 127, 0);
+        st.mixer[0].fader = None;
+        assert!(!st.no_bass());
+        st.device_mut(1).is_on_air = true;
+        assert!(st.no_bass());
+    }
 
     #[test]
     fn test_auto_mode_link_priority_with_peers() {

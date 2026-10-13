@@ -17,6 +17,18 @@ pub struct PhraseInfo {
     pub beats_left: u32,
 }
 
+/// The position of the EQ knobs and the channel fader of one mixer channel.
+///
+/// Each value is the 7-bit MIDI value. `None` means that the control did not move since the
+/// start. The XDJ-AZ sends a value only when a control moves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MixerChannel {
+    pub hi: Option<u8>,
+    pub mid: Option<u8>,
+    pub low: Option<u8>,
+    pub fader: Option<u8>,
+}
+
 /// Per-device state tracked for each CDJ/mixer on the network.
 #[derive(Debug, Clone)]
 pub struct DeviceState {

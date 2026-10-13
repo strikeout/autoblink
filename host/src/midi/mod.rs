@@ -1,4 +1,5 @@
 pub mod clock;
+pub mod input;
 pub mod mapper;
 pub mod soak;
 pub mod timecode;

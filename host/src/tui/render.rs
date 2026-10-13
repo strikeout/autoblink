@@ -12,7 +12,7 @@ use super::state::{
 };
 use crate::config::SharedConfig;
 use crate::prolink::discovery::DeviceTable;
-use crate::state::SharedState;
+use crate::state::{MixerChannel, SharedState};
 
 const CLR_ACCENT: Color = Color::Cyan;
 const CLR_BEAT_FLASH: Color = Color::Yellow;
@@ -316,6 +316,33 @@ fn draw_deck_panel(
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
+        lines.push(Line::from(""));
+    }
+
+    if st.mixer.iter().any(|ch| *ch != MixerChannel::default()) {
+        lines.push(Line::from(Span::styled(
+            "  Mixer (XDJ-AZ MIDI)",
+            Style::default().fg(CLR_HIGHLIGHT),
+        )));
+        // An EQ value shows as the offset from the centre detent at 64.
+        let eq =
+            |v: Option<u8>| v.map_or("  --".to_string(), |v| format!("{:+4}", i16::from(v) - 64));
+        for (i, ch) in st.mixer.iter().enumerate() {
+            let fader = ch.fader.map_or(" --".to_string(), |v| {
+                format!("{:3}%", u16::from(v) * 100 / 127)
+            });
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "    CH{}  HI {}  MID {}  LOW {}  FDR {}",
+                    i + 1,
+                    eq(ch.hi),
+                    eq(ch.mid),
+                    eq(ch.low),
+                    fader
+                ),
+                Style::default().fg(CLR_DIM),
+            )));
+        }
         lines.push(Line::from(""));
     }
 
