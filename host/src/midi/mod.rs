@@ -1,6 +1,8 @@
+pub mod activity;
 pub mod clock;
 pub mod input;
 pub mod mapper;
+pub mod ports;
 pub mod soak;
 pub mod timecode;
 pub mod transport;

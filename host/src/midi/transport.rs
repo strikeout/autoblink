@@ -59,15 +59,27 @@ pub fn open_midi_output(port_name: &str) -> anyhow::Result<(MidiOutputConnection
             .map_err(|e| anyhow::anyhow!("{}", e));
     }
 
-    for port in &ports {
-        let name = midi_out.port_name(port)?;
-        if name.to_lowercase().contains(&port_name.to_lowercase()) {
-            tracing::info!(%name, "Selected MIDI output port");
-            return midi_out
-                .connect(port, "xdj-clock")
-                .map(|conn| (conn, name))
-                .map_err(|e| anyhow::anyhow!("{}", e));
-        }
+    // An exact name wins over a substring match, so that "Bus 1" does not open "Bus 10".
+    let wanted = port_name.to_lowercase();
+    let names: Vec<String> = ports
+        .iter()
+        .map(|p| midi_out.port_name(p).unwrap_or_default())
+        .collect();
+    let pick = names
+        .iter()
+        .position(|n| n.to_lowercase() == wanted)
+        .or_else(|| {
+            names
+                .iter()
+                .position(|n| n.to_lowercase().contains(&wanted))
+        });
+    if let Some(i) = pick {
+        let name = names[i].clone();
+        tracing::info!(%name, "Selected MIDI output port");
+        return midi_out
+            .connect(&ports[i], "xdj-clock")
+            .map(|conn| (conn, name))
+            .map_err(|e| anyhow::anyhow!("{}", e));
     }
 
     anyhow::bail!("MIDI port matching {:?} not found", port_name)
@@ -140,6 +152,7 @@ pub struct MidiOutHandle {
     tx_normal: mpsc::Sender<Vec<u8>>,
     connected: Arc<AtomicBool>,
     dropped_messages: Arc<AtomicUsize>,
+    port_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MidiOutHandle {
@@ -311,7 +324,16 @@ impl MidiOutHandle {
             tx_normal,
             connected,
             dropped_messages,
+            port_lock: Arc::default(),
         }
+    }
+
+    /// Hold this lock to open a port, switch to it and record its name in the config.
+    ///
+    /// The reconnect loop and a port switch from the UI both do these three steps. Without the
+    /// lock, their steps can interleave, and the config then names a port that is not open.
+    pub fn port_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.port_lock
     }
 
     pub fn is_connected(&self) -> bool {

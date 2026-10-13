@@ -1,214 +1,10 @@
-//! TUI-specific state — UI selections, log ring buffer, activity counters.
+//! The editable settings: the table, the display values, and the validated changes.
 //!
-//! Separate from `DjState` because this tracks UI concerns (selected port,
-//! scroll offsets, animation timers) that the audio/MIDI pipeline should
-//! not know about.
-
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::Instant;
 
 use network_interface::{NetworkInterface, NetworkInterfaceConfig, V4IfAddr};
-use parking_lot::Mutex;
+use tokio::sync::watch;
 
-use crate::config::{Config, Source};
-
-// ── Log ring buffer (shared with tracing layer) ──────────────────────────────
-
-/// Max log lines retained for the TUI log panel.
-const LOG_CAPACITY: usize = 200;
-
-/// Thread-safe ring buffer of log lines, written by the tracing layer and
-/// read by the TUI renderer.
-#[derive(Debug, Clone)]
-pub struct LogBuffer {
-    inner: Arc<Mutex<VecDeque<String>>>,
-}
-
-impl LogBuffer {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(VecDeque::with_capacity(LOG_CAPACITY))),
-        }
-    }
-
-    /// Push a log line (called from the tracing writer).
-    pub fn push(&self, line: String) {
-        let mut buf = self.inner.lock();
-        if buf.len() >= LOG_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(line);
-    }
-
-    /// Snapshot all lines for rendering.
-    pub fn lines(&self) -> Vec<String> {
-        self.inner.lock().iter().cloned().collect()
-    }
-}
-
-/// A `std::io::Write` implementation that routes tracing output into the
-/// `LogBuffer` instead of stdout.  Each `write()` call appends to a
-/// line buffer; newlines flush complete lines into the ring.
-#[derive(Clone)]
-pub struct LogWriter {
-    buf: LogBuffer,
-    partial: String,
-}
-
-impl LogWriter {
-    pub fn new(buf: LogBuffer) -> Self {
-        Self {
-            buf,
-            partial: String::new(),
-        }
-    }
-}
-
-impl std::io::Write for LogWriter {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        let chunk = String::from_utf8_lossy(data);
-        self.partial.push_str(&chunk);
-
-        let mut it = self.partial.split('\n').peekable();
-        let mut new_partial: Option<String> = None;
-
-        while let Some(part) = it.next() {
-            let is_last = it.peek().is_none();
-            if is_last {
-                new_partial = Some(part.to_string());
-                break;
-            }
-
-            let line = part.trim_end_matches('\r');
-            let trimmed = line.trim_end();
-            if !trimmed.is_empty() {
-                self.buf.push(trimmed.to_string());
-            }
-        }
-
-        self.partial = new_partial.unwrap_or_default();
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    #[test]
-    fn log_buffer_clones_share_inner_ring() {
-        let a = LogBuffer::new();
-        let b = a.clone();
-
-        assert!(Arc::ptr_eq(&a.inner, &b.inner));
-
-        b.push("hello".to_string());
-        assert_eq!(a.lines(), vec!["hello".to_string()]);
-    }
-
-    #[test]
-    fn log_writer_buffers_partial_lines_until_newline() {
-        let buf = LogBuffer::new();
-        let mut w = LogWriter::new(buf.clone());
-
-        w.write_all(b"hello ").unwrap();
-        assert_eq!(buf.lines(), Vec::<String>::new());
-
-        w.write_all(b"world\n").unwrap();
-        assert_eq!(buf.lines(), vec!["hello world".to_string()]);
-    }
-}
-
-/// Wrapper that implements `tracing_subscriber::fmt::MakeWriter` so we can
-/// plug `LogWriter` into the tracing subscriber.
-#[derive(Clone)]
-pub struct MakeLogWriter {
-    writer: LogWriter,
-}
-
-impl MakeLogWriter {
-    pub fn new(buf: LogBuffer) -> Self {
-        Self {
-            writer: LogWriter::new(buf),
-        }
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for MakeLogWriter {
-    type Writer = LogWriter;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.writer.clone()
-    }
-}
-
-// ── MIDI port info ───────────────────────────────────────────────────────────
-
-/// A snapshot of an available MIDI output port.
-#[derive(Debug, Clone)]
-pub struct MidiPortInfo {
-    /// Display name (from midir).
-    pub name: String,
-    /// Port index in the midir port list at the time of enumeration.
-    pub index: usize,
-}
-
-// ── MIDI activity counters ───────────────────────────────────────────────────
-
-/// Counters the TUI displays in the output panel.  Updated atomically from
-/// MIDI tasks, read by the renderer.
-#[derive(Debug, Clone)]
-pub struct MidiActivity {
-    pub clock_pulses: u64,
-    pub mtc_quarter_frames: u64,
-    pub mtc_full_frames: u64,
-    pub notes_sent: u64,
-    pub cc_sent: u64,
-    /// Last note-on fired: (note_number, when).
-    pub last_note: Option<(u8, Instant)>,
-    /// Last CC sent: (cc_number, value, when).
-    pub last_cc: Option<(u8, u8, Instant)>,
-
-    pub clock_running: bool,
-    pub clock_waiting_for_phrase: bool,
-    pub clock_wait_beats_seen: u8,
-    pub clock_phrase_beat: u8,
-    pub clock_pulse_index: u64,
-    pub clock_last_start_at: Option<Instant>,
-    pub clock_last_pulse_at: Option<Instant>,
-
-    /// Latest beat timing delta in milliseconds.
-    pub clock_timing_delta_ms: Option<f64>,
-}
-
-impl Default for MidiActivity {
-    fn default() -> Self {
-        Self {
-            clock_pulses: 0,
-            mtc_quarter_frames: 0,
-            mtc_full_frames: 0,
-            notes_sent: 0,
-            cc_sent: 0,
-            last_note: None,
-            last_cc: None,
-
-            clock_running: false,
-            clock_waiting_for_phrase: false,
-            clock_wait_beats_seen: 0,
-            clock_phrase_beat: 0,
-            clock_pulse_index: 0,
-            clock_last_start_at: None,
-            clock_last_pulse_at: None,
-            clock_timing_delta_ms: None,
-        }
-    }
-}
+use crate::config::{Config, SharedConfig, Source};
 
 #[derive(Debug, Clone)]
 pub struct NetworkIfaceInfo {
@@ -216,19 +12,6 @@ pub struct NetworkIfaceInfo {
     pub ip: String,
     pub priority: u8,
     pub priority_label: String,
-}
-
-/// Index into SETTINGS where the MIDI settings begin (indices 0..MIDI_SETTINGS_START
-/// are network/device settings shown on the left; MIDI_SETTINGS_START.. are on the right).
-pub const MIDI_SETTINGS_START: usize = 3;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActivePanel {
-    MidiPorts,
-    /// Network/device settings (left panel, indices 0..MIDI_SETTINGS_START).
-    InputSettings,
-    /// MIDI settings (right panel, indices MIDI_SETTINGS_START..).
-    MidiSettings,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -367,199 +150,6 @@ pub const SETTINGS: &[SettingDef] = &[
     },
 ];
 
-// ── TUI state ────────────────────────────────────────────────────────────────
-
-/// UI state that the render loop owns.  Not shared across threads — only the
-/// TUI task reads/writes this.
-pub struct TuiState {
-    /// Available MIDI output ports (refreshed on startup / manual rescan).
-    pub midi_ports: Vec<MidiPortInfo>,
-    /// Index into `midi_ports` for the currently active port.
-    pub active_port_idx: usize,
-    /// Index into `midi_ports` for the cursor (arrow-key highlight).
-    pub cursor_port_idx: usize,
-    /// Which lower-left panel is active.
-    pub active_panel: ActivePanel,
-    /// Cursor into the editable settings list.
-    pub settings_cursor: usize,
-    /// Cached network interfaces for the settings UI.
-    pub interfaces: Vec<NetworkIfaceInfo>,
-    /// Whether the settings panel is editing a numeric value.
-    pub editing: bool,
-    /// Temporary numeric edit buffer.
-    pub edit_buffer: String,
-    /// Log ring buffer (shared with tracing layer).
-    pub log_buf: LogBuffer,
-    /// MIDI activity counters (shared with MIDI tasks).
-    pub midi_activity: Arc<Mutex<MidiActivity>>,
-    /// Instant of the most recent beat (for flash animation).
-    pub last_beat_flash: Option<Instant>,
-    /// Whether we should quit the TUI.
-    pub should_quit: bool,
-}
-
-impl TuiState {
-    pub fn new(log_buf: LogBuffer, midi_activity: Arc<Mutex<MidiActivity>>) -> Self {
-        Self {
-            midi_ports: Vec::new(),
-            active_port_idx: 0,
-            cursor_port_idx: 0,
-            active_panel: ActivePanel::MidiPorts,
-            settings_cursor: 0,
-            interfaces: Vec::new(),
-            editing: false,
-            edit_buffer: String::new(),
-            log_buf,
-            midi_activity,
-            last_beat_flash: None,
-            should_quit: false,
-        }
-    }
-
-    /// Refresh the MIDI port list from midir.  Returns the number of ports found.
-    pub fn refresh_midi_ports(&mut self) -> usize {
-        let active_name = self
-            .midi_ports
-            .get(self.active_port_idx)
-            .map(|port| port.name.clone());
-        let cursor_name = self
-            .midi_ports
-            .get(self.cursor_port_idx)
-            .map(|port| port.name.clone());
-
-        self.midi_ports.clear();
-        if let Ok(midi_out) = midir::MidiOutput::new("xdj-clock-tui") {
-            let ports = midi_out.ports();
-            for (i, port) in ports.iter().enumerate() {
-                if let Ok(name) = midi_out.port_name(port) {
-                    self.midi_ports.push(MidiPortInfo { name, index: i });
-                }
-            }
-        }
-
-        if let Some(active_name) = active_name {
-            if let Some(idx) = self
-                .midi_ports
-                .iter()
-                .position(|port| port.name == active_name)
-            {
-                self.active_port_idx = idx;
-            } else if self.active_port_idx >= self.midi_ports.len() {
-                self.active_port_idx = self.midi_ports.len().saturating_sub(1);
-            }
-        } else if self.active_port_idx >= self.midi_ports.len() {
-            self.active_port_idx = self.midi_ports.len().saturating_sub(1);
-        }
-
-        if let Some(cursor_name) = cursor_name {
-            if let Some(idx) = self
-                .midi_ports
-                .iter()
-                .position(|port| port.name == cursor_name)
-            {
-                self.cursor_port_idx = idx;
-            } else if self.cursor_port_idx >= self.midi_ports.len() {
-                self.cursor_port_idx = self.midi_ports.len().saturating_sub(1);
-            }
-        } else if self.cursor_port_idx >= self.midi_ports.len() {
-            self.cursor_port_idx = self.midi_ports.len().saturating_sub(1);
-        }
-
-        self.midi_ports.len()
-    }
-
-    pub fn refresh_interfaces(&mut self) {
-        self.interfaces.clear();
-
-        let Ok(ifaces) = NetworkInterface::show() else {
-            return;
-        };
-
-        for iface in &ifaces {
-            for addr in &iface.addr {
-                if let network_interface::Addr::V4(V4IfAddr { ip, .. }) = addr {
-                    if ip.is_loopback() {
-                        continue;
-                    }
-
-                    let priority = crate::app::interface_priority(&iface.name, ip);
-                    self.interfaces.push(NetworkIfaceInfo {
-                        name: iface.name.clone(),
-                        ip: ip.to_string(),
-                        priority,
-                        priority_label: interface_priority_label(priority).to_string(),
-                    });
-                }
-            }
-        }
-
-        self.interfaces.sort_by(|a, b| {
-            a.priority
-                .cmp(&b.priority)
-                .then(a.name.cmp(&b.name))
-                .then(a.ip.cmp(&b.ip))
-        });
-    }
-
-    #[allow(dead_code)]
-    pub fn settings_count() -> usize {
-        SETTINGS.len()
-    }
-
-    /// Move the port selector cursor up.
-    pub fn cursor_up(&mut self) {
-        if !self.midi_ports.is_empty() && self.cursor_port_idx > 0 {
-            self.cursor_port_idx -= 1;
-        }
-    }
-
-    /// Move the port selector cursor down.
-    pub fn cursor_down(&mut self) {
-        if !self.midi_ports.is_empty() && self.cursor_port_idx < self.midi_ports.len() - 1 {
-            self.cursor_port_idx += 1;
-        }
-    }
-
-    pub fn cursor_up_settings(&mut self) {
-        let min = self.settings_panel_min();
-        if self.settings_cursor > min {
-            self.settings_cursor -= 1;
-        }
-    }
-
-    pub fn cursor_down_settings(&mut self) {
-        let max = self.settings_panel_max();
-        if self.settings_cursor + 1 < max {
-            self.settings_cursor += 1;
-        }
-    }
-
-    /// Minimum SETTINGS index for the currently active settings panel.
-    fn settings_panel_min(&self) -> usize {
-        match self.active_panel {
-            ActivePanel::InputSettings => 0,
-            ActivePanel::MidiSettings => MIDI_SETTINGS_START,
-            _ => 0,
-        }
-    }
-
-    /// Exclusive upper bound of SETTINGS indices for the active panel.
-    fn settings_panel_max(&self) -> usize {
-        match self.active_panel {
-            ActivePanel::InputSettings => MIDI_SETTINGS_START,
-            ActivePanel::MidiSettings => SETTINGS.len(),
-            _ => SETTINGS.len(),
-        }
-    }
-
-    /// Returns true if the beat flash should be visible (< 100ms since last beat).
-    pub fn beat_flash_active(&self) -> bool {
-        self.last_beat_flash
-            .map(|t| t.elapsed().as_millis() < 100)
-            .unwrap_or(false)
-    }
-}
-
 pub fn interface_priority_label(priority: u8) -> &'static str {
     match priority {
         0 => "DJ",
@@ -570,6 +160,11 @@ pub fn interface_priority_label(priority: u8) -> &'static str {
         5 => "VPN",
         _ => "?",
     }
+}
+
+/// Returns true for a numeric setting that [`apply_change`] steps up or down.
+pub fn has_step(idx: usize) -> bool {
+    matches!(idx, 6 | 7)
 }
 
 pub fn setting_kind(idx: usize) -> SettingKind {
@@ -879,4 +474,141 @@ pub fn selected_interface_name_ip(cfg: &Config, interfaces: &[NetworkIfaceInfo])
         .and_then(|idx| interfaces.get(idx))
         .map(|iface| format!("{} ({})", iface.name, iface.ip))
         .unwrap_or_else(|| cfg.interface.clone())
+}
+
+/// Lists the IPv4 interfaces without loopback, best candidate first.
+pub fn list_interfaces() -> Vec<NetworkIfaceInfo> {
+    let Ok(ifaces) = NetworkInterface::show() else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for iface in &ifaces {
+        for addr in &iface.addr {
+            if let network_interface::Addr::V4(V4IfAddr { ip, .. }) = addr {
+                if ip.is_loopback() {
+                    continue;
+                }
+                let priority = crate::app::interface_priority(&iface.name, ip);
+                out.push(NetworkIfaceInfo {
+                    name: iface.name.clone(),
+                    ip: ip.to_string(),
+                    priority,
+                    priority_label: interface_priority_label(priority).to_string(),
+                });
+            }
+        }
+    }
+
+    out.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then(a.name.cmp(&b.name))
+            .then(a.ip.cmp(&b.ip))
+    });
+    out
+}
+
+/// Steps the setting at `idx` in `direction` (toggle, cycle or a fixed step).
+///
+/// Returns true when the value changed. A change signals `cfg_change_tx` and writes a log line.
+pub fn cycle(
+    cfg: &SharedConfig,
+    interfaces: &[NetworkIfaceInfo],
+    cfg_change_tx: &watch::Sender<()>,
+    idx: usize,
+    direction: i8,
+) -> bool {
+    if idx >= SETTINGS.len() {
+        return false;
+    }
+    let mut guard = cfg.write();
+    if !apply_change(&mut guard, interfaces, idx, direction) {
+        return false;
+    }
+    let _ = cfg_change_tx.send(());
+    match idx {
+        0 => tracing::info!(
+            interface = %guard.interface,
+            "Network interface changed; the network tasks re-bind within 2 s"
+        ),
+        1 => tracing::info!(
+            mode = ?guard.source,
+            "Source mode changed; restart may be required for running engines"
+        ),
+        3 => tracing::info!(
+            enabled = guard.midi.clock_enabled,
+            "MIDI clock setting changed"
+        ),
+        _ => log_setting_change(idx, &guard),
+    }
+    true
+}
+
+/// Parses `value` and stores it in the numeric setting at `idx`.
+///
+/// Returns false when the value is not a number or is out of range. Then the config does not change.
+pub fn set_numeric(
+    cfg: &SharedConfig,
+    cfg_change_tx: &watch::Sender<()>,
+    idx: usize,
+    value: &str,
+) -> bool {
+    if idx >= SETTINGS.len() {
+        return false;
+    }
+    let mut guard = cfg.write();
+    if !apply_numeric_input(&mut guard, idx, value) {
+        return false;
+    }
+    log_setting_change(idx, &guard);
+    let _ = cfg_change_tx.send(());
+    true
+}
+
+fn log_setting_change(idx: usize, cfg: &Config) {
+    match idx {
+        2 => tracing::info!(
+            device_number = cfg.device_number,
+            "Device number changed; restart required for network tasks"
+        ),
+        4 => tracing::info!(
+            enabled = cfg.midi.clock_loop_enabled,
+            "MIDI clock loop setting changed"
+        ),
+        5 => tracing::info!(
+            smoothing_ms = cfg.midi.smoothing_ms,
+            "BPM smoothing setting changed"
+        ),
+        6 => tracing::info!(
+            latency_ms = cfg.midi.latency_compensation_ms,
+            "Latency compensation changed"
+        ),
+        7 => tracing::info!(
+            bars = cfg.midi.phrase_lock_stable_beats,
+            "Phrase-lock bar resync interval changed"
+        ),
+        8 => tracing::info!(channel = cfg.midi.notes.channel + 1, "Note channel changed"),
+        9 => tracing::info!(note = cfg.midi.notes.beat, "Beat note changed"),
+        10 => tracing::info!(note = cfg.midi.notes.downbeat, "Downbeat note changed"),
+        11 => tracing::info!(
+            note = cfg.midi.notes.phrase_change,
+            "Phrase change note changed"
+        ),
+        12 => tracing::info!(channel = cfg.midi.cc.channel + 1, "CC channel changed"),
+        13 => tracing::info!(cc = cfg.midi.cc.bpm_coarse, "BPM coarse CC changed"),
+        14 => tracing::info!(cc = cfg.midi.cc.bpm_fine, "BPM fine CC changed"),
+        15 => tracing::info!(cc = cfg.midi.cc.pitch, "Pitch CC changed"),
+        16 => tracing::info!(cc = cfg.midi.cc.bar_phase, "Bar phase CC changed"),
+        17 => tracing::info!(cc = cfg.midi.cc.beat_phase, "Beat phase CC changed"),
+        18 => tracing::info!(cc = cfg.midi.cc.playing, "Playing CC changed"),
+        19 => tracing::info!(cc = cfg.midi.cc.master_deck, "Master deck CC changed"),
+        20 => tracing::info!(cc = cfg.midi.cc.phrase_16, "Phrase 16 CC changed"),
+        21 => tracing::info!(enabled = cfg.midi.mtc.enabled, "MTC setting changed"),
+        22 => tracing::info!(
+            frame_rate = cfg.midi.mtc.frame_rate.label(),
+            "MTC frame rate changed"
+        ),
+        _ => {}
+    }
 }

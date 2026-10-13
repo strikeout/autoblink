@@ -41,7 +41,7 @@ use crate::midi::MidiTransport;
 use crate::prolink::beat_listener::BeatEvent;
 use crate::state::timing::{MeasurementKind, TimingMeasurement, TimingSnapshot, TimingSource};
 use crate::state::{BeatSource, SharedState};
-use crate::tui::state::MidiActivity;
+use crate::midi::activity::MidiActivity;
 
 use tokio::time::{sleep, sleep_until, Instant as TokioInstant};
 

@@ -9,9 +9,11 @@
 ## Developer Commands
 
 ```sh
-# Host (desktop app). A bare `cargo run` starts it with the TUI (`default-run` in host/Cargo.toml).
+# Host (desktop app). A bare `cargo run` starts it (`default-run` in host/Cargo.toml).
+# The web UI is at http://127.0.0.1:11111 (next free port when in use).
 cargo run
 cargo run -p xdj-clock-host
+cargo run -p xdj-clock-host -- --web-bind 127.0.0.1:11111
 cargo run -p xdj-clock-host -- --list-midi
 cargo run -p xdj-clock-host -- --list-interfaces
 cargo build -p xdj-clock-host --release
@@ -57,13 +59,13 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 
 | Crate | Role | Key modules |
 |---|---|---|
-| `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `tui/*`, `link` |
+| `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
 | `esp32` | Firmware, bare metal | `prolink.rs` (different impl), `midi.rs` (UART), `webui.rs` |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
 
-`pub mod config midi prolink state tui`
+`pub mod config link logbuf midi prolink runtime settings state web`
 
 Plus `pub fn interface_priority()` for network interface ranking.
 
@@ -80,7 +82,10 @@ Plus `pub fn interface_priority()` for network interface ranking.
 - `midi/clock.rs` — MIDI clock generation (24 PPQ, Start/Stop/Continue)
 - `midi/mapper.rs` — beat → MIDI CC/Note mapping
 - `midi/input.rs` — XDJ-AZ USB MIDI input. It stores the EQ and channel fader values in `DjState.mixer`.
-- `tui/render.rs` — ratatui rendering
+- `web/mod.rs` — axum server, WebSocket protocol v1 (documented in the module header), Origin check, port fallback
+- `web/status.rs` — status snapshot; takes each lock alone, never two at once
+- `settings.rs` — the settings table and the validated changes
+- `webui/index.html` (repo root) — the one page that the host, the emulator and the ESP32 serve
 
 ## Platform-Specific Code
 
@@ -102,7 +107,7 @@ All have `#[cfg(not(windows))]` guards around reuse_port calls.
 - **Logging**: `tracing` + `tracing-subscriber` on host; `log` on ESP32
 - **State sync**: `parking_lot::RwLock` (not tokio's)
 - **MIDI**: `midir` on host (no ESP32 equivalent)
-- **TUI**: `ratatui` + `crossterm` on host (no TUI on ESP32)
+- **Web UI**: `axum` with WebSockets on host and emulator; vanilla HTML/JS page, no build step
 - **Network interfaces**: `network-interface` crate on host
 
 ## Testing
@@ -124,6 +129,7 @@ ESP32 CI uses the `espressif/idf:latest` Docker container and builds on the `esp
 ## Refactor Context (for future sessions)
 
 - The protocol constants and packet parsing in `host/src/prolink/` are duplicated in `esp32/src/prolink.rs`
+- The `esp32` crate does not compile. `main.rs`, `state.rs`, `midi.rs` and `prolink.rs` use APIs that do not exist (for example `heapless::singleton::Smp`, `smoltcp::iface::EthernetInterface`, the embedded-hal 0.2 serial traits). Nothing receives Pro DJ Link packets. The target `riscv32imc` (ESP32-C3) has no Ethernet MAC. Before the firmware can serve `webui/index.html` with protocol v1, it needs a rewrite. The ESP32 CI on the `esp32` branch fails since 2026-09-17.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`
 - `host/src/state.rs` and `host/src/main.rs` are the highest-coupling files in the host crate
 - Adding a new architecture target should mirror the `esp32`/`esp32-emulator` split:

@@ -25,6 +25,11 @@ device_name = "xdj-clock"
 
 # ── Ableton Link ─────────────────────────────────────────────────────────────
 
+[web]
+# The address of the web UI. When the port is in use, the app uses the next free port.
+# The web UI has no login. Use "127.0.0.1:11111" to allow access from this computer only.
+bind = "0.0.0.0:11111"
+
 [link]
 # Enable Ableton Link session participation.  When enabled, xdj-clock will
 # appear in the Link session (e.g. visible in rekordbox's Link status panel).

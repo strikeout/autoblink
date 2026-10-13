@@ -1,8 +1,10 @@
 pub mod app;
 pub mod config;
 pub mod link;
+pub mod logbuf;
 pub mod midi;
 pub mod prolink;
 pub mod runtime;
+pub mod settings;
 pub mod state;
-pub mod tui;
+pub mod web;
