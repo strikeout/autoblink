@@ -221,7 +221,8 @@ Core outputs:
     ```
 2.  **Run**:
     ```sh
-    cargo run -p xdj-clock-host
+    cargo run                   # The desktop app with the TUI.
+    cargo run -- --no-tui       # The desktop app without the TUI (headless).
     ```
 
 ### Building the ESP32 Firmware
