@@ -241,6 +241,7 @@ fn produce_once(shared: &Shared) {
             },
             value: settings::get_value(&cfg, &interfaces, idx),
             raw: settings::numeric_edit_value(&cfg, idx),
+            step: settings::has_step(idx),
         })
         .collect();
     send_if_changed(
@@ -270,6 +271,8 @@ struct SettingItem {
     kind: &'static str,
     value: String,
     raw: Option<String>,
+    /// True when `cycle` steps this numeric setting up or down.
+    step: bool,
 }
 
 #[derive(Serialize)]
@@ -302,6 +305,10 @@ fn send_if_changed(tx: &watch::Sender<Arc<str>>, msg: Arc<str>) {
 /// Browsers do not apply CORS to WebSockets. Without this check, any page in a browser on the
 /// network could open the socket and change the settings. A request without `Origin` does not
 /// come from a browser page, so it passes.
+///
+/// The `Origin` must name the same host as `Host`. Also, `Host` must be an IP address,
+/// `localhost` or a `.local` name. A public domain name can resolve to this computer (DNS
+/// rebinding); then the origin and the host agree, but the page comes from the internet.
 fn origin_allowed(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return true;
@@ -312,9 +319,23 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
     ) else {
         return false;
     };
-    origin
+    let same = origin
         .split_once("://")
-        .is_some_and(|(_, rest)| rest.trim_end_matches('/').eq_ignore_ascii_case(host))
+        .is_some_and(|(_, rest)| rest.trim_end_matches('/').eq_ignore_ascii_case(host));
+    same && host_is_local(host)
+}
+
+/// Returns true when `host` (a `Host` header, with or without a port) is an IP address,
+/// `localhost`, or an mDNS `.local` name.
+fn host_is_local(host: &str) -> bool {
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        // "[::1]:11111"
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host.rsplit_once(':').map_or(host, |(name, _)| name)
+    };
+    let name = name.to_ascii_lowercase();
+    name.parse::<std::net::IpAddr>().is_ok() || name == "localhost" || name.ends_with(".local")
 }
 
 async fn ws_handler(
@@ -337,7 +358,11 @@ async fn ws_handler(
 enum Command {
     Cycle { idx: usize, dir: i8 },
     Set { idx: usize, value: String },
-    Port { name: String },
+    Port {
+        name: String,
+        #[serde(default)]
+        index: Option<usize>,
+    },
     Rescan,
 }
 
@@ -451,7 +476,11 @@ async fn handle_command(shared: &Shared, text: &str) -> Option<String> {
                 Some(format!("{label}: {value:?} is not a valid value"))
             }
         }
-        Command::Port { name } => switch_port(ctx, name).await,
+        Command::Port { name, index } => {
+            // With two ports of the same name, the config name cannot tell which one is open.
+            let unique = shared.ports.read().iter().filter(|p| **p == name).count() <= 1;
+            switch_port(ctx, name, index, unique).await
+        }
         Command::Rescan => {
             shared.rescan.notify_one();
             None
@@ -459,13 +488,19 @@ async fn handle_command(shared: &Shared, text: &str) -> Option<String> {
     }
 }
 
-async fn switch_port(ctx: &WebCtx, name: String) -> Option<String> {
-    if ctx.midi_out.is_connected() && ctx.cfg.read().midi.output == name {
+async fn switch_port(
+    ctx: &WebCtx,
+    name: String,
+    index: Option<usize>,
+    unique: bool,
+) -> Option<String> {
+    let _port = ctx.midi_out.port_lock().lock().await;
+    if unique && ctx.midi_out.is_connected() && ctx.cfg.read().midi.output == name {
         return None;
     }
     let wanted = name.clone();
     let opened =
-        tokio::task::spawn_blocking(move || crate::midi::open_midi_output(&wanted)).await;
+        tokio::task::spawn_blocking(move || crate::midi::ports::open_output(&wanted, index)).await;
     match opened {
         Ok(Ok((conn, full))) => {
             // Send Stop on the old port before the worker drops it.
@@ -538,13 +573,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bind_takes_the_next_port_when_the_port_is_in_use() {
-        let taken = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = taken.local_addr().unwrap().port();
+    async fn bind_takes_a_higher_port_when_the_port_is_in_use() {
+        // Keep the taken port away from 65535, so that higher ports exist.
+        let (taken, port) = loop {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = l.local_addr().unwrap().port();
+            if port < u16::MAX - PORT_TRIES {
+                break (l, port);
+            }
+        };
         let listener = bind(SocketAddr::from(([127, 0, 0, 1], port)))
             .await
             .expect("a free port above the taken one");
-        assert_eq!(listener.local_addr().unwrap().port(), port + 1);
+        // Another test can take port + 1 first, so accept any port in the range.
+        let got = listener.local_addr().unwrap().port();
+        assert!(got > port && got < port + PORT_TRIES, "{got} after {port}");
+        drop(taken);
     }
 
     #[test]
@@ -558,6 +602,17 @@ mod tests {
         assert!(!origin_allowed(&h));
         h.insert(header::ORIGIN, "http://192.168.1.5:11112".parse().unwrap());
         assert!(!origin_allowed(&h));
+
+        // DNS rebinding: a public name that resolves to this computer.
+        h.insert(header::HOST, "evil.example:11111".parse().unwrap());
+        h.insert(header::ORIGIN, "http://evil.example:11111".parse().unwrap());
+        assert!(!origin_allowed(&h));
+
+        for host in ["localhost:11111", "pi.local:11111", "[::1]:11111", "10.0.0.2"] {
+            h.insert(header::HOST, host.parse().unwrap());
+            h.insert(header::ORIGIN, format!("http://{host}").parse().unwrap());
+            assert!(origin_allowed(&h), "{host}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

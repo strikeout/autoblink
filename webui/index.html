@@ -300,8 +300,11 @@ function buildSetting(it) {
     input.inputMode = 'numeric';
     input.title = it.label;
     const commit = () => {
-      if (input.value.trim() === input.dataset.raw) return;
-      send({ type: 'set', idx: it.idx, value: input.value.trim() });
+      const value = input.value.trim();
+      if (value === input.dataset.raw) return;
+      // Enter commits, then blur fires "change": the raw value stops the second send.
+      input.dataset.raw = value;
+      send({ type: 'set', idx: it.idx, value });
     };
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { commit(); input.blur(); }
@@ -309,8 +312,17 @@ function buildSetting(it) {
     });
     input.addEventListener('change', commit);
     const shown = h('span', 'val num');
+    const parts = [label, shown];
+    if (it.step) {
+      for (const [text, dir] of [['◀', -1], ['▶', 1]]) {
+        const b = h('button', null, text);
+        b.addEventListener('click', () => send({ type: 'cycle', idx: it.idx, dir }));
+        parts.push(b);
+      }
+    }
+    parts.push(input);
     return {
-      el: h('div', 'set', label, shown, input),
+      el: h('div', 'set', ...parts),
       update(it) {
         input.dataset.raw = it.raw ?? '';
         // The shown value carries the unit; the input holds the raw number.
@@ -332,10 +344,11 @@ function buildSetting(it) {
 }
 
 function onPorts(m) {
-  const items = m.ports.map((name) => {
+  const items = m.ports.map((name, index) => {
     const active = name === m.active;
     const b = h('button', 'port' + (active ? ' active' : ''), h('span', 'mark', active ? '●' : ''), name);
-    b.addEventListener('click', () => send({ type: 'port', name }));
+    // The index selects among ports with the same name.
+    b.addEventListener('click', () => send({ type: 'port', name, index }));
     return b;
   });
   if (!m.ports.includes(m.active) && m.active) {
@@ -370,7 +383,13 @@ const handlers = { hello: onHello, status: onStatus, settings: onSettings, ports
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   ws = new WebSocket(proto + location.host + '/ws');
-  ws.onopen = () => { backoff = 500; $('dot').classList.add('on'); set('conn', 'live'); };
+  ws.onopen = () => {
+    backoff = 500;
+    $('dot').classList.add('on');
+    set('conn', 'live');
+    // The server sends all retained log lines to a new socket.
+    $('log').replaceChildren();
+  };
   ws.onmessage = (e) => {
     let m;
     try { m = JSON.parse(e.data); } catch { return; }

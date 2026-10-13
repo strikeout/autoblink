@@ -148,6 +148,7 @@ pub struct MidiOutHandle {
     tx_normal: mpsc::Sender<Vec<u8>>,
     connected: Arc<AtomicBool>,
     dropped_messages: Arc<AtomicUsize>,
+    port_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MidiOutHandle {
@@ -319,7 +320,16 @@ impl MidiOutHandle {
             tx_normal,
             connected,
             dropped_messages,
+            port_lock: Arc::default(),
         }
+    }
+
+    /// Hold this lock to open a port, switch to it and record its name in the config.
+    ///
+    /// The reconnect loop and a port switch from the UI both do these three steps. Without the
+    /// lock, their steps can interleave, and the config then names a port that is not open.
+    pub fn port_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.port_lock
     }
 
     pub fn is_connected(&self) -> bool {

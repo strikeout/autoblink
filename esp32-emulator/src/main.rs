@@ -105,7 +105,7 @@ impl Default for MidiConfig {
             note_channel: 10,
             beat_note: 36,
             downbeat_note: 37,
-            cc_channel: 0,
+            cc_channel: 1,
             bpm_coarse: 1,
             bpm_fine: 33,
             pitch_cc: 2,
@@ -134,6 +134,8 @@ struct EmulatorState {
     last_cc: u8,
     last_cc_val: u8,
     last_cc_ch: u8,
+    last_note_at: Option<Instant>,
+    last_cc_at: Option<Instant>,
 }
 
 impl EmulatorState {
@@ -160,6 +162,8 @@ impl EmulatorState {
             last_cc: 0,
             last_cc_val: 0,
             last_cc_ch: 0,
+            last_note_at: None,
+            last_cc_at: None,
         };
 
         state.add_log(0, "INFO", "xdj-clock ESP32 v1.1.7 starting");
@@ -327,6 +331,8 @@ impl EmulatorState {
                         self.last_cc = self.midi_config.beat_phase_cc;
                         self.last_cc_val = (beat.beat_in_bar * 31) as u8;
                         self.last_cc_ch = self.midi_config.cc_channel;
+                        self.last_note_at = Some(Instant::now());
+                        self.last_cc_at = Some(Instant::now());
                     }
 
                     self.add_log(2, "DEBUG", format!("Beat #{} bpm={:.2} beat={}/4", beat.device_number, beat.effective_bpm, beat.beat_in_bar));
@@ -344,6 +350,7 @@ impl EmulatorState {
                         self.last_cc = self.midi_config.bar_phase_cc;
                         self.last_cc_val = 64;
                         self.last_cc_ch = self.midi_config.cc_channel;
+                        self.last_cc_at = Some(Instant::now());
                     }
                     self.add_log(2, "DEBUG", format!("AbsPosition #{} pos={}ms bpm={:.2}", abs.device_number, abs.playhead_ms, abs.effective_bpm));
                 }
@@ -530,8 +537,9 @@ impl EmulatorState {
                 "pulses": self.midi_clock_count,
                 "notes": self.midi_note_count,
                 "ccs": self.midi_cc_count,
-                "last_note": (self.midi_note_count > 0).then_some(self.last_note),
-                "last_cc": (self.midi_cc_count > 0).then_some((self.last_cc, self.last_cc_val)),
+                // Like the host: a note shows for 200 ms, a CC for 300 ms.
+                "last_note": self.last_note_at.filter(|t| t.elapsed().as_millis() < 200).map(|_| self.last_note),
+                "last_cc": self.last_cc_at.filter(|t| t.elapsed().as_millis() < 300).map(|_| (self.last_cc, self.last_cc_val)),
                 "mtc": null,
                 "mtc_qf": 0,
                 "mtc_full": 0,
@@ -566,7 +574,7 @@ impl EmulatorState {
                     5 | 6 => format!("{raw} ms"),
                     _ => raw.clone(),
                 };
-                json!({"idx": idx, "label": label, "section": section, "kind": kind, "value": value, "raw": raw})
+                json!({"idx": idx, "label": label, "section": section, "kind": kind, "value": value, "raw": raw, "step": idx == 6})
             })
             .collect();
         json!({ "type": "settings", "items": items }).to_string()
@@ -790,9 +798,17 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
     ) else {
         return false;
     };
-    origin
+    let same = origin
         .split_once("://")
-        .is_some_and(|(_, rest)| rest.trim_end_matches('/').eq_ignore_ascii_case(host))
+        .is_some_and(|(_, rest)| rest.trim_end_matches('/').eq_ignore_ascii_case(host));
+    // A public name can resolve to this computer (DNS rebinding), so only local hosts pass.
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host.rsplit_once(':').map_or(host, |(name, _)| name)
+    }
+    .to_ascii_lowercase();
+    same && (name.parse::<std::net::IpAddr>().is_ok() || name == "localhost" || name.ends_with(".local"))
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(sh): State<Shared>) -> Response {

@@ -162,6 +162,11 @@ pub fn interface_priority_label(priority: u8) -> &'static str {
     }
 }
 
+/// Returns true for a numeric setting that [`apply_change`] steps up or down.
+pub fn has_step(idx: usize) -> bool {
+    matches!(idx, 6 | 7)
+}
+
 pub fn setting_kind(idx: usize) -> SettingKind {
     SETTINGS[idx].kind
 }

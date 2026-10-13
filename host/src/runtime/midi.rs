@@ -89,6 +89,11 @@ pub async fn reconnect_loop<F>(
             continue;
         }
 
+        let _port = midi_out.port_lock().lock().await;
+        // A port switch from the UI can connect while this task waits for the lock.
+        if midi_out.is_connected() {
+            continue;
+        }
         let wanted = cfg.read().midi.output.clone();
         match open(&wanted) {
             Ok((conn, name)) => {
