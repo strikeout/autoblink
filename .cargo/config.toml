@@ -1,0 +1,7 @@
+# On macOS, `cargo run` starts the host from a signed app bundle.
+# macOS shows a Local Network switch for an app bundle only. See scripts/macos-run.sh.
+[target.aarch64-apple-darwin]
+runner = "scripts/macos-run.sh"
+
+[target.x86_64-apple-darwin]
+runner = "scripts/macos-run.sh"
