@@ -1,8 +1,8 @@
 //! MIDI Clock generator — 24 pulses-per-quarter-note.
 //!
 //! Generates MIDI Timing Clock (0xF8) messages at the correct rate for the
-//! current BPM, plus MIDI Start (0xFA), Stop (0xFC), and Continue (0xFB)
-//! messages when the master deck starts or stops.
+//! current BPM, plus MIDI Start (0xFA), Stop (0xFC), Continue (0xFB), and
+//! Song Position Pointer (0xF2) messages when the master deck starts or stops.
 //!
 //! Uses deadline-based sleeping: computes the exact instant of the next pulse
 //! and sleeps until then (via `tokio::select!` with `sleep_until`), rather
@@ -29,6 +29,7 @@ const MSG_CLOCK: u8 = 0xF8;
 const MSG_START: u8 = 0xFA;
 const MSG_CONTINUE: u8 = 0xFB;
 const MSG_STOP: u8 = 0xFC;
+const MSG_SONG_POSITION: u8 = 0xF2;
 
 /// Pulses per quarter note — MIDI spec, always 24.
 const PPQ: u64 = 24;
@@ -166,14 +167,6 @@ fn bpm_to_interval_ns(bpm: f64) -> u64 {
     ns.round() as u64
 }
 
-fn signed_delta_ms(a: Instant, b: Instant) -> f64 {
-    if a >= b {
-        a.duration_since(b).as_secs_f64() * 1000.0
-    } else {
-        -(b.duration_since(a).as_secs_f64() * 1000.0)
-    }
-}
-
 fn signed_delta_ns(a: Instant, b: Instant) -> i128 {
     if a >= b {
         a.duration_since(b).as_nanos() as i128
@@ -182,21 +175,44 @@ fn signed_delta_ns(a: Instant, b: Instant) -> i128 {
     }
 }
 
-fn beat_timing_delta_ms(cs: &ClockState, beat_at: Instant) -> Option<f64> {
-    if !cs.running || cs.interval_ns == 0 {
+/// Moves `t` by a signed number of milliseconds.
+fn shift_instant_ms(t: Instant, offset_ms: i64) -> Instant {
+    let offset = Duration::from_millis(offset_ms.unsigned_abs());
+    if offset_ms >= 0 {
+        t + offset
+    } else {
+        t.checked_sub(offset).unwrap_or(t)
+    }
+}
+
+/// Returns the signed time from the nearest clock beat pulse to `beat_at`.
+///
+/// The clock beat pulse is the pulse with index 0. A positive value means
+/// that the clock beat pulse is before `beat_at`. The result is in the
+/// range (-beat/2, beat/2].
+fn beat_phase_error_ns(cs: &ClockState, beat_at: Instant) -> Option<i128> {
+    if cs.interval_ns == 0 {
         return None;
     }
 
-    let next_boundary = cs.last_pulse + Duration::from_nanos(cs.interval_ns);
-    let prev_boundary = cs.last_pulse;
-    let prev_delta = signed_delta_ms(prev_boundary, beat_at);
-    let next_delta = signed_delta_ms(next_boundary, beat_at);
-
-    if prev_delta.abs() <= next_delta.abs() {
-        Some(prev_delta)
-    } else {
-        Some(next_delta)
+    let interval_ns = cs.interval_ns as i128;
+    let beat_ns = interval_ns * PPQ as i128;
+    let since_beat_pulse =
+        signed_delta_ns(beat_at, cs.last_pulse) + cs.pulse_index as i128 * interval_ns;
+    let mut error_ns = since_beat_pulse.rem_euclid(beat_ns);
+    if error_ns > beat_ns / 2 {
+        error_ns -= beat_ns;
     }
+    Some(error_ns)
+}
+
+fn beat_timing_delta_ms(cs: &ClockState, beat_at: Instant) -> Option<f64> {
+    if !cs.running {
+        return None;
+    }
+
+    // A positive value means that the clock beat pulse is after `beat_at`.
+    beat_phase_error_ns(cs, beat_at).map(|error_ns| -(error_ns as f64) / 1.0e6)
 }
 
 fn measurement_matches_master(
@@ -369,7 +385,6 @@ fn apply_pending_phase_slew(cs: &mut ClockState, now: Instant) {
 
     if elapsed >= slew.duration {
         cs.phase_slew = None;
-        cs.pulse_index = 0;
     } else {
         cs.phase_slew = Some(slew);
     }
@@ -404,12 +419,14 @@ fn apply_full_bar_resync_hard(
     }
 }
 
-fn start_full_bar_resync_slewed(cs: &mut ClockState, beat_at: Instant, smoothing_ms: u64) {
-    apply_pending_phase_slew(cs, beat_at);
-    let correction_ns = signed_delta_ns(beat_at, cs.last_pulse);
+fn start_full_bar_resync_slewed(
+    cs: &mut ClockState,
+    beat_at: Instant,
+    correction_ns: i128,
+    smoothing_ms: u64,
+) {
     if correction_ns == 0 {
         cs.phase_slew = None;
-        cs.pulse_index = 0;
         return;
     }
 
@@ -441,10 +458,18 @@ fn maybe_resync_on_bar_boundary(
         return;
     }
 
-    if smoothing_ms == 0 {
-        apply_full_bar_resync_hard(cs, midi, activity, beat_at);
-    } else {
-        start_full_bar_resync_slewed(cs, beat_at, smoothing_ms);
+    apply_pending_phase_slew(cs, beat_at);
+    // A slew corrects only a phase error of less than half a pulse. It does
+    // not change `pulse_index`. A larger error means that the pulse count is
+    // wrong, so the clock must restart on the beat.
+    let half_pulse_ns = cs.interval_ns as i128 / 2;
+    match beat_phase_error_ns(cs, beat_at) {
+        Some(error_ns)
+            if smoothing_ms > 0 && error_ns > -half_pulse_ns && error_ns <= half_pulse_ns =>
+        {
+            start_full_bar_resync_slewed(cs, beat_at, error_ns, smoothing_ms);
+        }
+        _ => apply_full_bar_resync_hard(cs, midi, activity, beat_at),
     }
     cs.bars_since_realign = 0;
 }
@@ -755,13 +780,22 @@ fn handle_prolink_beat_loop_disabled(
         cs.pulse_index = 0;
         cs.last_pulse = received_at;
         cs.beat_count = 1;
-        let msg = if cs.has_started {
-            MSG_CONTINUE
+        if cs.has_started {
+            // The receiver keeps the song position of the stop. That position
+            // can be in the middle of a beat. Song Position Pointer moves the
+            // receiver to the start of the current beat, so the next pulse
+            // agrees with pulse index 0. One MIDI beat is one sixteenth note.
+            let position = (bp.beat_in_bar.saturating_sub(1) as u16) * 4;
+            let _ = midi.send_message(&[
+                MSG_SONG_POSITION,
+                (position & 0x7F) as u8,
+                ((position >> 7) & 0x7F) as u8,
+            ]);
+            let _ = midi.send_message(&[MSG_CONTINUE]);
         } else {
-            MSG_START
-        };
+            let _ = midi.send_message(&[MSG_START]);
+        }
         cs.has_started = true;
-        let _ = midi.send_message(&[msg]);
         let _ = midi.send_message(&[MSG_CLOCK]);
 
         if let Some(mut a) = activity.try_lock() {
@@ -778,25 +812,51 @@ fn handle_prolink_beat_loop_disabled(
     }
 }
 
-fn emit_overdue_clock_pulses(cs: &mut ClockState, midi: &Arc<dyn MidiTransport>) -> u64 {
+/// Sends the clock pulses that are due at `now` and returns the number sent.
+///
+/// `cs.last_pulse` stays on the beat grid. The latency offset moves only the
+/// send time of each pulse, so this gate agrees with the sleep deadline.
+fn emit_overdue_clock_pulses(
+    cs: &mut ClockState,
+    midi: &Arc<dyn MidiTransport>,
+    now: Instant,
+    latency_offset_ms: i64,
+) -> u64 {
     if cs.interval_ns == 0 {
         return 0;
     }
 
-    let now = Instant::now();
-    let elapsed = now.duration_since(cs.last_pulse).as_nanos() as u64;
+    let grid_now = shift_instant_ms(now, latency_offset_ms.saturating_neg());
+    let elapsed = grid_now.saturating_duration_since(cs.last_pulse).as_nanos() as u64;
     if elapsed < cs.interval_ns {
         return 0;
     }
 
-    let intervals_elapsed = (elapsed / cs.interval_ns).max(1);
+    let intervals_elapsed = elapsed / cs.interval_ns;
     cs.last_pulse += Duration::from_nanos(intervals_elapsed.saturating_mul(cs.interval_ns));
     cs.pulse_index = (cs.pulse_index + intervals_elapsed) % PPQ;
-    for _ in 0..intervals_elapsed {
+
+    // After a stall of more than one beat, the clock drops the full beats.
+    // It sends only the pulses that move the receiver to the same position
+    // in the beat as `pulse_index`. Thus one wake sends a maximum of PPQ pulses.
+    let pulses_to_send = if intervals_elapsed > PPQ {
+        intervals_elapsed % PPQ
+    } else {
+        intervals_elapsed
+    };
+    for _ in 0..pulses_to_send {
         let _ = midi.send_message(&[MSG_CLOCK]);
     }
 
-    if intervals_elapsed > 1 {
+    if intervals_elapsed > PPQ {
+        tracing::warn!(
+            target: "midi.clock",
+            intervals_elapsed,
+            pulses_to_send,
+            interval_ns = cs.interval_ns,
+            "Clock stall is longer than one beat: full beats of catch-up pulses are dropped"
+        );
+    } else if intervals_elapsed > 1 {
         tracing::trace!(
             target: "midi.clock",
             intervals_elapsed,
@@ -806,7 +866,33 @@ fn emit_overdue_clock_pulses(cs: &mut ClockState, midi: &Arc<dyn MidiTransport>)
         );
     }
 
-    intervals_elapsed
+    pulses_to_send
+}
+
+/// Applies the Start and Stop logic when the clock loop is enabled.
+fn update_loop_transport(
+    cs: &mut ClockState,
+    midi: &Arc<dyn MidiTransport>,
+    activity: &Arc<Mutex<MidiActivity>>,
+    clock_enabled: bool,
+    is_playing: bool,
+) {
+    if clock_enabled && is_playing && cs.transport_state() == ClockTransportState::Idle {
+        // A resume must not continue at an unknown position in the beat.
+        // The clock waits for the phrase start and then sends Start.
+        cs.arm_wait_for_phrase_start();
+        if let Some(mut a) = activity.try_lock() {
+            a.clock_running = false;
+            a.clock_waiting_for_phrase = true;
+            a.clock_wait_beats_seen = 0;
+            a.clock_pulse_index = cs.pulse_index;
+        }
+        tracing::debug!("MIDI clock waits for phrase start after transport resume");
+    } else if (!clock_enabled || !is_playing) && cs.running {
+        cs.transition_to_idle();
+        let _ = midi.send_message(&[MSG_STOP]);
+        tracing::debug!("MIDI Stop sent");
+    }
 }
 
 // ── Main clock task ───────────────────────────────────────────────────────────
@@ -912,14 +998,7 @@ pub async fn run(
         let latency_offset_ms = cfg.read().midi.latency_compensation_ms;
         let next_pulse_at = if clock_enabled && cs.running && cs.interval_ns > 0 {
             let base = cs.last_pulse + Duration::from_nanos(cs.interval_ns);
-            if latency_offset_ms > 0 {
-                base + Duration::from_millis(latency_offset_ms as u64)
-            } else if latency_offset_ms < 0 {
-                base.checked_sub(Duration::from_millis((-latency_offset_ms) as u64))
-                    .unwrap_or(base)
-            } else {
-                base
-            }
+            shift_instant_ms(base, latency_offset_ms)
         } else {
             // Not running: wake periodically to check state changes.
             Instant::now() + Duration::from_millis(10)
@@ -984,50 +1063,7 @@ pub async fn run(
 
         // ── Start / Stop / Continue messages ─────────────────────────────────
         if clock_loop_enabled {
-            if clock_enabled && is_playing && !cs.running && !cs.waiting_for_downbeat {
-                cs.transition_to_running();
-                cs.pulse_index = 0;
-                cs.last_pulse = Instant::now();
-                if bpm > 0.0 {
-                    cs.set_bpm(bpm);
-                }
-                let msg = if cs.has_started {
-                    MSG_CONTINUE
-                } else {
-                    MSG_START
-                };
-                cs.has_started = true;
-                // Send Start/Continue followed by the first clock pulse
-                // immediately (MIDI spec: clock should follow Start without delay).
-                let _ = midi.send_message(&[msg]);
-                let _ = midi.send_message(&[MSG_CLOCK]);
-                {
-                    if let Some(mut a) = activity.try_lock() {
-                        a.clock_pulses += 1;
-                        a.clock_last_pulse_at = Some(Instant::now());
-                        a.clock_running = cs.running;
-                        a.clock_waiting_for_phrase = cs.waiting_for_downbeat;
-                        a.clock_wait_beats_seen = cs.wait_beats_seen;
-                        a.clock_phrase_beat = cs.beat_count;
-                        a.clock_pulse_index = cs.pulse_index;
-                        if msg == MSG_START {
-                            a.clock_last_start_at = Some(Instant::now());
-                        }
-                    }
-                }
-                tracing::debug!(
-                    msg = if msg == MSG_START {
-                        "Start"
-                    } else {
-                        "Continue"
-                    },
-                    "MIDI transport sent"
-                );
-            } else if (!clock_enabled || !is_playing) && cs.running {
-                cs.transition_to_idle();
-                let _ = midi.send_message(&[MSG_STOP]);
-                tracing::debug!("MIDI Stop sent");
-            }
+            update_loop_transport(&mut cs, &midi, &activity, clock_enabled, is_playing);
         } else if !clock_enabled && cs.running {
             cs.transition_to_idle();
             let _ = midi.send_message(&[MSG_STOP]);
@@ -1047,7 +1083,8 @@ pub async fn run(
 
         if clock_enabled && cs.running && pulse_bpm > 0.0 {
             cs.set_bpm(pulse_bpm);
-            let intervals_elapsed = emit_overdue_clock_pulses(&mut cs, &midi);
+            let intervals_elapsed =
+                emit_overdue_clock_pulses(&mut cs, &midi, Instant::now(), latency_offset_ms);
             if intervals_elapsed > 0 {
                 if let Some(mut a) = activity.try_lock() {
                     a.clock_pulses += intervals_elapsed;
@@ -1254,7 +1291,7 @@ mod tests {
         let midi = Arc::new(MockMidiTransport::new());
         let transport: Arc<dyn MidiTransport> = midi.clone();
 
-        let sent = emit_overdue_clock_pulses(&mut cs, &transport);
+        let sent = emit_overdue_clock_pulses(&mut cs, &transport, Instant::now(), 0);
 
         assert_eq!(sent, 3);
         assert_eq!(cs.pulse_index, 1);
@@ -1450,11 +1487,11 @@ mod tests {
         let mut cs = ClockState::new();
         cs.transition_to_running();
         cs.has_started = true;
-        cs.pulse_index = 5;
+        cs.pulse_index = 0;
 
         let beat_at = Instant::now();
         cs.last_pulse = beat_at
-            .checked_sub(Duration::from_millis(40))
+            .checked_sub(Duration::from_millis(4))
             .unwrap_or(beat_at);
         let pre_slew_last_pulse = cs.last_pulse;
 
@@ -1481,6 +1518,203 @@ mod tests {
 
         apply_pending_phase_slew(&mut cs, beat_at + Duration::from_millis(200));
         assert!(cs.phase_slew.is_none());
+        assert_eq!(cs.pulse_index, 0);
+        assert_eq!(cs.last_pulse, beat_at);
+    }
+
+    fn running_clock_at(last_pulse: Instant, pulse_index: u64) -> ClockState {
+        let mut cs = ClockState::new();
+        cs.transition_to_running();
+        cs.has_started = true;
+        cs.last_pulse = last_pulse;
+        cs.pulse_index = pulse_index;
+        cs
+    }
+
+    #[test]
+    fn negative_latency_offset_sends_pulse_early() {
+        let t0 = Instant::now();
+        let mut cs = running_clock_at(t0, 0);
+        let interval = Duration::from_nanos(cs.interval_ns);
+        let offset = Duration::from_millis(5);
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+
+        // The run loop wakes at the shifted deadline. The pulse must go out then.
+        let sent = emit_overdue_clock_pulses(&mut cs, &transport, t0 + interval - offset, -5);
+        assert_eq!(sent, 1);
+        assert_eq!(cs.last_pulse, t0 + interval);
+        assert_eq!(cs.pulse_index, 1);
+
+        let sent = emit_overdue_clock_pulses(&mut cs, &transport, t0 + interval, -5);
+        assert_eq!(sent, 0);
+        assert_eq!(midi.get_messages().len(), 1);
+    }
+
+    #[test]
+    fn positive_latency_offset_larger_than_interval_does_not_burst() {
+        let t0 = Instant::now();
+        let mut cs = running_clock_at(t0, 0);
+        let interval = Duration::from_nanos(cs.interval_ns);
+        let offset = Duration::from_millis(50);
+        assert!(offset > interval);
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+
+        for n in 1..=4u32 {
+            let deadline = t0 + interval * n + offset;
+            let sent = emit_overdue_clock_pulses(&mut cs, &transport, deadline, 50);
+            assert_eq!(sent, 1);
+            assert_eq!(cs.last_pulse, t0 + interval * n);
+        }
+        assert_eq!(midi.get_messages().len(), 4);
+    }
+
+    #[test]
+    fn emit_overdue_clock_pulses_caps_catch_up_after_long_stall() {
+        let t0 = Instant::now();
+        let mut cs = running_clock_at(t0, 22);
+        let interval = Duration::from_nanos(cs.interval_ns);
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+
+        let sent = emit_overdue_clock_pulses(&mut cs, &transport, t0 + interval * 1000, 0);
+
+        // 1000 pulses are due. The clock drops 41 full beats and sends 16.
+        assert_eq!(sent, 1000 % PPQ);
+        assert_eq!(midi.get_messages().len() as u64, 1000 % PPQ);
+        assert_eq!(cs.pulse_index, (22 + 1000) % PPQ);
+        assert_eq!(cs.last_pulse, t0 + interval * 1000);
+    }
+
+    #[test]
+    fn beat_timing_delta_measures_to_beat_pulse_not_nearest_pulse() {
+        let t0 = Instant::now();
+        let cs = running_clock_at(t0, 6);
+        let interval = Duration::from_nanos(cs.interval_ns);
+        let beat_pulse = t0 - interval * 6;
+
+        let delta = beat_timing_delta_ms(&cs, beat_pulse + Duration::from_millis(3)).unwrap();
+        assert!((delta + 3.0).abs() < 1e-6, "delta = {delta}");
+
+        // The beat is 1 ms after the last pulse, but 6 pulses after the beat pulse.
+        let delta = beat_timing_delta_ms(&cs, t0 + Duration::from_millis(1)).unwrap();
+        let expected = -(interval * 6 + Duration::from_millis(1)).as_secs_f64() * 1000.0;
+        assert!((delta - expected).abs() < 1e-6, "delta = {delta}");
+
+        // A beat just before the next beat pulse measures against the next beat pulse.
+        let next_beat_pulse = beat_pulse + interval * PPQ as u32;
+        let delta = beat_timing_delta_ms(&cs, next_beat_pulse - Duration::from_millis(2)).unwrap();
+        assert!((delta - 2.0).abs() < 1e-6, "delta = {delta}");
+    }
+
+    #[test]
+    fn slewed_resync_corrects_phase_without_changing_pulse_index() {
+        let beat_at = Instant::now();
+        // Pulse 23 was sent 15 ms before the beat. The next beat pulse is due
+        // one interval after it, so the clock is late by (interval - 15 ms).
+        let mut cs = running_clock_at(beat_at - Duration::from_millis(15), 23);
+        let interval_ns = cs.interval_ns as i128;
+        let pre_slew_last_pulse = cs.last_pulse;
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+
+        maybe_resync_on_bar_boundary(&mut cs, &transport, &activity, 1, 200, 1, beat_at);
+
+        assert!(midi.get_messages().is_empty());
+        let expected_ns = 15_000_000 - interval_ns;
+        assert_eq!(cs.phase_slew.unwrap().total_correction_ns, expected_ns);
+
+        apply_pending_phase_slew(&mut cs, beat_at + Duration::from_millis(200));
+        assert!(cs.phase_slew.is_none());
+        assert_eq!(cs.pulse_index, 23);
+        assert_eq!(
+            cs.last_pulse,
+            pre_slew_last_pulse - Duration::from_nanos((-expected_ns) as u64)
+        );
+        assert_eq!(beat_phase_error_ns(&cs, beat_at), Some(0));
+    }
+
+    #[test]
+    fn slewed_resync_hard_restarts_when_pulse_count_is_off() {
+        let beat_at = Instant::now();
+        let mut cs = running_clock_at(beat_at - Duration::from_millis(40), 5);
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+
+        maybe_resync_on_bar_boundary(&mut cs, &transport, &activity, 1, 200, 1, beat_at);
+
+        assert_eq!(
+            midi.get_messages(),
+            vec![vec![MSG_STOP], vec![MSG_START], vec![MSG_CLOCK]]
+        );
+        assert!(cs.phase_slew.is_none());
+        assert_eq!(cs.pulse_index, 0);
+        assert_eq!(cs.last_pulse, beat_at);
+    }
+
+    #[test]
+    fn loop_resume_after_stop_waits_for_phrase_start_and_sends_start() {
+        let mut cs = running_clock_at(Instant::now(), 13);
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let state = make_test_state(1, BeatSource::ProLink);
+
+        update_loop_transport(&mut cs, &transport, &activity, true, false);
+        assert_eq!(midi.get_messages(), vec![vec![MSG_STOP]]);
+        assert!(!cs.running);
+        midi.clear_messages();
+
+        // The deck plays again. The clock must not send Continue mid-beat.
+        update_loop_transport(&mut cs, &transport, &activity, true, true);
+        assert!(midi.get_messages().is_empty());
+        assert!(cs.waiting_for_downbeat);
+        assert!(!cs.running);
+
+        let measurement = make_timing_measurement(1, 1);
+        state.write().timing.observe(measurement);
+        handle_timing_snapshot(&mut cs, &state, &transport, &activity, 1, 0, Instant::now());
+
+        assert_eq!(midi.get_messages(), vec![vec![MSG_START], vec![MSG_CLOCK]]);
+        assert!(cs.running);
+        assert_eq!(cs.pulse_index, 0);
+    }
+
+    #[test]
+    fn loop_disabled_resume_sends_song_position_before_continue() {
+        let mut cs = ClockState::new();
+        cs.transition_to_idle();
+        cs.has_started = true;
+        cs.pulse_index = 13;
+        let midi = Arc::new(MockMidiTransport::new());
+        let transport: Arc<dyn MidiTransport> = midi.clone();
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let state = make_test_state(1, BeatSource::ProLink);
+        let beat_at = Instant::now();
+
+        handle_prolink_beat_loop_disabled(
+            &mut cs,
+            &state,
+            &transport,
+            &activity,
+            4,
+            0,
+            make_beat_at(1, 3, beat_at),
+        );
+
+        // Beat 3 of the bar starts at MIDI beat (sixteenth note) 8.
+        assert_eq!(
+            midi.get_messages(),
+            vec![
+                vec![MSG_SONG_POSITION, 8, 0],
+                vec![MSG_CONTINUE],
+                vec![MSG_CLOCK]
+            ]
+        );
+        assert!(cs.running);
         assert_eq!(cs.pulse_index, 0);
         assert_eq!(cs.last_pulse, beat_at);
     }
