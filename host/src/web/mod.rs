@@ -13,7 +13,7 @@
 //!
 //! Client to server:
 //! - `{type: "cycle", idx, dir}` steps a toggle, a cycle or a fixed-step setting.
-//! - `{type: "set", idx, value}` stores a numeric setting.
+//! - `{type: "set", idx, value}` stores a numeric or text setting.
 //! - `{type: "port", name}` switches the MIDI output port.
 //! - `{type: "rescan"}` lists the MIDI ports and network interfaces again.
 
@@ -256,6 +256,7 @@ fn produce_once(shared: &Shared) {
                 SettingKind::NumericU8 | SettingKind::NumericU64 | SettingKind::NumericI64 => {
                     "number"
                 }
+                SettingKind::Text => "text",
             },
             value: settings::get_value(&cfg, &interfaces, idx),
             raw: settings::numeric_edit_value(&cfg, idx),

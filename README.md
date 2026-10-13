@@ -31,6 +31,10 @@
 - MIDI notes on every beat and on each downbeat.
 - Phrase kind of the master deck as CC 20 (kind code times 10), as notes 40–51 and as Program Change (off by default). CC 21 sends the phrase progress. CC 22 sends the beats left in the phrase.
 
+### OSC Output
+- OSC over UDP to a lighting desk or a media server, for example grandMA3, ChamSys MagicQ, Avolites Titan, Resolume or TouchDesigner.
+- The messages send the beat, the BPM as a float, the phrase name, the NO_BASS state and the track title.
+
 ---
 
 ## 🚀 Quick Start
@@ -169,6 +173,38 @@ Note `no_bass` (default 39) pulses when the bass is cut on all live channels. It
 - Each pulse is a note-on, followed immediately by a note-off.
 - Mixer channel CHn takes its play state from player n.
 - Until a fader moves, the app uses the on-air flag of the player.
+
+### OSC output
+
+The app sends OSC messages over UDP when `osc.enabled` is `true`. A lighting desk on the network receives them without a MIDI interface.
+
+You can also change the three OSC settings in the web UI, in the OSC Output group of the Settings panel. A target must be an IP address with a port. Separate two or more targets with commas.
+
+```toml
+[osc]
+enabled = true
+targets = ["192.168.1.50:8000"]
+prefix = "/xdj"
+```
+
+The app sends these messages. The prefix in the table is the default.
+
+| Address | Arguments | When |
+|---|---|---|
+| `/xdj/beat` | `i` beat in bar (1–4) | Each beat of the master deck |
+| `/xdj/downbeat` | none | Beat 1 |
+| `/xdj/bpm` | `f` BPM | The BPM changes by 0.01 or more |
+| `/xdj/playing` | `i` 1 plays, 0 stops | The master play state changes |
+| `/xdj/master` | `i` device number | The tempo master changes |
+| `/xdj/phrase` | `s` kind name, `i` kind code | A new phrase starts |
+| `/xdj/phrase/progress` | `f` 0.0–1.0 | The progress changes by 1/127 or more |
+| `/xdj/phrase/beats_left` | `i` beats | The value changes |
+| `/xdj/no_bass` | `i` 1 cut, 0 back | The NO_BASS state changes |
+| `/xdj/track` | `s` title, `s` artist, `i` rekordbox ID | A track loads on the master deck, or its metadata arrives |
+
+The kind codes are the same as in the phrase output section.
+
+Use `/xdj/track` to select a timecode page for each track. MTC follows the playhead of the master deck.
 
 ## Tested hardware
 

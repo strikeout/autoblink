@@ -3,6 +3,7 @@ pub mod config;
 pub mod link;
 pub mod logbuf;
 pub mod midi;
+pub mod osc;
 pub mod prolink;
 pub mod runtime;
 pub mod settings;

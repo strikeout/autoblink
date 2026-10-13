@@ -22,6 +22,7 @@ pub enum SettingKind {
     NumericU8,
     NumericU64,
     NumericI64,
+    Text,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -148,6 +149,22 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::CycleSource, // reuse cycle kind for frame rate cycling
         section: None,
     },
+    // ── OSC settings ─────────────────────────────────────────────────────
+    SettingDef {
+        label: "OSC Enabled",
+        kind: SettingKind::Toggle,
+        section: Some("OSC Output"),
+    },
+    SettingDef {
+        label: "OSC Targets",
+        kind: SettingKind::Text,
+        section: None,
+    },
+    SettingDef {
+        label: "OSC Prefix",
+        kind: SettingKind::Text,
+        section: None,
+    },
 ];
 
 pub fn interface_priority_label(priority: u8) -> &'static str {
@@ -255,6 +272,15 @@ pub fn get_value(cfg: &Config, interfaces: &[NetworkIfaceInfo], idx: usize) -> S
             }
         }
         22 => cfg.midi.mtc.frame_rate.label().to_string(),
+        23 => {
+            if cfg.osc.enabled {
+                "✓".to_string()
+            } else {
+                "✗".to_string()
+            }
+        }
+        24 => cfg.osc.targets.join(", "),
+        25 => cfg.osc.prefix.clone(),
         _ => String::new(),
     }
 }
@@ -284,6 +310,7 @@ pub fn numeric_edit_value(cfg: &Config, idx: usize) -> Option<String> {
             6 => cfg.midi.latency_compensation_ms.to_string(),
             _ => return None,
         }),
+        SettingKind::Text => Some(get_value(cfg, &[], idx)),
         _ => None,
     }
 }
@@ -355,6 +382,10 @@ pub fn apply_change(
         }
         22 => {
             cfg.midi.mtc.frame_rate = cfg.midi.mtc.frame_rate.next();
+            true
+        }
+        23 => {
+            cfg.osc.enabled = !cfg.osc.enabled;
             true
         }
         _ => false,
@@ -465,8 +496,33 @@ pub fn apply_numeric_input(cfg: &mut Config, idx: usize, value: &str) -> bool {
             .filter(|v| *v <= 127)
             .map(|v| cfg.midi.cc.phrase_16 = v)
             .is_some(),
+        24 => parse_osc_targets(value)
+            .map(|v| cfg.osc.targets = v)
+            .is_some(),
+        25 => {
+            let ok = value.starts_with('/') && !value.contains(char::is_whitespace);
+            if ok {
+                cfg.osc.prefix = value.to_string();
+            }
+            ok
+        }
         _ => false,
     }
+}
+
+/// Parses a list of "IP:port" targets, separated by commas or spaces.
+///
+/// Returns None when one target is not an IP address with a port. An empty list is valid.
+pub fn parse_osc_targets(value: &str) -> Option<Vec<String>> {
+    value
+        .split([',', ' '])
+        .filter(|t| !t.is_empty())
+        .map(|t| {
+            t.parse::<std::net::SocketAddr>()
+                .ok()
+                .map(|a| a.to_string())
+        })
+        .collect()
 }
 
 pub fn selected_interface_name_ip(cfg: &Config, interfaces: &[NetworkIfaceInfo]) -> String {
@@ -545,7 +601,7 @@ pub fn cycle(
     true
 }
 
-/// Parses `value` and stores it in the numeric setting at `idx`.
+/// Parses `value` and stores it in the numeric or text setting at `idx`.
 ///
 /// Returns false when the value is not a number or is out of range. Then the config does not change.
 pub fn set_numeric(
@@ -609,6 +665,44 @@ fn log_setting_change(idx: usize, cfg: &Config) {
             frame_rate = cfg.midi.mtc.frame_rate.label(),
             "MTC frame rate changed"
         ),
+        23 => tracing::info!(enabled = cfg.osc.enabled, "OSC output setting changed"),
+        24 => tracing::info!(targets = ?cfg.osc.targets, "OSC targets changed"),
+        25 => tracing::info!(prefix = %cfg.osc.prefix, "OSC prefix changed"),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc_settings_are_validated() {
+        let mut cfg = Config::default();
+        assert!(apply_numeric_input(
+            &mut cfg,
+            24,
+            "192.168.1.50:8000, 2.255.255.255:7000"
+        ));
+        assert_eq!(cfg.osc.targets, ["192.168.1.50:8000", "2.255.255.255:7000"]);
+        assert_eq!(
+            get_value(&cfg, &[], 24),
+            "192.168.1.50:8000, 2.255.255.255:7000"
+        );
+
+        assert!(!apply_numeric_input(&mut cfg, 24, "desk.local:8000"));
+        assert!(!apply_numeric_input(&mut cfg, 24, "192.168.1.50"));
+        assert_eq!(cfg.osc.targets.len(), 2);
+        assert!(apply_numeric_input(&mut cfg, 24, ""));
+        assert!(cfg.osc.targets.is_empty());
+
+        assert!(apply_numeric_input(&mut cfg, 25, "/lights"));
+        assert!(!apply_numeric_input(&mut cfg, 25, "lights"));
+        assert!(!apply_numeric_input(&mut cfg, 25, "/a b"));
+        assert_eq!(cfg.osc.prefix, "/lights");
+
+        assert!(apply_change(&mut cfg, &[], 23, 1));
+        assert!(cfg.osc.enabled);
+        assert_eq!(numeric_edit_value(&cfg, 25).as_deref(), Some("/lights"));
     }
 }
