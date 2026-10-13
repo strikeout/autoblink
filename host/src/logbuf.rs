@@ -37,11 +37,6 @@ impl LogBuffer {
         ring.total += 1;
     }
 
-    /// Snapshot all lines for rendering.
-    pub fn lines(&self) -> Vec<String> {
-        self.inner.lock().lines.iter().cloned().collect()
-    }
-
     /// Returns the lines with a sequence number of `seq` or more, and the next sequence number.
     ///
     /// Lines that left the ring are skipped. Start with `seq` = 0 to get all retained lines.
@@ -115,7 +110,7 @@ mod tests {
         assert!(Arc::ptr_eq(&a.inner, &b.inner));
 
         b.push("hello".to_string());
-        assert_eq!(a.lines(), vec!["hello".to_string()]);
+        assert_eq!(a.since(0).0, vec!["hello".to_string()]);
     }
 
     #[test]
@@ -147,10 +142,10 @@ mod tests {
         let mut w = LogWriter::new(buf.clone());
 
         w.write_all(b"hello ").unwrap();
-        assert_eq!(buf.lines(), Vec::<String>::new());
+        assert_eq!(buf.since(0).0, Vec::<String>::new());
 
         w.write_all(b"world\n").unwrap();
-        assert_eq!(buf.lines(), vec!["hello world".to_string()]);
+        assert_eq!(buf.since(0).0, vec!["hello world".to_string()]);
     }
 }
 

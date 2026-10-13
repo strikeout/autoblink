@@ -193,7 +193,7 @@ async fn scan_loop(shared: Arc<Shared>) {
 /// Builds the status, settings and ports messages, while at least one client is connected.
 ///
 /// One task builds each message once for all clients. A settings or ports message is sent
-/// only when it changed, so a change from the TUI or the MIDI reconnect loop also reaches
+/// only when it changed, so a change from another client or the MIDI reconnect loop also reaches
 /// the page.
 async fn produce_loop(shared: Arc<Shared>) {
     let mut tick = tokio::time::interval(STATUS_INTERVAL);

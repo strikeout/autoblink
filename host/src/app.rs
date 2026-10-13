@@ -61,8 +61,9 @@ pub struct Cli {
     #[arg(long)]
     pub list_interfaces: bool,
 
-    /// Disable the TUI and use plain log output.
-    #[arg(long)]
+    /// No effect. The TUI is gone; the app always runs headless with the web UI.
+    /// The flag stays so that old service files still start.
+    #[arg(long, hide = true)]
     pub no_tui: bool,
 
     /// Web UI address (default from config `web.bind`, else 0.0.0.0:11111).
@@ -118,29 +119,13 @@ pub fn init() -> anyhow::Result<AppContext> {
     let cli = Cli::parse();
 
     // ── Logging ──────────────────────────────────────────────────────────────
-    let use_tui = !cli.no_tui;
     let log_buf = crate::logbuf::LogBuffer::new();
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         tracing_subscriber::EnvFilter::from_str(&cli.log_level).unwrap_or_default()
     });
 
-    if use_tui {
-        use tracing_subscriber::fmt;
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(
-                fmt::layer()
-                    .with_target(true)
-                    .with_ansi(false)
-                    .with_timer(fmt::time::Uptime::default())
-                    .with_writer(crate::logbuf::MakeLogWriter::new(log_buf.clone())),
-            )
-            .init();
-    } else {
+    {
         use tracing_subscriber::fmt;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
@@ -164,7 +149,7 @@ pub fn init() -> anyhow::Result<AppContext> {
     }
 
     // A panic in a spawned task does not stop the process. Log it, so that the
-    // TUI log panel and the headless log show it.
+    // web UI log panel and the stdout log show it.
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!("panic: {info}");

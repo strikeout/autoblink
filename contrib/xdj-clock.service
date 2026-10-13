@@ -17,7 +17,7 @@ After=network-online.target sound.target
 
 [Service]
 WorkingDirectory=/opt/xdj-clock
-ExecStart=/opt/xdj-clock/xdj-clock --no-tui --config /opt/xdj-clock/config.toml
+ExecStart=/opt/xdj-clock/xdj-clock --config /opt/xdj-clock/config.toml
 # The app recovers from a lost MIDI device or network by itself.
 # The restart is a last-resort safety net only.
 Restart=on-failure

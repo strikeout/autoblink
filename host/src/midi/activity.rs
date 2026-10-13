@@ -4,7 +4,7 @@ use std::time::Instant;
 
 // ── MIDI activity counters ───────────────────────────────────────────────────
 
-/// Counters the TUI displays in the output panel.  Updated atomically from
+/// Counters the web UI displays in the output panel.  Updated atomically from
 /// MIDI tasks, read by the renderer.
 #[derive(Debug, Clone, Default)]
 pub struct MidiActivity {

@@ -1,6 +1,5 @@
 //! The editable settings: the table, the display values, and the validated changes.
 //!
-//! The web UI and the TUI both use this module, so that both apply the same ranges.
 
 use network_interface::{NetworkInterface, NetworkInterfaceConfig, V4IfAddr};
 use tokio::sync::watch;
@@ -14,10 +13,6 @@ pub struct NetworkIfaceInfo {
     pub priority: u8,
     pub priority_label: String,
 }
-
-/// Index into SETTINGS where the MIDI settings begin (indices 0..MIDI_SETTINGS_START
-/// are network/device settings shown on the left; MIDI_SETTINGS_START.. are on the right).
-pub const MIDI_SETTINGS_START: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SettingKind {

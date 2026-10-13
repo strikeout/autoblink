@@ -41,7 +41,7 @@ fn source_flags(source: crate::config::Source) -> (bool, bool) {
     }
 }
 
-pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
+pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
     let AppContext {
         cli,
         startup_cfg,
@@ -157,20 +157,7 @@ pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
     )
     .await;
 
-    if use_tui {
-        crate::tui::run(
-            dj_state,
-            device_table,
-            cfg,
-            midi_out,
-            log_buf,
-            midi_activity,
-            cfg_change_tx,
-        )
-        .await
-    } else {
-        crate::app::headless_loop(dj_state, midi_out).await
-    }
+    crate::app::headless_loop(dj_state, midi_out).await
 }
 
 #[cfg(test)]

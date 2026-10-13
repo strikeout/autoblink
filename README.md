@@ -4,7 +4,7 @@
 
 
 
-![Terminal UI in action](./docs/tui_v1.2.9.png?auto=compress&cs=tinysrgb&dpr=3 "TUI on MacOS")
+![Web UI in action](./docs/webui.png "Web UI with four XDJ-AZ decks")
 
 
 ---
@@ -23,7 +23,7 @@
 ### Ableton Link
 - Auto mode prefers Link peers when present and falls back to Pro DJ Link.
 - Default polling is 500µs for tight MIDI clock synchronization.
-- Peer count and tempo are visible in the TUI and logs.
+- Peer count and tempo are visible in the web UI and logs.
 
 ### MIDI Output
 - Stable MIDI Clock (0xF8) pulses with Start/Stop/Continue support.
@@ -55,7 +55,7 @@ The app recovers from these faults without a restart:
 - When the MIDI device goes away, the app tries to open the same port again every 2 s. When the port comes back, the clock sends Stop, then Start on the next phrase. MTC sends a full frame.
 - When the network is not up at start, the app waits for it.
 - When the IP address goes away, the app finds the network again within a few seconds. Then it joins the Pro DJ Link network again.
-- When you change the interface in the TUI, the app uses the new interface within 2 s.
+- When you change the interface in the web UI, the app uses the new interface within 2 s.
 
 To run the app as a service:
 1. Copy `xdj-clock` and `config.toml` to `/opt/xdj-clock/`.
@@ -64,7 +64,7 @@ To run the app as a service:
 4. Run `sudo systemctl enable --now xdj-clock`.
 5. Read the log with `journalctl -u xdj-clock -f`.
 
-The service runs the app with `--no-tui` and with real-time priority. `systemctl stop` sends MIDI Stop before the app exits.
+The service runs the app with real-time priority. Open the web UI from another computer at `http://<pi-address>:11111`. `systemctl stop` sends MIDI Stop before the app exits.
 
 Before a long night, test the MIDI path on the target machine:
 ```sh
@@ -158,7 +158,7 @@ The player must send the phrase data over its dbserver. This needs at least one 
 
 ### XDJ-AZ mixer and NO_BASS
 
-The XDJ-AZ sends its EQ knobs and channel faders as MIDI over its USB-C cable. The app reads them from the "XDJ-AZ" MIDI port, and the TUI shows them in the Deck Information panel.
+The XDJ-AZ sends its EQ knobs and channel faders as MIDI over its USB-C cable. The app reads them from the "XDJ-AZ" MIDI port, and the web UI shows them in the Deck Information panel.
 
 Note `no_bass` (default 39) pulses when the bass is cut on all live channels. It pulses again when the bass comes back. Use the first pulse to start a strobe or another effect, and the second pulse to stop it.
 
@@ -211,13 +211,13 @@ The project is a Rust workspace with shared core logic across desktop and embedd
 
 - **`host/`**: Desktop app and shared core library.
   - Pro DJ Link packet parsing and shared state management.
-  - Real-time TUI with device discovery, BPM/phase, and MIDI port selection.
+  - Web UI (`host/src/web/`) with device discovery, BPM/phase, settings and MIDI port selection.
   - Ableton Link engine with hybrid auto mode.
 - **`esp32/`**: ESP32 firmware.
   - WiFi AP setup.
   - UART MIDI in/out.
 - **`esp32-emulator/`**: Native emulator for the ESP32 firmware.
-  - Web dashboard with WebSocket updates.
+  - Serves the shared web UI (`webui/index.html`) with WebSocket updates.
   - Simulators for master handoff and stopped-deck cases.
 
 Core outputs:
@@ -229,7 +229,7 @@ Core outputs:
 - **Network auto-discovery** — picks a suitable interface automatically
 - **TOML config** — remappable MIDI channel, note, and CC numbers
 - **CLI overrides** — interface, MIDI port, source, device number, log level
-- **TUI** — live status, port selection, and logging via [ratatui](https://ratatui.rs)
+- **Web UI** — live status, settings, port selection, and logs in the browser, over one WebSocket
 
 ---
 
@@ -245,8 +245,7 @@ Core outputs:
     ```
 2.  **Run**:
     ```sh
-    cargo run                   # The desktop app with the TUI.
-    cargo run -- --no-tui       # The desktop app without the TUI (headless).
+    cargo run                   # The app. Open http://127.0.0.1:11111 for the web UI.
     ```
 
 ### Building the ESP32 Firmware
