@@ -149,3 +149,15 @@ phrase_beats_left = 22
 enabled = true
 # MIDI channel (0-indexed, 0-15).
 channel = 0
+
+# ── OSC output ───────────────────────────────────────────────────────────────
+
+[osc]
+# Send OSC over UDP to a lighting desk or a media server.
+# The OSC messages are in the README, section "OSC output".
+enabled = false
+# Targets as "IP:port". A broadcast address is permitted.
+# Example: ["192.168.1.50:8000"]
+targets = []
+# The app puts this prefix before each OSC address.
+prefix = "/xdj"

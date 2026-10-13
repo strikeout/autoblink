@@ -97,6 +97,7 @@ button.val{min-width:44px}
 input.num{width:58px;background:#0d0d16;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 5px;text-align:right;font-size:12px}
 input.num:focus{outline:none;border-color:var(--accent)}
 input.num.bad{border-color:var(--danger)}
+input.num.text{width:150px;text-align:left}
 /* ports */
 .ports{display:flex;flex-direction:column;gap:3px}
 .port{text-align:left;display:flex;gap:8px}
@@ -348,9 +349,9 @@ function onSettings(m) {
 
 function buildSetting(it) {
   const label = h('label', null, it.label);
-  if (it.kind === 'number') {
-    const input = h('input', 'num');
-    input.inputMode = 'numeric';
+  if (it.kind === 'number' || it.kind === 'text') {
+    const input = h('input', it.kind === 'text' ? 'num text' : 'num');
+    input.inputMode = it.kind === 'text' ? 'text' : 'numeric';
     input.title = it.label;
     const commit = () => {
       const value = input.value.trim();

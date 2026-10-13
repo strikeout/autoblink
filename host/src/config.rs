@@ -31,6 +31,7 @@ pub struct Config {
     pub midi: MidiConfig,
     pub link: LinkConfig,
     pub web: WebConfig,
+    pub osc: OscConfig,
 }
 
 pub type SharedConfig = Arc<RwLock<Config>>;
@@ -49,6 +50,7 @@ impl Default for Config {
             midi: MidiConfig::default(),
             link: LinkConfig::default(),
             web: WebConfig::default(),
+            osc: OscConfig::default(),
         }
     }
 }
@@ -291,6 +293,30 @@ impl Default for LinkConfig {
             enabled: true,
             quantum: 4.0,
             poll_interval_us: 500,
+        }
+    }
+}
+
+// ── OSC output config ─────────────────────────────────────────────────────────
+
+/// OSC output to lighting desks and media servers.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OscConfig {
+    /// Send OSC messages. Off by default.
+    pub enabled: bool,
+    /// UDP targets as "IP:port". A broadcast address is permitted.
+    pub targets: Vec<String>,
+    /// The app puts this prefix before each OSC address.
+    pub prefix: String,
+}
+
+impl Default for OscConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            targets: Vec::new(),
+            prefix: "/xdj".into(),
         }
     }
 }

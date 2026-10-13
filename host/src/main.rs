@@ -5,6 +5,7 @@ mod config;
 mod link;
 mod logbuf;
 mod midi;
+mod osc;
 mod prolink;
 mod runtime;
 mod settings;

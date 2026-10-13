@@ -7,6 +7,7 @@ use tokio::sync::broadcast;
 use crate::config::{CcConfig, NoteConfig, SharedConfig};
 use crate::midi::activity::MidiActivity;
 use crate::midi::MidiTransport;
+use crate::osc::{Arg, OscOut};
 use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::state::{BeatSource, SharedState};
@@ -351,6 +352,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn link_downbeat_is_sent_over_osc() {
+        use crate::osc::{encode, Arg};
+
+        let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let cfg = new_shared(Config::default());
+        {
+            let mut c = cfg.write();
+            c.osc.enabled = true;
+            c.osc.targets = vec![rx.local_addr().unwrap().to_string()];
+        }
+        let state = new_shared_state(30);
+        state.write().master.source = Some(BeatSource::AbletonLink);
+        let (_status_tx, status_rx) = broadcast::channel(8);
+        let (beat_tx, beat_rx) = broadcast::channel(8);
+        let handle = tokio::spawn(run_with_midi(
+            Arc::new(MockMidiTransport::new()),
+            state,
+            beat_rx,
+            status_rx,
+            cfg,
+            Arc::new(Mutex::new(MidiActivity::default())),
+        ));
+
+        let _ = beat_tx.send(BeatEvent::LinkBeat {
+            bpm: 120.0,
+            beat_in_bar: 1,
+            bar_phase: 0.0,
+            beat_phase: 0.0,
+            received_at: Instant::now(),
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        rx.set_nonblocking(true).unwrap();
+        while let Ok(n) = rx.recv(&mut buf) {
+            got.push(buf[..n].to_vec());
+        }
+        assert!(got.contains(&encode("/xdj/beat", &[Arg::I(1)])));
+        assert!(got.contains(&encode("/xdj/downbeat", &[])));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn runtime_cc_config_changes_take_effect() {
         let midi = Arc::new(MockMidiTransport::new());
         let midi_transport: Arc<dyn MidiTransport> = midi.clone();
@@ -458,6 +505,14 @@ fn fire_beat_notes(
     }
 }
 
+/// Send `/beat` on every beat, and `/downbeat` on beat 1.
+fn send_osc_beat(osc: &OscOut, cfg: &SharedConfig, beat_in_bar: u8) {
+    osc.send(cfg, "/beat", &[Arg::I(beat_in_bar.into())]);
+    if beat_in_bar == 1 {
+        osc.send(cfg, "/downbeat", &[]);
+    }
+}
+
 // ── Previous CC values (to suppress duplicate sends) ─────────────────────────
 
 #[derive(Default)]
@@ -490,6 +545,11 @@ async fn run_with_midi(
     let mut prev_phrase_key: Option<(u8, u32, usize)> = None;
     let mut prev_phrase_16_beat: u8 = 0;
     let mut prev_no_bass = false;
+    let osc = OscOut::new();
+    let mut prev_osc_bpm = 0.0f32;
+    let mut prev_osc_beats_left = u32::MAX;
+    // (device, rekordbox_id, title) of the last track that was sent over OSC.
+    let mut prev_osc_track: Option<(u8, u32, String)> = None;
     tracing::info!("MIDI mapper task started");
 
     loop {
@@ -508,6 +568,7 @@ async fn run_with_midi(
 
                         let note_cfg = cfg.read().midi.notes.clone();
                         fire_beat_notes(midi.as_ref(), &note_cfg, bp.beat_in_bar, &activity);
+                        send_osc_beat(&osc, &cfg, bp.beat_in_bar);
                         tracing::debug!(
                             device = bp.device_number,
                             beat = bp.beat_in_bar,
@@ -524,6 +585,7 @@ async fn run_with_midi(
                         }
                         let note_cfg = cfg.read().midi.notes.clone();
                         fire_beat_notes(midi.as_ref(), &note_cfg, beat_in_bar, &activity);
+                        send_osc_beat(&osc, &cfg, beat_in_bar);
                         tracing::debug!(
                             beat = beat_in_bar,
                             bpm = %format!("{:.2}", bpm),
@@ -555,6 +617,44 @@ async fn run_with_midi(
         let new_beat_phase = scale01(master.beat_phase);
         let new_playing: u8 = if master.is_playing { 127 } else { 0 };
         let new_master_deck = master.device_number.min(127);
+
+        // ── OSC state updates ─────────────────────────────────────────────────
+        // Compare before the CC macros below update `prev`.
+        let osc_bpm = (master.bpm * 100.0).round() as f32 / 100.0;
+        if osc_bpm != prev_osc_bpm {
+            prev_osc_bpm = osc_bpm;
+            osc.send(&cfg, "/bpm", &[Arg::F(osc_bpm)]);
+        }
+        if new_playing != prev.playing {
+            osc.send(&cfg, "/playing", &[Arg::I((new_playing > 0).into())]);
+        }
+        if new_master_deck != prev.master_deck {
+            osc.send(&cfg, "/master", &[Arg::I(new_master_deck.into())]);
+        }
+        let track = {
+            let st = state.read();
+            st.devices
+                .get(&master.device_number)
+                .filter(|d| d.rekordbox_id != 0)
+                .map(|d| {
+                    (
+                        d.rekordbox_id,
+                        d.track_title.clone(),
+                        d.track_artist.clone(),
+                    )
+                })
+        };
+        if let Some((id, title, artist)) = track {
+            let key = (master.device_number, id, title.clone());
+            if prev_osc_track.as_ref() != Some(&key) {
+                prev_osc_track = Some(key);
+                osc.send(
+                    &cfg,
+                    "/track",
+                    &[Arg::S(&title), Arg::S(&artist), Arg::I(id as i32)],
+                );
+            }
+        }
 
         macro_rules! send_cc_if_changed {
             ($prev:expr, $new:expr, $num:expr, $ch:expr) => {
@@ -675,8 +775,24 @@ async fn run_with_midi(
                         act.notes_sent += 1;
                         act.last_note = Some((note, Instant::now()));
                     }
+                    osc.send(
+                        &cfg,
+                        "/phrase",
+                        &[Arg::S(&info.kind.to_string()), Arg::I(code.into())],
+                    );
                     tracing::debug!(kind = %info.kind, code, "Phrase kind MIDI sent");
                 }
+            }
+            if scale01(info.progress) != prev.phrase_progress {
+                osc.send(&cfg, "/phrase/progress", &[Arg::F(info.progress as f32)]);
+            }
+            if info.beats_left != prev_osc_beats_left {
+                prev_osc_beats_left = info.beats_left;
+                osc.send(
+                    &cfg,
+                    "/phrase/beats_left",
+                    &[Arg::I(info.beats_left as i32)],
+                );
             }
             send_cc_if_changed!(
                 prev.phrase_progress,
@@ -708,6 +824,7 @@ async fn run_with_midi(
                 act.notes_sent += 1;
                 act.last_note = Some((note_cfg.no_bass, Instant::now()));
             }
+            osc.send(&cfg, "/no_bass", &[Arg::I(no_bass.into())]);
             tracing::debug!(no_bass, note = note_cfg.no_bass, "NO_BASS MIDI note sent");
         }
     }
