@@ -356,8 +356,14 @@ async fn ws_handler(
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum Command {
-    Cycle { idx: usize, dir: i8 },
-    Set { idx: usize, value: String },
+    Cycle {
+        idx: usize,
+        dir: i8,
+    },
+    Set {
+        idx: usize,
+        value: String,
+    },
     Port {
         name: String,
         #[serde(default)]
@@ -543,8 +549,9 @@ mod tests {
         }
     }
 
-    type Ws =
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+    type Ws = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
 
     async fn next_of_type(ws: &mut Ws, kind: &str) -> serde_json::Value {
         wait_for(ws, kind, |_| true).await
@@ -608,7 +615,12 @@ mod tests {
         h.insert(header::ORIGIN, "http://evil.example:11111".parse().unwrap());
         assert!(!origin_allowed(&h));
 
-        for host in ["localhost:11111", "pi.local:11111", "[::1]:11111", "10.0.0.2"] {
+        for host in [
+            "localhost:11111",
+            "pi.local:11111",
+            "[::1]:11111",
+            "10.0.0.2",
+        ] {
             h.insert(header::HOST, host.parse().unwrap());
             h.insert(header::ORIGIN, format!("http://{host}").parse().unwrap());
             assert!(origin_allowed(&h), "{host}");

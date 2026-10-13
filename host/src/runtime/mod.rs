@@ -7,11 +7,11 @@ use tokio::sync::watch;
 
 use crate::app::AppContext;
 use crate::config::SharedConfig;
+use crate::midi::activity::MidiActivity;
 use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::prolink::virtual_cdj::VirtualCdjReady;
 use crate::state::SharedState;
-use crate::midi::activity::MidiActivity;
 
 pub mod applier;
 pub mod link;

@@ -536,7 +536,10 @@ pub fn cycle(
             mode = ?guard.source,
             "Source mode changed; restart may be required for running engines"
         ),
-        3 => tracing::info!(enabled = guard.midi.clock_enabled, "MIDI clock setting changed"),
+        3 => tracing::info!(
+            enabled = guard.midi.clock_enabled,
+            "MIDI clock setting changed"
+        ),
         _ => log_setting_change(idx, &guard),
     }
     true

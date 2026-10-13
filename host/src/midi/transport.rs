@@ -68,7 +68,11 @@ pub fn open_midi_output(port_name: &str) -> anyhow::Result<(MidiOutputConnection
     let pick = names
         .iter()
         .position(|n| n.to_lowercase() == wanted)
-        .or_else(|| names.iter().position(|n| n.to_lowercase().contains(&wanted)));
+        .or_else(|| {
+            names
+                .iter()
+                .position(|n| n.to_lowercase().contains(&wanted))
+        });
     if let Some(i) = pick {
         let name = names[i].clone();
         tracing::info!(%name, "Selected MIDI output port");
