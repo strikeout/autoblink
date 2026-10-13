@@ -536,10 +536,20 @@ fn draw_deck_panel(
                         lines.push(Line::from(""));
                     }
                 } else if ds.rekordbox_id != 0 && ds.song_structure.is_none() {
-                    lines.push(Line::from(Span::styled(
-                        "    phrase info unavailable",
-                        Style::default().fg(CLR_DIM),
-                    )));
+                    // No error yet means that the fetch is still in progress.
+                    let text = match &ds.phrase_error {
+                        Some(reason) => format!("    phrase info unavailable: {reason}"),
+                        None => "    phrase info loading…".to_string(),
+                    };
+                    let max_width = area.width.saturating_sub(2) as usize;
+                    // Count chars, not bytes: a byte slice can split a UTF-8 character and panic.
+                    let text = if text.chars().count() > max_width && max_width > 3 {
+                        let head: String = text.chars().take(max_width - 1).collect();
+                        format!("{head}…")
+                    } else {
+                        text
+                    };
+                    lines.push(Line::from(Span::styled(text, Style::default().fg(CLR_DIM))));
                 }
 
                 // Blank line separator between decks.

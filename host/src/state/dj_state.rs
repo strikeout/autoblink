@@ -158,6 +158,7 @@ impl DjState {
             dev.track_key.clear();
             dev.track_bpm_meta = None;
             dev.song_structure = None;
+            dev.phrase_error = None;
             dev.current_phrase_idx = None;
             dev.prev_phrase_idx = None;
             // An eject has rekordbox_id 0. It clears the metadata but loads no track.
@@ -632,8 +633,18 @@ impl DjState {
         if let Some(dev) = self.devices.get_mut(&device_number) {
             if dev.rekordbox_id == rekordbox_id {
                 dev.song_structure = Some(structure);
+                dev.phrase_error = None;
                 dev.current_phrase_idx = None;
                 dev.prev_phrase_idx = None;
+            }
+        }
+    }
+
+    /// Records the reason that the song structure fetch failed for the loaded track.
+    pub fn set_phrase_error(&mut self, device_number: u8, rekordbox_id: u32, reason: String) {
+        if let Some(dev) = self.devices.get_mut(&device_number) {
+            if dev.rekordbox_id == rekordbox_id {
+                dev.phrase_error = Some(reason);
             }
         }
     }

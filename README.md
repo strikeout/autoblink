@@ -16,7 +16,7 @@
 ## ✨ Features
 
 ### Pro DJ Link (Ethernet)
-- Joins the ProLink network as a Virtual CDJ (device #5 by default).
+- Joins the ProLink network as a Virtual CDJ (device #7 by default).
 - Supports CDJ-3000 and XDJ-AZ absolute-position packets and metadata.
 - Tracks tempo master with explicit master flags and playing-state fallback.
 
@@ -74,7 +74,7 @@ Settings are managed via `config.toml` for the host and `sdkconfig` for the ESP3
 ```toml
 # config.toml defaults
 source = "auto"       # "auto" | "link" | "prolink"
-device_number = 5      # Virtual CDJ ID
+device_number = 7      # Virtual CDJ ID
 interface = "auto"    # Network adapter selection
 device_name = "xdj-clock"
 
