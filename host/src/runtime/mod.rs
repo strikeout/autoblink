@@ -132,6 +132,8 @@ pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
         Duration::from_secs(2),
     ));
 
+    crate::midi::input::spawn(Arc::clone(&dj_state));
+
     if use_tui {
         crate::tui::run(
             dj_state,

@@ -79,6 +79,7 @@ Plus `pub fn interface_priority()` for network interface ranking.
 - `prolink/virtual_cdj.rs` — virtual CDJ participant
 - `midi/clock.rs` — MIDI clock generation (24 PPQ, Start/Stop/Continue)
 - `midi/mapper.rs` — beat → MIDI CC/Note mapping
+- `midi/input.rs` — XDJ-AZ USB MIDI input. It stores the EQ and channel fader values in `DjState.mixer`.
 - `tui/render.rs` — ratatui rendering
 
 ## Platform-Specific Code

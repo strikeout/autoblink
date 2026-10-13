@@ -9,7 +9,7 @@ use crate::prolink::packets::{AbsPositionPacket, BeatPacket, CdjStatus, MixerSta
 use crate::prolink::BEAT_NONE;
 
 use super::beat_source::BeatSource;
-use super::device::{DeviceState, MasterState, PhraseInfo};
+use super::device::{DeviceState, MasterState, MixerChannel, PhraseInfo};
 use super::song_structure::SongStructure;
 use super::timing::{LogThrottle, TimingMeasurement, TimingModel};
 use super::track_change::TrackChange;
@@ -25,6 +25,8 @@ pub struct DjState {
     pub link_peer_count: usize,
     source_mode: Source,
     last_link_master: Option<MasterState>,
+    /// The mixer channels CH1 to CH4, from the MIDI input of the XDJ-AZ.
+    pub mixer: [MixerChannel; 4],
 
     // Bounded observability: avoid per-packet TRACE spam.
     abspos_ingest_trace: LogThrottle,
@@ -45,6 +47,7 @@ impl DjState {
             link_peer_count: 0,
             source_mode: Source::Auto,
             last_link_master: None,
+            mixer: [MixerChannel::default(); 4],
 
             abspos_ingest_trace: LogThrottle::default(),
             link_ingest_trace: LogThrottle::default(),
