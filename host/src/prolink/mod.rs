@@ -22,6 +22,10 @@ pub const PORT_DISCOVERY: u16 = 50000;
 pub const PORT_BEAT: u16 = 50001;
 pub const PORT_STATUS: u16 = 50002;
 
+/// The pause after a socket receive error, so that a persistent error does
+/// not spin the CPU and flood the log.
+pub const RECV_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 // ── Packet type byte (offset 0x0a) ────────────────────────────────────────────
 
 pub const PKT_ANNOUNCE: u8 = 0x0a;

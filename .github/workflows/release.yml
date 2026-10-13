@@ -80,6 +80,13 @@ jobs:
             binary: xdj-clock
             archive_cmd: tar
 
+          # Linux ARM64 (Raspberry Pi 3/4/5 with a 64-bit OS)
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            artifact: xdj-clock-linux-aarch64
+            binary: xdj-clock
+            archive_cmd: tar
+
           # macOS Apple Silicon
           - target: aarch64-apple-darwin
             runner: macos-latest
@@ -212,6 +219,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$dir/"
           cp config.toml "$dir/"
           cp README.md "$dir/"
+          if [ "${{ runner.os }}" = "Linux" ]; then cp contrib/xdj-clock.service "$dir/"; fi
           tar -czf "$dir.tar.gz" "$dir"
           echo "ASSET=$dir.tar.gz" >> $GITHUB_ENV
 

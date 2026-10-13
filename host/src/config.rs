@@ -30,12 +30,6 @@ pub struct Config {
     pub device_name: String,
     pub midi: MidiConfig,
     pub link: LinkConfig,
-    #[serde(skip)]
-    pub bind_ip: std::net::Ipv4Addr,
-    #[serde(skip)]
-    pub bcast_ip: std::net::Ipv4Addr,
-    #[serde(skip)]
-    pub mac: [u8; 6],
 }
 
 pub type SharedConfig = Arc<RwLock<Config>>;
@@ -53,9 +47,6 @@ impl Default for Config {
             device_name: "xdj-clock".into(),
             midi: MidiConfig::default(),
             link: LinkConfig::default(),
-            bind_ip: std::net::Ipv4Addr::new(0, 0, 0, 0),
-            bcast_ip: std::net::Ipv4Addr::new(255, 255, 255, 255),
-            mac: [0, 0, 0, 0, 0, 0],
         }
     }
 }

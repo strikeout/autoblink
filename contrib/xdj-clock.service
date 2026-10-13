@@ -1,0 +1,31 @@
+# systemd unit for an unattended xdj-clock box (for example a Raspberry Pi).
+#
+# Install:
+#   sudo mkdir -p /opt/xdj-clock
+#   sudo cp xdj-clock config.toml /opt/xdj-clock/
+#   sudo cp xdj-clock.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now xdj-clock
+#
+# Read the log:
+#   journalctl -u xdj-clock -f
+
+[Unit]
+Description=xdj-clock (Pro DJ Link to MIDI clock bridge)
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+WorkingDirectory=/opt/xdj-clock
+ExecStart=/opt/xdj-clock/xdj-clock --no-tui --config /opt/xdj-clock/config.toml
+# The app recovers from a lost MIDI device or network by itself.
+# The restart is a last-resort safety net only.
+Restart=on-failure
+RestartSec=2
+# Real-time priority keeps the MIDI clock steady on a loaded CPU.
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

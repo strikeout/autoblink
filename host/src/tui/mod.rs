@@ -221,7 +221,7 @@ fn cycle_setting(
         let _ = cfg_change_tx.send(());
         match tui.settings_cursor {
             0 => {
-                tracing::info!(interface = %guard.interface, "Network interface changed; restart required for network tasks")
+                tracing::info!(interface = %guard.interface, "Network interface changed; the network tasks re-bind within 2 s")
             }
             1 => {
                 tracing::info!(mode = ?guard.source, "Source mode changed; restart may be required for running engines")

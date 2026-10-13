@@ -113,6 +113,10 @@ pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
         track_change_rx,
     );
 
+    // ponytail: the Link, applier, logger and MIDI tasks below have no
+    // supervisor. They do no network I/O, and the BPM guards in the clock
+    // remove the only known panic. If one of them can stop, give it a restart
+    // loop like the Pro DJ Link supervisor in prolink.rs.
     link::spawn(task_ctx.clone(), startup_cfg.clone());
 
     applier::spawn(task_ctx.clone(), beat_rx1, status_rx1, track_change_tx);
@@ -120,6 +124,13 @@ pub async fn run(ctx: AppContext, use_tui: bool) -> anyhow::Result<()> {
     logger::spawn(task_ctx.clone(), device_rx);
 
     midi::spawn(task_ctx, beat_rx3, status_rx2, cfg_change_rx, timing_rx);
+
+    tokio::spawn(midi::reconnect_loop(
+        midi_out.clone(),
+        Arc::clone(&cfg),
+        midi::open_midir_output,
+        Duration::from_secs(2),
+    ));
 
     if use_tui {
         crate::tui::run(

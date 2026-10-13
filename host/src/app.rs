@@ -223,7 +223,7 @@ pub fn init() -> anyhow::Result<AppContext> {
     config::validate(&initial_cfg)?;
 
     let cfg = config::new_shared(initial_cfg.clone());
-    let mut startup_cfg = cfg.read().clone();
+    let startup_cfg = cfg.read().clone();
 
     tracing::info!(
         source = ?startup_cfg.source,
@@ -234,23 +234,19 @@ pub fn init() -> anyhow::Result<AppContext> {
         "xdj-clock starting"
     );
 
-    // ── Network interface ────────────────────────────────────────────────────
-    let (bind_ip, bcast_ip, mac) = detect_interface(&startup_cfg.interface)?;
-    tracing::info!(%bind_ip, %bcast_ip, "Network interface initialized");
-
-    startup_cfg.bind_ip = bind_ip;
-    startup_cfg.bcast_ip = bcast_ip;
-    startup_cfg.mac = mac;
+    // The Pro DJ Link supervisor detects the network interface (runtime/prolink.rs).
 
     // ── MIDI output ──────────────────────────────────────────────────────────
     let midi_conn: Arc<Mutex<Option<MidiOutputConnection>>> =
         match crate::midi::open_midi_output(&startup_cfg.midi.output) {
-            Ok(conn) => Arc::new(Mutex::new(Some(conn))),
+            Ok((conn, name)) => {
+                // Keep the full port name, so that a reconnect finds the same device again.
+                cfg.write().midi.output = name;
+                Arc::new(Mutex::new(Some(conn)))
+            }
             Err(e) => {
                 tracing::warn!("Could not open MIDI output: {e}");
-                tracing::warn!(
-                    "Running without MIDI — select a port in the TUI or restart with --midi"
-                );
+                tracing::warn!("Running without MIDI. The app connects when the port appears.");
                 Arc::new(Mutex::new(None))
             }
         };
@@ -289,18 +285,18 @@ pub fn init() -> anyhow::Result<AppContext> {
 
 // ── Interface detection ───────────────────────────────────────────────────────
 
-/// Detect the network interface to use for Pro DJ Link.
-/// Returns (bind_ip, broadcast_ip, mac_address).
-pub fn detect_interface(hint: &str) -> anyhow::Result<(Ipv4Addr, Ipv4Addr, [u8; 6])> {
-    let ifaces = NetworkInterface::show()?;
+/// An IPv4 address on a network interface that can carry Pro DJ Link.
+pub struct Candidate {
+    pub name: String,
+    pub ip: Ipv4Addr,
+    pub bcast: Ipv4Addr,
+    pub mac: [u8; 6],
+    pub priority: u8,
+}
 
-    struct Candidate {
-        name: String,
-        ip: Ipv4Addr,
-        bcast: Ipv4Addr,
-        mac: [u8; 6],
-        priority: u8,
-    }
+/// Lists the IPv4 interface addresses that match `hint`, best priority first.
+pub fn interface_candidates(hint: &str) -> anyhow::Result<Vec<Candidate>> {
+    let ifaces = NetworkInterface::show()?;
 
     let mut candidates: Vec<Candidate> = Vec::new();
 
@@ -353,6 +349,13 @@ pub fn detect_interface(hint: &str) -> anyhow::Result<(Ipv4Addr, Ipv4Addr, [u8; 
     }
 
     candidates.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.name.cmp(&b.name)));
+    Ok(candidates)
+}
+
+/// Detect the network interface to use for Pro DJ Link.
+/// Returns (bind_ip, broadcast_ip, mac_address).
+pub fn detect_interface(hint: &str) -> anyhow::Result<(Ipv4Addr, Ipv4Addr, [u8; 6])> {
+    let candidates = interface_candidates(hint)?;
 
     if hint == "auto" {
         let best_priority = candidates.first().map(|c| c.priority);
@@ -411,10 +414,14 @@ pub fn detect_interface(hint: &str) -> anyhow::Result<(Ipv4Addr, Ipv4Addr, [u8; 
         return Ok((best.ip, best.bcast, best.mac));
     }
 
+    let available: Vec<String> = NetworkInterface::show()?
+        .into_iter()
+        .map(|i| i.name)
+        .collect();
     anyhow::bail!(
         "No suitable network interface found. \
          Available: {:?}. Use --interface to specify one.",
-        ifaces.iter().map(|i| &i.name).collect::<Vec<_>>()
+        available
     )
 }
 
@@ -623,12 +630,33 @@ pub fn list_interfaces() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Resolves on Ctrl+C, and on SIGTERM from a service manager such as systemd.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+                return;
+            }
+            Err(e) => tracing::warn!("Cannot listen for SIGTERM: {e}"),
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 pub async fn headless_loop(
     state: SharedState,
     midi_out: crate::midi::MidiOutHandle,
 ) -> anyhow::Result<()> {
     tracing::info!("All tasks running (headless mode). Ctrl+C to quit.");
     let mut ticker = tokio::time::interval(Duration::from_secs(5));
+    let terminate = shutdown_signal();
+    tokio::pin!(terminate);
     loop {
         tokio::select! {
             _ = ticker.tick() => {
@@ -647,7 +675,7 @@ pub async fn headless_loop(
                     tracing::info!("Waiting for tempo master…");
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut terminate => {
                 tracing::info!("Shutting down…");
                 midi_out.stop().await;
                 tracing::info!("MIDI Stop sent, exiting.");
