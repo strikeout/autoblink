@@ -34,6 +34,8 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for individual TCP read/write operations.
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
+/// The largest dbserver field that the reader accepts. Waveform blobs are smaller.
+const MAX_FIELD_LEN: usize = 16 * 1024 * 1024;
 
 // ── Message types ─────────────────────────────────────────────────────────────
 
@@ -618,6 +620,10 @@ async fn read_field(stream: &mut TcpStream) -> anyhow::Result<Field> {
             let mut len_buf = [0u8; 4];
             timeout(IO_TIMEOUT, stream.read_exact(&mut len_buf)).await??;
             let len = u32::from_be_bytes(len_buf) as usize;
+            // A bad peer can send any length. Refuse a length that is too large to allocate.
+            if len > MAX_FIELD_LEN {
+                anyhow::bail!("dbserver field length {len} is larger than {MAX_FIELD_LEN}");
+            }
             let mut data = vec![0u8; len];
             if len > 0 {
                 timeout(IO_TIMEOUT, stream.read_exact(&mut data)).await??;
@@ -628,6 +634,10 @@ async fn read_field(stream: &mut TcpStream) -> anyhow::Result<Field> {
             let mut len_buf = [0u8; 4];
             timeout(IO_TIMEOUT, stream.read_exact(&mut len_buf)).await??;
             let len = u32::from_be_bytes(len_buf) as usize;
+            // A bad peer can send any length. Refuse a length that is too large to allocate.
+            if len > MAX_FIELD_LEN {
+                anyhow::bail!("dbserver field length {len} is larger than {MAX_FIELD_LEN}");
+            }
             let mut data = vec![0u8; len];
             if len > 0 {
                 timeout(IO_TIMEOUT, stream.read_exact(&mut data)).await??;

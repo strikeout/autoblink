@@ -219,6 +219,9 @@ pub fn init() -> anyhow::Result<AppContext> {
         };
     }
 
+    // The CLI overrides bypass the check in config::load, so check again.
+    config::validate(&initial_cfg)?;
+
     let cfg = config::new_shared(initial_cfg.clone());
     let mut startup_cfg = cfg.read().clone();
 

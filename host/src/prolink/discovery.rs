@@ -91,7 +91,7 @@ pub async fn run(
         tokio::select! {
             result = udp.recv_from(&mut buf) => {
                 match result {
-                    Ok((len, src)) => handle_packet(&buf[..len], src, &table, &tx),
+                    Ok((len, src)) => handle_packet(&buf[..len], src, bind_addr, &table, &tx),
                     Err(e) => tracing::warn!("Discovery recv error: {e}"),
                 }
             }
@@ -105,6 +105,7 @@ pub async fn run(
 fn handle_packet(
     data: &[u8],
     src: std::net::SocketAddr,
+    own_ip: Ipv4Addr,
     table: &DeviceTable,
     tx: &broadcast::Sender<DeviceEvent>,
 ) {
@@ -122,6 +123,10 @@ fn handle_packet(
     }
 
     if let Some(ka) = super::packets::parse_keepalive(data) {
+        // The kernel loops our own broadcast keepalives back. Our virtual CDJ is not a peer.
+        if ka.ip == own_ip.octets() {
+            return;
+        }
         let dev = Device::from_keepalive(ka);
         let num = dev.device_number;
         let mut t = table.lock();

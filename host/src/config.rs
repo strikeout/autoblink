@@ -268,7 +268,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     Ok(cfg)
 }
 
-fn validate(cfg: &Config) -> anyhow::Result<()> {
+pub(crate) fn validate(cfg: &Config) -> anyhow::Result<()> {
     anyhow::ensure!(
         cfg.device_number >= 1 && cfg.device_number <= 15,
         "device_number must be 1–15, got {}",

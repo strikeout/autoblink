@@ -7,7 +7,8 @@ use super::{
     PKT_BEAT, PKT_CDJ_STATUS, PKT_KEEPALIVE, PKT_MIXER_STATUS,
 };
 
-pub(crate) const CDJ_STATUS_PACKET_LEN: usize = 0xd4;
+/// The parser reads up to offset 0xa6.
+const CDJ_STATUS_MIN_LEN: usize = 0xa7;
 const CDJ_STATUS_STATE_OFFSET: usize = 0x88;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -284,8 +285,9 @@ pub struct CdjStatus {
 }
 
 pub fn parse_cdj_status(data: &[u8]) -> Option<CdjStatus> {
-    // Minimum size for nexus-era packet (0xD4 bytes)
-    if data.len() < CDJ_STATUS_PACKET_LEN {
+    // The parser reads up to offset 0xa6. Older players send packets shorter than
+    // the nexus-era 0xd4 bytes, so the guard checks only the bytes that it reads.
+    if data.len() < CDJ_STATUS_MIN_LEN {
         return None;
     }
     if !has_magic(data) || data[0x0a] != PKT_CDJ_STATUS {
@@ -454,7 +456,7 @@ mod tests {
 
     #[test]
     fn parse_cdj_status_rejects_truncated_packet() {
-        let packet = magic_pkt(PKT_CDJ_STATUS, CDJ_STATUS_PACKET_LEN - 1);
+        let packet = magic_pkt(PKT_CDJ_STATUS, CDJ_STATUS_MIN_LEN - 1);
 
         assert!(parse_cdj_status(&packet).is_none());
     }

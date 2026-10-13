@@ -90,8 +90,9 @@ fn draw_header(
         return;
     }
 
-    let st = dj_state.read();
+    // Take the config lock before the state lock, in the same order as the clock task.
     let cfg_r = cfg.read();
+    let st = dj_state.read();
     let master = &st.master;
     let version = env!("CARGO_PKG_VERSION");
 
@@ -299,8 +300,8 @@ fn draw_deck_panel(
         .border_style(Style::default().fg(CLR_DIM));
 
     let devices = device_table.lock();
-    let st = dj_state.read();
     let our_device_number = cfg.read().device_number;
+    let st = dj_state.read();
 
     let mut lines: Vec<Line> = Vec::new();
     let mut phrase_gauges: Vec<(usize, f64, String)> = Vec::new();
