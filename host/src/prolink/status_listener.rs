@@ -91,7 +91,10 @@ pub async fn run(
                     let _ = tx.send(StatusEvent::Mixer(s));
                 }
             }
-            Err(e) => tracing::warn!("Status listener recv error: {e}"),
+            Err(e) => {
+                tracing::warn!("Status listener recv error: {e}");
+                tokio::time::sleep(super::RECV_ERROR_BACKOFF).await;
+            }
         }
     }
 }

@@ -48,6 +48,7 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 
 - Windows x86-64 → `.zip` archive
 - Linux x86-64 → `.tar.gz` archive
+- Linux ARM64 (Raspberry Pi) → `.tar.gz` archive, built on the native `ubuntu-24.04-arm` runner. The Linux archives include `contrib/xdj-clock.service`.
 - macOS ARM64 → `.tar.gz` archive
 - ESP32 firmware → `esp32-firmware.tar.gz`
 

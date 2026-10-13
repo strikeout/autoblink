@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::broadcast;
 use tokio::sync::watch;
@@ -65,6 +66,58 @@ pub fn spawn(
         beat_rx3,
         timing_rx3,
     ));
+}
+
+/// Reopens the configured MIDI output port after the device goes away.
+///
+/// The output worker drops the connection on the first send error. This loop
+/// checks the connection every `period`. When the connection is gone, it opens
+/// the port again by the name in `cfg.midi.output`. The loop never ends.
+pub async fn reconnect_loop<F>(
+    midi_out: crate::midi::MidiOutHandle,
+    cfg: crate::config::SharedConfig,
+    open: F,
+    period: Duration,
+) where
+    F: Fn(&str) -> anyhow::Result<(Box<dyn crate::midi::MidiOutConnection>, String)>,
+{
+    let mut warned = false;
+    loop {
+        tokio::time::sleep(period).await;
+        if midi_out.is_connected() {
+            warned = false;
+            continue;
+        }
+
+        let wanted = cfg.read().midi.output.clone();
+        match open(&wanted) {
+            Ok((conn, name)) => {
+                midi_out.switch_connection(Some(conn), false).await;
+                cfg.write().midi.output = name.clone();
+                tracing::info!(port = %name, "MIDI output reconnected");
+                warned = false;
+            }
+            Err(e) => {
+                if !warned {
+                    tracing::warn!(
+                        port = %wanted,
+                        error = %e,
+                        "MIDI output not available. The app tries again every {} s.",
+                        period.as_secs()
+                    );
+                    warned = true;
+                }
+            }
+        }
+    }
+}
+
+/// Opens a real MIDI output port for [`reconnect_loop`].
+pub fn open_midir_output(
+    port_name: &str,
+) -> anyhow::Result<(Box<dyn crate::midi::MidiOutConnection>, String)> {
+    let (conn, name) = crate::midi::open_midi_output(port_name)?;
+    Ok((Box::new(crate::midi::MidirOutConnection(conn)), name))
 }
 
 #[cfg(test)]
@@ -142,5 +195,59 @@ mod tests {
         let qf_after_disable = midi_activity.lock().mtc_quarter_frames;
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(midi_activity.lock().mtc_quarter_frames, qf_after_disable);
+    }
+
+    struct FakeConn {
+        fail: bool,
+    }
+
+    impl crate::midi::MidiOutConnection for FakeConn {
+        fn send(&mut self, _msg: &[u8]) -> crate::midi::transport::MidiResult {
+            if self.fail {
+                Err(crate::midi::MidiError::SendError("unplugged".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reconnect_loop_reopens_the_port_after_a_send_error() {
+        use crate::midi::MidiTransport;
+
+        let mut cfg = Config::default();
+        cfg.midi.output = "XDJ".to_string();
+        let cfg = new_shared(cfg);
+        let midi_out =
+            crate::midi::MidiOutHandle::start(64, Some(Box::new(FakeConn { fail: true })));
+
+        // The first send fails, so the worker drops the connection.
+        let _ = midi_out.send_message(&[0xF8]);
+        midi_out.barrier().await;
+        assert!(!midi_out.is_connected());
+
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts2 = Arc::clone(&attempts);
+        tokio::spawn(reconnect_loop(
+            midi_out.clone(),
+            Arc::clone(&cfg),
+            move |wanted: &str| {
+                assert_eq!(wanted, "XDJ");
+                // The device is still away on the first attempt.
+                if attempts2.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    anyhow::bail!("port not found");
+                }
+                Ok((
+                    Box::new(FakeConn { fail: false }) as Box<dyn crate::midi::MidiOutConnection>,
+                    "XDJ-RX3 MIDI".to_string(),
+                ))
+            },
+            Duration::from_millis(10),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(midi_out.is_connected());
+        assert_eq!(cfg.read().midi.output, "XDJ-RX3 MIDI");
+        assert!(midi_out.send_message(&[0xF8]).is_ok());
     }
 }

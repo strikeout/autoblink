@@ -33,6 +33,9 @@ const MSG_SONG_POSITION: u8 = 0xF2;
 
 /// Pulses per quarter note — MIDI spec, always 24.
 const PPQ: u64 = 24;
+/// The clock ignores a tempo above this value. A garbage packet can carry a
+/// tempo of millions of BPM, which would make the pulse loop spin.
+const MAX_BPM: f64 = 999.0;
 
 // ── Clock state ───────────────────────────────────────────────────────────────
 
@@ -104,7 +107,7 @@ impl ClockState {
     }
 
     fn set_bpm(&mut self, bpm: f64) {
-        if bpm > 0.0 && (bpm - self.last_bpm).abs() > 0.01 {
+        if bpm > 0.0 && bpm <= MAX_BPM && (bpm - self.last_bpm).abs() > 0.01 {
             self.interval_ns = bpm_to_interval_ns(bpm);
             self.last_bpm = bpm;
         }
@@ -251,7 +254,8 @@ fn beat_at_from_measurement(
     measurement: &TimingMeasurement,
 ) -> Option<Instant> {
     let beat_phase = measurement.beat_phase?;
-    if measurement.effective_bpm <= 0.0 {
+    // NaN or infinity would reach Duration::from_secs_f64 below, which panics.
+    if !(measurement.effective_bpm.is_finite() && measurement.effective_bpm > 0.0) {
         return None;
     }
 
@@ -435,7 +439,8 @@ fn start_full_bar_resync_slewed(
     // A short slew of a large error is a tempo spike. The slew lasts at least
     // ten times the error, so the tempo changes by 10 % or less.
     let min_duration_ns = (correction_ns.unsigned_abs() * 10).min(u64::MAX as u128) as u64;
-    let duration = Duration::from_millis(smoothing_ms.max(1)).max(Duration::from_nanos(min_duration_ns));
+    let duration =
+        Duration::from_millis(smoothing_ms.max(1)).max(Duration::from_nanos(min_duration_ns));
     cs.phase_slew = Some(PhaseSlew {
         started_at: beat_at,
         duration,
@@ -920,6 +925,7 @@ pub async fn run(
         let st = state.read();
         (st.master.source.clone(), st.master.device_number)
     };
+    let mut last_connected = midi.is_connected();
 
     if let Some(st) = state.try_read() {
         cached_bpm = st.master.bpm;
@@ -990,6 +996,21 @@ pub async fn run(
         } else {
             last_master_key = current_master_key;
         }
+
+        // A new MIDI device does not know the transport state. Re-arm the
+        // clock, so that the device gets a Start (not a Continue) on the next
+        // phrase. The device can be power-cycled, so it has no position to continue from.
+        let connected = midi.is_connected();
+        if clock_enabled && connected && !last_connected {
+            tracing::info!("MIDI clock re-arming after MIDI output reconnect");
+            if clock_loop_enabled {
+                handle_master_change(&mut cs, &midi, &activity);
+            } else {
+                handle_master_change_without_phrase_wait(&mut cs, &midi, &activity);
+            }
+            cs.has_started = false;
+        }
+        last_connected = connected;
 
         // Wake immediately on config changes (e.g. latency compensation edits).
         // We do not need the payload, only the notification.
@@ -1744,5 +1765,70 @@ mod tests {
         assert!(cs.running);
         assert_eq!(cs.pulse_index, 0);
         assert_eq!(cs.last_pulse, beat_at);
+    }
+
+    #[tokio::test]
+    async fn reconnect_sends_stop_then_start_on_next_beat() {
+        let mut cfg = crate::config::Config::default();
+        cfg.midi.clock_enabled = true;
+        cfg.midi.clock_loop_enabled = false;
+        let cfg = crate::config::new_shared(cfg);
+        let state = make_test_state(1, BeatSource::ProLink);
+        let mock = MockMidiTransport::new();
+        let midi: Arc<dyn MidiTransport> = Arc::new(mock.clone());
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let (beat_tx, beat_rx) = broadcast::channel(8);
+        let (_cfg_tx, cfg_rx) = watch::channel(());
+        let (_timing_tx, timing_rx) = watch::channel(());
+
+        tokio::spawn(run(midi, state, beat_rx, cfg, activity, cfg_rx, timing_rx));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        beat_tx.send(make_beat(1, 1)).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(mock.get_messages().iter().any(|m| m[0] == MSG_START));
+
+        // The device goes away and comes back.
+        mock.set_connected(false);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        mock.clear_messages();
+        mock.set_connected(true);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Stop goes out, then nothing until the next beat starts the clock again.
+        let msgs = mock.get_messages();
+        let stop_at = msgs
+            .iter()
+            .position(|m| m[0] == MSG_STOP)
+            .expect("reconnect must send Stop");
+        assert!(
+            msgs[stop_at + 1..].is_empty(),
+            "got {:?}",
+            &msgs[stop_at + 1..]
+        );
+
+        beat_tx.send(make_beat(1, 1)).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(mock.get_messages().iter().any(|m| m[0] == MSG_START));
+    }
+
+    #[test]
+    fn garbage_bpm_does_not_change_the_pulse_interval() {
+        let mut cs = ClockState::new();
+        cs.set_bpm(120.0);
+        let interval = cs.interval_ns;
+        for bpm in [f64::NAN, f64::INFINITY, 0.0, -5.0, 1.0e9] {
+            cs.set_bpm(bpm);
+            assert_eq!(cs.interval_ns, interval, "bpm {bpm}");
+        }
+    }
+
+    #[test]
+    fn garbage_bpm_gives_no_beat_time() {
+        let cs = ClockState::new();
+        for bpm in [f64::NAN, f64::INFINITY, 0.0] {
+            let mut m = make_timing_measurement(1, 1);
+            m.effective_bpm = bpm;
+            assert!(beat_at_from_measurement(&cs, Instant::now(), &m).is_none());
+        }
     }
 }

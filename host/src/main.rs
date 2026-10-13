@@ -13,5 +13,9 @@ mod tui;
 async fn main() -> anyhow::Result<()> {
     let ctx = app::init()?;
     let use_tui = !ctx.cli.no_tui;
-    runtime::run(ctx, use_tui).await
+    runtime::run(ctx, use_tui).await?;
+    // ponytail: the runtime waits for blocking tasks when it drops, and an
+    // interface detection can block for seconds. MIDI Stop is already sent, so
+    // exit now. The upgrade path is an explicit runtime with shutdown_timeout.
+    std::process::exit(0)
 }

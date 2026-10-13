@@ -1,6 +1,6 @@
 # xdj-midi
 
-[![Version](https://img.shields.io/badge/version-1.2.10-blue.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](Cargo.toml)
 
 
 
@@ -38,6 +38,32 @@
 ### Download the release
 1. download the latest release on the right
 2. run it.
+
+### Raspberry Pi and unattended use
+The `xdj-clock-linux-aarch64` release runs on a Raspberry Pi 3, 4 or 5 with a 64-bit OS.
+
+The app recovers from these faults without a restart:
+- When the MIDI device goes away, the app tries to open the same port again every 2 s. When the port comes back, the clock sends Stop, then Start on the next phrase. MTC sends a full frame.
+- When the network is not up at start, the app waits for it.
+- When the IP address goes away, the app finds the network again within a few seconds. Then it joins the Pro DJ Link network again.
+- When you change the interface in the TUI, the app uses the new interface within 2 s.
+
+To run the app as a service:
+1. Copy `xdj-clock` and `config.toml` to `/opt/xdj-clock/`.
+2. Copy `xdj-clock.service` to `/etc/systemd/system/`.
+3. Run `sudo systemctl daemon-reload`.
+4. Run `sudo systemctl enable --now xdj-clock`.
+5. Read the log with `journalctl -u xdj-clock -f`.
+
+The service runs the app with `--no-tui` and with real-time priority. `systemctl stop` sends MIDI Stop before the app exits.
+
+Before a long night, test the MIDI path on the target machine:
+```sh
+./xdj-clock --soak midi-clock --duration-secs 36000 --report soak.json
+```
+The test passes when the p99 jitter is 5 ms or less and no messages drop.
+
+**Note:** Keep the log level at `info`. The `trace` level writes every packet, which is approximately 1 GB in 10 hours.
 
 ---
 
