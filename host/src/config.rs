@@ -101,7 +101,8 @@ pub struct NoteConfig {
     pub phrase_change: u8,
     /// First note of the phrase-kind range. The note is `phrase_base` + the kind code (0–11).
     pub phrase_base: u8,
-    /// The note that is on while the bass is cut on all live XDJ-AZ mixer channels.
+    /// The note that pulses when the bass is cut on all live XDJ-AZ mixer channels.
+    /// The note pulses again when the bass comes back.
     pub no_bass: u8,
 }
 

@@ -93,7 +93,7 @@ beat = 36
 downbeat = 37
 phrase_change = 38
 phrase_base = 40       # phrase kind notes: phrase_base + kind code (40–51)
-no_bass = 39           # on while the bass is cut on all live XDJ-AZ channels
+no_bass = 39           # pulses when the bass is cut or comes back on the live XDJ-AZ channels
 
 [midi.cc]
 channel = 0
@@ -151,12 +151,13 @@ The player must send the phrase data over its dbserver. This needs at least one 
 
 The XDJ-AZ sends its EQ knobs and channel faders as MIDI over its USB-C cable. The app reads them from the "XDJ-AZ" MIDI port, and the TUI shows them in the Deck Information panel.
 
-Note `no_bass` (default 39) is on while the bass is cut on all live channels. Use it to start a strobe or another effect.
+Note `no_bass` (default 39) pulses when the bass is cut on all live channels. It pulses again when the bass comes back. Use the first pulse to start a strobe or another effect, and the second pulse to stop it.
 
 - A channel is live when its deck plays and its fader is at 10 % or higher.
 - The bass is cut when the LOW knob is at 16 or lower (0–127, centre 64).
 - One live channel sends the note when its bass is cut. Two or more live channels send the note only when the bass is cut on all of them.
-- The note goes off when one live channel gets its bass back, or when no channel is live.
+- The note pulses again when one live channel gets its bass back, or when no channel is live.
+- Each pulse is a note-on, followed immediately by a note-off.
 - Mixer channel CHn takes its play state from player n.
 - Until a fader moves, the app uses the on-air flag of the player.
 

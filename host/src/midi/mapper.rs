@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_bass_note_is_on_while_the_bass_is_cut() {
+    async fn no_bass_note_pulses_on_cut_and_on_return() {
         let midi = Arc::new(MockMidiTransport::new());
         let midi_transport: Arc<dyn MidiTransport> = midi.clone();
         let state = new_shared_state(30);
@@ -288,14 +288,15 @@ mod tests {
 
         state.write().mixer[0].low = Some(0);
         wake();
+        let pulse = vec![note_on(9, 39, 127).to_vec(), note_off(9, 39).to_vec()];
         tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(midi.get_messages().contains(&note_on(9, 39, 127).to_vec()));
+        assert!(midi.get_messages().windows(2).any(|w| w == pulse));
 
         midi.clear_messages();
         state.write().mixer[0].low = Some(64);
         wake();
         tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(midi.get_messages().contains(&note_off(9, 39).to_vec()));
+        assert!(midi.get_messages().windows(2).any(|w| w == pulse));
 
         handle.abort();
     }
@@ -683,20 +684,18 @@ async fn run_with_midi(
             prev_phrase_key = None;
         }
 
-        // ── NO_BASS gate ──────────────────────────────────────────────────────
-        // The note is on while the bass is cut on all live mixer channels.
+        // ── NO_BASS trigger ───────────────────────────────────────────────────
+        // The note pulses when the bass is cut on all live mixer channels.
+        // The note pulses again when the bass comes back.
         let no_bass = state.read().no_bass();
         if no_bass != prev_no_bass {
             prev_no_bass = no_bass;
             let note_cfg = cfg.read().midi.notes.clone();
-            if no_bass {
-                let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.no_bass, 127));
-                let mut act = activity.lock();
-                act.notes_sent += 1;
-                act.last_note = Some((note_cfg.no_bass, Instant::now()));
-            } else {
-                let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.no_bass));
-            }
+            let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.no_bass, 127));
+            let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.no_bass));
+            let mut act = activity.lock();
+            act.notes_sent += 1;
+            act.last_note = Some((note_cfg.no_bass, Instant::now()));
             tracing::debug!(no_bass, note = note_cfg.no_bass, "NO_BASS MIDI note sent");
         }
     }
