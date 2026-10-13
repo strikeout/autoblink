@@ -83,6 +83,8 @@ pub struct Phrase {
     pub kind: String,
     pub progress: f64,
     pub fill: bool,
+    /// Beats until the next phrase starts.
+    pub beats_left: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,6 +217,7 @@ pub fn snapshot(
                         kind: info.kind.to_string(),
                         progress: info.progress,
                         fill: phrase.has_fill && ds.beat_count >= u32::from(phrase.fill_beat),
+                        beats_left: info.beats_left,
                     });
                 }
             } else if ds.rekordbox_id != 0 && ds.song_structure.is_none() {
