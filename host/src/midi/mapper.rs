@@ -460,6 +460,111 @@ mod tests {
 
         handle.abort();
     }
+
+    #[tokio::test]
+    async fn note_switches_stop_the_notes() {
+        let midi = Arc::new(MockMidiTransport::new());
+        let midi_transport: Arc<dyn MidiTransport> = midi.clone();
+        let cfg = new_shared(Config::default());
+        cfg.write().midi.notes.send.beat = false;
+        let state = new_shared_state(30);
+        state.write().master.source = Some(BeatSource::AbletonLink);
+        let (_status_tx, status_rx) = broadcast::channel(8);
+        let (beat_tx, beat_rx) = broadcast::channel(8);
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let handle = tokio::spawn(run_with_midi(
+            midi_transport,
+            state,
+            beat_rx,
+            status_rx,
+            cfg.clone(),
+            activity,
+        ));
+        let downbeat = || {
+            let _ = beat_tx.send(BeatEvent::LinkBeat {
+                bpm: 120.0,
+                beat_in_bar: 1,
+                bar_phase: 0.0,
+                beat_phase: 0.0,
+                received_at: Instant::now(),
+            });
+        };
+
+        downbeat();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let msgs = midi.get_messages();
+        assert!(!msgs.contains(&note_on(9, 36, 127).to_vec()));
+        assert!(msgs.contains(&note_on(9, 37, 127).to_vec()));
+
+        midi.clear_messages();
+        cfg.write().midi.notes.enabled = false;
+        downbeat();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(midi.get_messages().iter().all(|m| m[0] & 0xF0 != 0x90));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn cc_switches_stop_the_ccs_and_resend_when_on() {
+        let midi = Arc::new(MockMidiTransport::new());
+        let midi_transport: Arc<dyn MidiTransport> = midi.clone();
+        let cfg = new_shared(Config::default());
+        cfg.write().midi.cc.send.pitch = false;
+        let state = new_shared_state(30);
+        state.write().master = MasterState {
+            source: Some(BeatSource::ProLink),
+            bpm: 128.0,
+            is_playing: true,
+            device_number: 1,
+            ..Default::default()
+        };
+        let (status_tx, status_rx) = broadcast::channel(8);
+        let (_beat_tx, beat_rx) = broadcast::channel(8);
+        let activity = Arc::new(Mutex::new(MidiActivity::default()));
+        let handle = tokio::spawn(run_with_midi(
+            midi_transport,
+            state.clone(),
+            beat_rx,
+            status_rx,
+            cfg.clone(),
+            activity,
+        ));
+        let wake = || {
+            let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
+                device_number: 16,
+                is_master: true,
+                bpm_raw: 12800,
+                track_bpm: Some(128.0),
+                beat_in_bar: 1,
+            }));
+        };
+        let pitch_ccs = |msgs: Vec<Vec<u8>>| msgs.iter().filter(|m| m[..2] == [0xB0, 2]).count();
+
+        wake();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let msgs = midi.get_messages();
+        assert_eq!(pitch_ccs(msgs.clone()), 0);
+        assert!(msgs.contains(&cc(0, 1, bpm_coarse(128.0)).to_vec()));
+
+        // The pitch does not change. The CC goes out when its switch comes on.
+        midi.clear_messages();
+        cfg.write().midi.cc.send.pitch = true;
+        wake();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(midi
+            .get_messages()
+            .contains(&cc(0, 2, pitch_cc(0.0)).to_vec()));
+
+        midi.clear_messages();
+        cfg.write().midi.cc.enabled = false;
+        state.write().master.pitch_pct = 5.0;
+        wake();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(midi.get_messages().iter().all(|m| m[0] & 0xF0 != 0xB0));
+
+        handle.abort();
+    }
 }
 
 // ── Beat note helper ──────────────────────────────────────────────────────────
@@ -485,6 +590,27 @@ fn link_beat_allowed(master_source: Option<BeatSource>) -> bool {
     master_source == Some(BeatSource::AbletonLink)
 }
 
+/// Sends a note on and a note off when `on` is true.
+fn pulse_note(
+    midi: &dyn MidiTransport,
+    ch: u8,
+    note: u8,
+    vel: u8,
+    on: bool,
+    activity: &Arc<Mutex<MidiActivity>>,
+) {
+    if !on {
+        return;
+    }
+    let _ = midi.send_message(&note_on(ch, note, vel));
+    let _ = midi.send_message(&note_off(ch, note));
+    // The UI counters are optional. Do not wait for the lock.
+    if let Some(mut act) = activity.try_lock() {
+        act.notes_sent += 1;
+        act.last_note = Some((note, Instant::now()));
+    }
+}
+
 /// Fire beat + downbeat notes through the MIDI connection.
 fn fire_beat_notes(
     midi: &dyn MidiTransport,
@@ -492,17 +618,19 @@ fn fire_beat_notes(
     beat_in_bar: u8,
     activity: &Arc<Mutex<MidiActivity>>,
 ) {
+    let n = note_cfg;
     let vel = beat_velocity(beat_in_bar);
-    let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.beat, vel));
-    let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.beat));
+    pulse_note(
+        midi,
+        n.channel,
+        n.beat,
+        vel,
+        n.enabled && n.send.beat,
+        activity,
+    );
     if beat_in_bar == 1 {
-        let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.downbeat, 127));
-        let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.downbeat));
-    }
-    // The UI counters are optional. Do not wait for the lock.
-    if let Some(mut act) = activity.try_lock() {
-        act.notes_sent += 1;
-        act.last_note = Some((note_cfg.beat, Instant::now()));
+        let on = n.enabled && n.send.downbeat;
+        pulse_note(midi, n.channel, n.downbeat, 127, on, activity);
     }
 }
 
@@ -548,6 +676,10 @@ async fn run_with_midi(
     let mut prev_no_bass = false;
     let osc = OscOut::with_activity(Arc::clone(&activity));
     let mut prev_osc_bpm = 0.0f32;
+    // The OSC values have their own previous values: a CC switch must not change the OSC output.
+    let mut prev_osc_playing = 0u8;
+    let mut prev_osc_master = 0u8;
+    let mut prev_osc_progress = 0u8;
     let mut prev_osc_beats_left = u32::MAX;
     // (device, rekordbox_id, title) of the last track that was sent over OSC.
     let mut prev_osc_track: Option<(u8, u32, String)> = None;
@@ -567,7 +699,7 @@ async fn run_with_midi(
                             continue;
                         }
 
-                        let note_cfg = cfg.read().midi.notes.clone();
+                        let note_cfg = cfg.read().midi.notes;
                         fire_beat_notes(midi.as_ref(), &note_cfg, bp.beat_in_bar, &activity);
                         send_osc_beat(&osc, &cfg, bp.beat_in_bar);
                         tracing::debug!(
@@ -584,7 +716,7 @@ async fn run_with_midi(
                         if !link_beat_allowed(state.read().master.source) {
                             continue;
                         }
-                        let note_cfg = cfg.read().midi.notes.clone();
+                        let note_cfg = cfg.read().midi.notes;
                         fire_beat_notes(midi.as_ref(), &note_cfg, beat_in_bar, &activity);
                         send_osc_beat(&osc, &cfg, beat_in_bar);
                         tracing::debug!(
@@ -609,7 +741,7 @@ async fn run_with_midi(
 
         // ── CC updates ────────────────────────────────────────────────────────
         let master = state.read().master.clone();
-        let cc_cfg: CcConfig = cfg.read().midi.cc.clone();
+        let cc_cfg: CcConfig = cfg.read().midi.cc;
 
         let new_bpm_coarse = bpm_coarse(master.bpm);
         let new_bpm_fine = bpm_fine(master.bpm);
@@ -620,16 +752,17 @@ async fn run_with_midi(
         let new_master_deck = master.device_number.min(127);
 
         // ── OSC state updates ─────────────────────────────────────────────────
-        // Compare before the CC macros below update `prev`.
         let osc_bpm = (master.bpm * 100.0).round() as f32 / 100.0;
         if osc_bpm != prev_osc_bpm {
             prev_osc_bpm = osc_bpm;
             osc.send(&cfg, "/bpm", &[Arg::F(osc_bpm)]);
         }
-        if new_playing != prev.playing {
+        if new_playing != prev_osc_playing {
+            prev_osc_playing = new_playing;
             osc.send(&cfg, "/playing", &[Arg::I((new_playing > 0).into())]);
         }
-        if new_master_deck != prev.master_deck {
+        if new_master_deck != prev_osc_master {
+            prev_osc_master = new_master_deck;
             osc.send(&cfg, "/master", &[Arg::I(new_master_deck.into())]);
         }
         let track = {
@@ -657,9 +790,12 @@ async fn run_with_midi(
             }
         }
 
+        // A CC that is off forgets its previous value, so the CC is sent again when it comes on.
         macro_rules! send_cc_if_changed {
-            ($prev:expr, $new:expr, $num:expr, $ch:expr) => {
-                if $prev != $new {
+            ($prev:expr, $new:expr, $num:expr, $ch:expr, $on:expr) => {
+                if !(cc_cfg.enabled && $on) {
+                    $prev = u8::MAX;
+                } else if $prev != $new {
                     $prev = $new;
                     let _ = midi.send_message(&cc($ch, $num, $new));
                     // The UI counters are optional. Do not wait for the lock.
@@ -675,31 +811,54 @@ async fn run_with_midi(
             prev.bpm_coarse,
             new_bpm_coarse,
             cc_cfg.bpm_coarse,
-            cc_cfg.channel
+            cc_cfg.channel,
+            cc_cfg.send.bpm_coarse
         );
-        send_cc_if_changed!(prev.bpm_fine, new_bpm_fine, cc_cfg.bpm_fine, cc_cfg.channel);
-        send_cc_if_changed!(prev.pitch, new_pitch, cc_cfg.pitch, cc_cfg.channel);
+        send_cc_if_changed!(
+            prev.bpm_fine,
+            new_bpm_fine,
+            cc_cfg.bpm_fine,
+            cc_cfg.channel,
+            cc_cfg.send.bpm_fine
+        );
+        send_cc_if_changed!(
+            prev.pitch,
+            new_pitch,
+            cc_cfg.pitch,
+            cc_cfg.channel,
+            cc_cfg.send.pitch
+        );
         send_cc_if_changed!(
             prev.bar_phase,
             new_bar_phase,
             cc_cfg.bar_phase,
-            cc_cfg.channel
+            cc_cfg.channel,
+            cc_cfg.send.bar_phase
         );
         send_cc_if_changed!(
             prev.beat_phase,
             new_beat_phase,
             cc_cfg.beat_phase,
-            cc_cfg.channel
+            cc_cfg.channel,
+            cc_cfg.send.beat_phase
         );
-        send_cc_if_changed!(prev.playing, new_playing, cc_cfg.playing, cc_cfg.channel);
+        send_cc_if_changed!(
+            prev.playing,
+            new_playing,
+            cc_cfg.playing,
+            cc_cfg.channel,
+            cc_cfg.send.playing
+        );
         send_cc_if_changed!(
             prev.master_deck,
             new_master_deck,
             cc_cfg.master_deck,
-            cc_cfg.channel
+            cc_cfg.channel,
+            cc_cfg.send.master_deck
         );
 
-        if master.phrase_16_beat == 0 && prev_phrase_16_beat != 0 {
+        let phrase_16_on = cc_cfg.enabled && cc_cfg.send.phrase_16;
+        if phrase_16_on && master.phrase_16_beat == 0 && prev_phrase_16_beat != 0 {
             let new_phrase_16 = 0u8;
             if prev.phrase_16 != new_phrase_16 {
                 prev.phrase_16 = new_phrase_16;
@@ -723,18 +882,17 @@ async fn run_with_midi(
                 .and_then(|d| d.current_phrase_idx);
 
             if cur_phrase != prev_phrase_idx && cur_phrase.is_some() && prev_phrase_idx.is_some() {
-                let note_cfg = cfg.read().midi.notes.clone();
-                let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.phrase_change, 127));
-                let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.phrase_change));
-                // The UI counters are optional. Do not wait for the lock.
-                if let Some(mut act) = activity.try_lock() {
-                    act.notes_sent += 1;
-                    act.last_note = Some((note_cfg.phrase_change, Instant::now()));
-                }
-                tracing::debug!(
-                    note = note_cfg.phrase_change,
-                    "Phrase change MIDI note fired"
+                let n = cfg.read().midi.notes;
+                let on = n.enabled && n.send.phrase_change;
+                pulse_note(
+                    midi.as_ref(),
+                    n.channel,
+                    n.phrase_change,
+                    127,
+                    on,
+                    &activity,
                 );
+                tracing::debug!(note = n.phrase_change, on, "Phrase change");
             }
             prev_phrase_idx = cur_phrase;
         }
@@ -758,23 +916,21 @@ async fn run_with_midi(
                 if let Some(code) = info.kind.code() {
                     let cfg_now = cfg.read().midi.clone();
                     let kind_val = code * 10;
-                    let _ = midi.send_message(&cc(
-                        cfg_now.cc.channel,
-                        cfg_now.cc.phrase_kind,
-                        kind_val,
-                    ));
-                    let note = cfg_now.notes.phrase_base.saturating_add(code);
-                    let _ = midi.send_message(&note_on(cfg_now.notes.channel, note, 127));
-                    let _ = midi.send_message(&note_off(cfg_now.notes.channel, note));
+                    let c = cfg_now.cc;
+                    if c.enabled && c.send.phrase_kind {
+                        let _ = midi.send_message(&cc(c.channel, c.phrase_kind, kind_val));
+                        // The UI counters are optional. Do not wait for the lock.
+                        if let Some(mut act) = activity.try_lock() {
+                            act.cc_sent += 1;
+                            act.last_cc = Some((c.phrase_kind, kind_val, Instant::now()));
+                        }
+                    }
+                    let n = cfg_now.notes;
+                    let note = n.phrase_base.saturating_add(code);
+                    let on = n.enabled && n.send.phrase_kind;
+                    pulse_note(midi.as_ref(), n.channel, note, 127, on, &activity);
                     if cfg_now.program.enabled {
                         let _ = midi.send_message(&program_change(cfg_now.program.channel, code));
-                    }
-                    // The UI counters are optional. Do not wait for the lock.
-                    if let Some(mut act) = activity.try_lock() {
-                        act.cc_sent += 1;
-                        act.last_cc = Some((cfg_now.cc.phrase_kind, kind_val, Instant::now()));
-                        act.notes_sent += 1;
-                        act.last_note = Some((note, Instant::now()));
                     }
                     osc.send(
                         &cfg,
@@ -784,7 +940,8 @@ async fn run_with_midi(
                     tracing::debug!(kind = %info.kind, code, "Phrase kind MIDI sent");
                 }
             }
-            if scale01(info.progress) != prev.phrase_progress {
+            if scale01(info.progress) != prev_osc_progress {
+                prev_osc_progress = scale01(info.progress);
                 osc.send(&cfg, "/phrase/progress", &[Arg::F(info.progress as f32)]);
             }
             if info.beats_left != prev_osc_beats_left {
@@ -799,13 +956,15 @@ async fn run_with_midi(
                 prev.phrase_progress,
                 scale01(info.progress),
                 cc_cfg.phrase_progress,
-                cc_cfg.channel
+                cc_cfg.channel,
+                cc_cfg.send.phrase_progress
             );
             send_cc_if_changed!(
                 prev.phrase_beats_left,
                 info.beats_left.min(127) as u8,
                 cc_cfg.phrase_beats_left,
-                cc_cfg.channel
+                cc_cfg.channel,
+                cc_cfg.send.phrase_beats_left
             );
         } else {
             prev_phrase_key = None;
@@ -817,16 +976,11 @@ async fn run_with_midi(
         let no_bass = state.read().no_bass();
         if no_bass != prev_no_bass {
             prev_no_bass = no_bass;
-            let note_cfg = cfg.read().midi.notes.clone();
-            let _ = midi.send_message(&note_on(note_cfg.channel, note_cfg.no_bass, 127));
-            let _ = midi.send_message(&note_off(note_cfg.channel, note_cfg.no_bass));
-            // The UI counters are optional. Do not wait for the lock.
-            if let Some(mut act) = activity.try_lock() {
-                act.notes_sent += 1;
-                act.last_note = Some((note_cfg.no_bass, Instant::now()));
-            }
+            let n = cfg.read().midi.notes;
+            let on = n.enabled && n.send.no_bass;
+            pulse_note(midi.as_ref(), n.channel, n.no_bass, 127, on, &activity);
             osc.send(&cfg, "/no_bass", &[Arg::I(no_bass.into())]);
-            tracing::debug!(no_bass, note = note_cfg.no_bass, "NO_BASS MIDI note sent");
+            tracing::debug!(no_bass, note = n.no_bass, on, "NO_BASS");
         }
     }
 }

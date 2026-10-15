@@ -4,7 +4,7 @@
 use network_interface::{NetworkInterface, NetworkInterfaceConfig, V4IfAddr};
 use tokio::sync::watch;
 
-use crate::config::{Config, SharedConfig, Source};
+use crate::config::{CcConfig, Config, NoteConfig, SharedConfig, Source};
 
 #[derive(Debug, Clone)]
 pub struct NetworkIfaceInfo {
@@ -74,9 +74,14 @@ pub const SETTINGS: &[SettingDef] = &[
         section: None,
     },
     SettingDef {
+        label: "Notes Enabled",
+        kind: SettingKind::Toggle,
+        section: Some("MIDI Notes"),
+    },
+    SettingDef {
         label: "Note Channel",
         kind: SettingKind::NumericU8,
-        section: Some("MIDI Notes"),
+        section: None,
     },
     SettingDef {
         label: "Beat Note",
@@ -94,9 +99,24 @@ pub const SETTINGS: &[SettingDef] = &[
         section: None,
     },
     SettingDef {
+        label: "Phrase Kind Base Note",
+        kind: SettingKind::NumericU8,
+        section: None,
+    },
+    SettingDef {
+        label: "No Bass Note",
+        kind: SettingKind::NumericU8,
+        section: None,
+    },
+    SettingDef {
+        label: "CC Enabled",
+        kind: SettingKind::Toggle,
+        section: Some("MIDI CC"),
+    },
+    SettingDef {
         label: "CC Channel",
         kind: SettingKind::NumericU8,
-        section: Some("MIDI CC"),
+        section: None,
     },
     SettingDef {
         label: "BPM Coarse CC",
@@ -138,6 +158,21 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::NumericU8,
         section: None,
     },
+    SettingDef {
+        label: "Phrase Kind CC",
+        kind: SettingKind::NumericU8,
+        section: None,
+    },
+    SettingDef {
+        label: "Phrase Progress CC",
+        kind: SettingKind::NumericU8,
+        section: None,
+    },
+    SettingDef {
+        label: "Beats Left CC",
+        kind: SettingKind::NumericU8,
+        section: None,
+    },
     // ── MTC settings ─────────────────────────────────────────────────────
     SettingDef {
         label: "MTC Enabled",
@@ -166,6 +201,68 @@ pub const SETTINGS: &[SettingDef] = &[
         section: None,
     },
 ];
+
+/// The index of the first note with a switch. The notes follow in [`note_slot`] order.
+const NOTE_FIRST: usize = 10;
+/// The index of the first CC with a switch. The CCs follow in [`cc_slot`] order.
+const CC_FIRST: usize = 17;
+
+/// Returns the number, the switch and the highest permitted number of the note at `i`.
+fn note_slot(n: &mut NoteConfig, i: usize) -> Option<(&mut u8, &mut bool, u8)> {
+    Some(match i {
+        0 => (&mut n.beat, &mut n.send.beat, 127),
+        1 => (&mut n.downbeat, &mut n.send.downbeat, 127),
+        2 => (&mut n.phrase_change, &mut n.send.phrase_change, 127),
+        // The phrase kind adds up to 11 to the base note.
+        3 => (&mut n.phrase_base, &mut n.send.phrase_kind, 116),
+        4 => (&mut n.no_bass, &mut n.send.no_bass, 127),
+        _ => return None,
+    })
+}
+
+/// Returns the number, the switch and the highest permitted number of the CC at `i`.
+fn cc_slot(c: &mut CcConfig, i: usize) -> Option<(&mut u8, &mut bool, u8)> {
+    Some(match i {
+        0 => (&mut c.bpm_coarse, &mut c.send.bpm_coarse, 127),
+        1 => (&mut c.bpm_fine, &mut c.send.bpm_fine, 127),
+        2 => (&mut c.pitch, &mut c.send.pitch, 127),
+        3 => (&mut c.bar_phase, &mut c.send.bar_phase, 127),
+        4 => (&mut c.beat_phase, &mut c.send.beat_phase, 127),
+        5 => (&mut c.playing, &mut c.send.playing, 127),
+        6 => (&mut c.master_deck, &mut c.send.master_deck, 127),
+        7 => (&mut c.phrase_16, &mut c.send.phrase_16, 127),
+        8 => (&mut c.phrase_kind, &mut c.send.phrase_kind, 127),
+        9 => (&mut c.phrase_progress, &mut c.send.phrase_progress, 127),
+        10 => (&mut c.phrase_beats_left, &mut c.send.phrase_beats_left, 127),
+        _ => return None,
+    })
+}
+
+/// Returns the number, the switch and the highest number of the note or CC setting at `idx`.
+fn slot<'a>(
+    notes: &'a mut NoteConfig,
+    cc: &'a mut CcConfig,
+    idx: usize,
+) -> Option<(&'a mut u8, &'a mut bool, u8)> {
+    if idx >= CC_FIRST {
+        cc_slot(cc, idx - CC_FIRST)
+    } else if idx >= NOTE_FIRST {
+        note_slot(notes, idx - NOTE_FIRST)
+    } else {
+        None
+    }
+}
+
+/// Returns the number and the switch of the note or CC setting at `idx`.
+fn slot_value(cfg: &Config, idx: usize) -> Option<(u8, bool)> {
+    let (mut notes, mut cc) = (cfg.midi.notes, cfg.midi.cc);
+    slot(&mut notes, &mut cc, idx).map(|(num, on, _)| (*num, *on))
+}
+
+/// Returns the switch state of a note or CC setting, or None for a setting without a switch.
+pub fn switch_value(cfg: &Config, idx: usize) -> Option<bool> {
+    slot_value(cfg, idx).map(|(_, on)| on)
+}
 
 pub fn interface_priority_label(priority: u8) -> &'static str {
     match priority {
@@ -229,58 +326,33 @@ pub fn format_source_value(source: &Source) -> &'static str {
     }
 }
 
+/// Returns "✓" for true and "✗" for false.
+fn tick(on: bool) -> String {
+    if on { "✓" } else { "✗" }.to_string()
+}
+
 pub fn get_value(cfg: &Config, interfaces: &[NetworkIfaceInfo], idx: usize) -> String {
+    if let Some((num, _)) = slot_value(cfg, idx) {
+        return num.to_string();
+    }
     match idx {
         0 => format_interface_value(cfg, interfaces),
         1 => format_source_value(&cfg.source).to_string(),
         2 => cfg.device_number.to_string(),
-        3 => {
-            if cfg.midi.clock_enabled {
-                "✓".to_string()
-            } else {
-                "✗".to_string()
-            }
-        }
-        4 => {
-            if cfg.midi.clock_loop_enabled {
-                "✓".to_string()
-            } else {
-                "✗".to_string()
-            }
-        }
+        3 => tick(cfg.midi.clock_enabled),
+        4 => tick(cfg.midi.clock_loop_enabled),
         5 => format!("{} ms", cfg.midi.smoothing_ms),
         6 => format!("{} ms", cfg.midi.latency_compensation_ms),
         7 => format!("{} bars", cfg.midi.phrase_lock_stable_beats),
-        8 => (cfg.midi.notes.channel + 1).to_string(),
-        9 => cfg.midi.notes.beat.to_string(),
-        10 => cfg.midi.notes.downbeat.to_string(),
-        11 => cfg.midi.notes.phrase_change.to_string(),
-        12 => (cfg.midi.cc.channel + 1).to_string(),
-        13 => cfg.midi.cc.bpm_coarse.to_string(),
-        14 => cfg.midi.cc.bpm_fine.to_string(),
-        15 => cfg.midi.cc.pitch.to_string(),
-        16 => cfg.midi.cc.bar_phase.to_string(),
-        17 => cfg.midi.cc.beat_phase.to_string(),
-        18 => cfg.midi.cc.playing.to_string(),
-        19 => cfg.midi.cc.master_deck.to_string(),
-        20 => cfg.midi.cc.phrase_16.to_string(),
-        21 => {
-            if cfg.midi.mtc.enabled {
-                "✓".to_string()
-            } else {
-                "✗".to_string()
-            }
-        }
-        22 => cfg.midi.mtc.frame_rate.label().to_string(),
-        23 => {
-            if cfg.osc.enabled {
-                "✓".to_string()
-            } else {
-                "✗".to_string()
-            }
-        }
-        24 => cfg.osc.targets.join(", "),
-        25 => cfg.osc.prefix.clone(),
+        8 => tick(cfg.midi.notes.enabled),
+        9 => (cfg.midi.notes.channel + 1).to_string(),
+        15 => tick(cfg.midi.cc.enabled),
+        16 => (cfg.midi.cc.channel + 1).to_string(),
+        28 => tick(cfg.midi.mtc.enabled),
+        29 => cfg.midi.mtc.frame_rate.label().to_string(),
+        30 => tick(cfg.osc.enabled),
+        31 => cfg.osc.targets.join(", "),
+        32 => cfg.osc.prefix.clone(),
         _ => String::new(),
     }
 }
@@ -291,20 +363,9 @@ pub fn numeric_edit_value(cfg: &Config, idx: usize) -> Option<String> {
             2 => cfg.device_number.to_string(),
             5 => cfg.midi.smoothing_ms.to_string(),
             7 => cfg.midi.phrase_lock_stable_beats.to_string(),
-            8 => (cfg.midi.notes.channel + 1).to_string(),
-            9 => cfg.midi.notes.beat.to_string(),
-            10 => cfg.midi.notes.downbeat.to_string(),
-            11 => cfg.midi.notes.phrase_change.to_string(),
-            12 => (cfg.midi.cc.channel + 1).to_string(),
-            13 => cfg.midi.cc.bpm_coarse.to_string(),
-            14 => cfg.midi.cc.bpm_fine.to_string(),
-            15 => cfg.midi.cc.pitch.to_string(),
-            16 => cfg.midi.cc.bar_phase.to_string(),
-            17 => cfg.midi.cc.beat_phase.to_string(),
-            18 => cfg.midi.cc.playing.to_string(),
-            19 => cfg.midi.cc.master_deck.to_string(),
-            20 => cfg.midi.cc.phrase_16.to_string(),
-            _ => return None,
+            9 => (cfg.midi.notes.channel + 1).to_string(),
+            16 => (cfg.midi.cc.channel + 1).to_string(),
+            _ => slot_value(cfg, idx)?.0.to_string(),
         }),
         SettingKind::NumericI64 => Some(match idx {
             6 => cfg.midi.latency_compensation_ms.to_string(),
@@ -321,6 +382,10 @@ pub fn apply_change(
     idx: usize,
     direction: i8,
 ) -> bool {
+    if let Some((_, on, _)) = slot(&mut cfg.midi.notes, &mut cfg.midi.cc, idx) {
+        *on = !*on;
+        return true;
+    }
     match idx {
         0 => {
             let Some(current) = selected_interface_index(cfg, interfaces) else {
@@ -376,15 +441,23 @@ pub fn apply_change(
             cfg.midi.phrase_lock_stable_beats = next;
             true
         }
-        21 => {
+        8 => {
+            cfg.midi.notes.enabled = !cfg.midi.notes.enabled;
+            true
+        }
+        15 => {
+            cfg.midi.cc.enabled = !cfg.midi.cc.enabled;
+            true
+        }
+        28 => {
             cfg.midi.mtc.enabled = !cfg.midi.mtc.enabled;
             true
         }
-        22 => {
+        29 => {
             cfg.midi.mtc.frame_rate = cfg.midi.mtc.frame_rate.next();
             true
         }
-        23 => {
+        30 => {
             cfg.osc.enabled = !cfg.osc.enabled;
             true
         }
@@ -393,6 +466,14 @@ pub fn apply_change(
 }
 
 pub fn apply_numeric_input(cfg: &mut Config, idx: usize, value: &str) -> bool {
+    if let Some((num, _, max)) = slot(&mut cfg.midi.notes, &mut cfg.midi.cc, idx) {
+        return value
+            .parse::<u8>()
+            .ok()
+            .filter(|v| *v <= max)
+            .map(|v| *num = v)
+            .is_some();
+    }
     match idx {
         2 => value
             .parse::<u8>()
@@ -418,88 +499,22 @@ pub fn apply_numeric_input(cfg: &mut Config, idx: usize, value: &str) -> bool {
             .filter(|v| (1..=32).contains(v))
             .map(|v| cfg.midi.phrase_lock_stable_beats = v)
             .is_some(),
-        8 => value
+        9 => value
             .parse::<u8>()
             .ok()
             .filter(|v| (1..=16).contains(v))
             .map(|v| cfg.midi.notes.channel = v - 1)
             .is_some(),
-        9 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.notes.beat = v)
-            .is_some(),
-        10 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.notes.downbeat = v)
-            .is_some(),
-        11 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.notes.phrase_change = v)
-            .is_some(),
-        12 => value
+        16 => value
             .parse::<u8>()
             .ok()
             .filter(|v| (1..=16).contains(v))
             .map(|v| cfg.midi.cc.channel = v - 1)
             .is_some(),
-        13 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.cc.bpm_coarse = v)
-            .is_some(),
-        14 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.cc.bpm_fine = v)
-            .is_some(),
-        15 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.cc.pitch = v)
-            .is_some(),
-        16 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.cc.bar_phase = v)
-            .is_some(),
-        17 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.cc.beat_phase = v)
-            .is_some(),
-        18 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.cc.playing = v)
-            .is_some(),
-        19 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.cc.master_deck = v)
-            .is_some(),
-        20 => value
-            .parse::<u8>()
-            .ok()
-            .filter(|v| *v <= 127)
-            .map(|v| cfg.midi.cc.phrase_16 = v)
-            .is_some(),
-        24 => parse_osc_targets(value)
+        31 => parse_osc_targets(value)
             .map(|v| cfg.osc.targets = v)
             .is_some(),
-        25 => {
+        32 => {
             let ok = value.starts_with('/') && !value.contains(char::is_whitespace);
             if ok {
                 cfg.osc.prefix = value.to_string();
@@ -623,6 +638,15 @@ pub fn set_numeric(
 }
 
 fn log_setting_change(idx: usize, cfg: &Config) {
+    if let Some((num, on)) = slot_value(cfg, idx) {
+        tracing::info!(
+            setting = SETTINGS[idx].label,
+            num,
+            on,
+            "MIDI mapping changed"
+        );
+        return;
+    }
     match idx {
         2 => tracing::info!(
             device_number = cfg.device_number,
@@ -644,30 +668,21 @@ fn log_setting_change(idx: usize, cfg: &Config) {
             bars = cfg.midi.phrase_lock_stable_beats,
             "Phrase-lock bar resync interval changed"
         ),
-        8 => tracing::info!(channel = cfg.midi.notes.channel + 1, "Note channel changed"),
-        9 => tracing::info!(note = cfg.midi.notes.beat, "Beat note changed"),
-        10 => tracing::info!(note = cfg.midi.notes.downbeat, "Downbeat note changed"),
-        11 => tracing::info!(
-            note = cfg.midi.notes.phrase_change,
-            "Phrase change note changed"
+        8 => tracing::info!(
+            enabled = cfg.midi.notes.enabled,
+            "MIDI notes setting changed"
         ),
-        12 => tracing::info!(channel = cfg.midi.cc.channel + 1, "CC channel changed"),
-        13 => tracing::info!(cc = cfg.midi.cc.bpm_coarse, "BPM coarse CC changed"),
-        14 => tracing::info!(cc = cfg.midi.cc.bpm_fine, "BPM fine CC changed"),
-        15 => tracing::info!(cc = cfg.midi.cc.pitch, "Pitch CC changed"),
-        16 => tracing::info!(cc = cfg.midi.cc.bar_phase, "Bar phase CC changed"),
-        17 => tracing::info!(cc = cfg.midi.cc.beat_phase, "Beat phase CC changed"),
-        18 => tracing::info!(cc = cfg.midi.cc.playing, "Playing CC changed"),
-        19 => tracing::info!(cc = cfg.midi.cc.master_deck, "Master deck CC changed"),
-        20 => tracing::info!(cc = cfg.midi.cc.phrase_16, "Phrase 16 CC changed"),
-        21 => tracing::info!(enabled = cfg.midi.mtc.enabled, "MTC setting changed"),
-        22 => tracing::info!(
+        9 => tracing::info!(channel = cfg.midi.notes.channel + 1, "Note channel changed"),
+        15 => tracing::info!(enabled = cfg.midi.cc.enabled, "MIDI CC setting changed"),
+        16 => tracing::info!(channel = cfg.midi.cc.channel + 1, "CC channel changed"),
+        28 => tracing::info!(enabled = cfg.midi.mtc.enabled, "MTC setting changed"),
+        29 => tracing::info!(
             frame_rate = cfg.midi.mtc.frame_rate.label(),
             "MTC frame rate changed"
         ),
-        23 => tracing::info!(enabled = cfg.osc.enabled, "OSC output setting changed"),
-        24 => tracing::info!(targets = ?cfg.osc.targets, "OSC targets changed"),
-        25 => tracing::info!(prefix = %cfg.osc.prefix, "OSC prefix changed"),
+        30 => tracing::info!(enabled = cfg.osc.enabled, "OSC output setting changed"),
+        31 => tracing::info!(targets = ?cfg.osc.targets, "OSC targets changed"),
+        32 => tracing::info!(prefix = %cfg.osc.prefix, "OSC prefix changed"),
         _ => {}
     }
 }
@@ -676,33 +691,106 @@ fn log_setting_change(idx: usize, cfg: &Config) {
 mod tests {
     use super::*;
 
+    const OSC_ENABLED: usize = 30;
+    const OSC_TARGETS: usize = 31;
+    const OSC_PREFIX: usize = 32;
+
     #[test]
     fn osc_settings_are_validated() {
         let mut cfg = Config::default();
         assert!(apply_numeric_input(
             &mut cfg,
-            24,
+            OSC_TARGETS,
             "192.168.1.50:8000, 2.255.255.255:7000"
         ));
         assert_eq!(cfg.osc.targets, ["192.168.1.50:8000", "2.255.255.255:7000"]);
         assert_eq!(
-            get_value(&cfg, &[], 24),
+            get_value(&cfg, &[], OSC_TARGETS),
             "192.168.1.50:8000, 2.255.255.255:7000"
         );
 
-        assert!(!apply_numeric_input(&mut cfg, 24, "desk.local:8000"));
-        assert!(!apply_numeric_input(&mut cfg, 24, "192.168.1.50"));
+        assert!(!apply_numeric_input(
+            &mut cfg,
+            OSC_TARGETS,
+            "desk.local:8000"
+        ));
+        assert!(!apply_numeric_input(&mut cfg, OSC_TARGETS, "192.168.1.50"));
         assert_eq!(cfg.osc.targets.len(), 2);
-        assert!(apply_numeric_input(&mut cfg, 24, ""));
+        assert!(apply_numeric_input(&mut cfg, OSC_TARGETS, ""));
         assert!(cfg.osc.targets.is_empty());
 
-        assert!(apply_numeric_input(&mut cfg, 25, "/lights"));
-        assert!(!apply_numeric_input(&mut cfg, 25, "lights"));
-        assert!(!apply_numeric_input(&mut cfg, 25, "/a b"));
+        assert!(apply_numeric_input(&mut cfg, OSC_PREFIX, "/lights"));
+        assert!(!apply_numeric_input(&mut cfg, OSC_PREFIX, "lights"));
+        assert!(!apply_numeric_input(&mut cfg, OSC_PREFIX, "/a b"));
         assert_eq!(cfg.osc.prefix, "/lights");
 
-        assert!(apply_change(&mut cfg, &[], 23, 1));
+        assert!(apply_change(&mut cfg, &[], OSC_ENABLED, 1));
         assert!(cfg.osc.enabled);
-        assert_eq!(numeric_edit_value(&cfg, 25).as_deref(), Some("/lights"));
+        assert_eq!(
+            numeric_edit_value(&cfg, OSC_PREFIX).as_deref(),
+            Some("/lights")
+        );
+    }
+
+    /// Every row of the table must reach its value: this catches an index that a new row shifted.
+    #[test]
+    fn every_setting_row_has_a_value() {
+        let mut cfg = Config::default();
+        for (idx, def) in SETTINGS.iter().enumerate() {
+            match def.kind {
+                SettingKind::NumericU8 | SettingKind::NumericU64 | SettingKind::NumericI64 => {
+                    let raw = numeric_edit_value(&cfg, idx)
+                        .unwrap_or_else(|| panic!("{} has no edit value", def.label));
+                    assert!(
+                        apply_numeric_input(&mut cfg, idx, &raw),
+                        "{} rejects its own value {raw}",
+                        def.label
+                    );
+                }
+                SettingKind::Toggle => {
+                    let before = get_value(&cfg, &[], idx);
+                    assert!(apply_change(&mut cfg, &[], idx, 1), "{}", def.label);
+                    assert_ne!(get_value(&cfg, &[], idx), before, "{}", def.label);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn note_and_cc_switches() {
+        let mut cfg = Config::default();
+        let label = |l: &str| SETTINGS.iter().position(|d| d.label == l).unwrap();
+
+        let pitch = label("Pitch CC");
+        assert_eq!(switch_value(&cfg, pitch), Some(true));
+        assert!(apply_change(&mut cfg, &[], pitch, 1));
+        assert!(!cfg.midi.cc.send.pitch);
+        assert_eq!(switch_value(&cfg, pitch), Some(false));
+        assert!(apply_numeric_input(&mut cfg, pitch, "12"));
+        assert_eq!(cfg.midi.cc.pitch, 12);
+        assert!(!apply_numeric_input(&mut cfg, pitch, "128"));
+
+        let left = label("Beats Left CC");
+        assert!(apply_numeric_input(&mut cfg, left, "99"));
+        assert_eq!(cfg.midi.cc.phrase_beats_left, 99);
+
+        let base = label("Phrase Kind Base Note");
+        assert!(apply_numeric_input(&mut cfg, base, "116"));
+        assert!(!apply_numeric_input(&mut cfg, base, "117"));
+        assert!(apply_change(&mut cfg, &[], base, 1));
+        assert!(!cfg.midi.notes.send.phrase_kind);
+
+        let no_bass = label("No Bass Note");
+        assert!(apply_change(&mut cfg, &[], no_bass, -1));
+        assert!(!cfg.midi.notes.send.no_bass);
+
+        assert!(apply_change(&mut cfg, &[], label("CC Enabled"), 1));
+        assert!(!cfg.midi.cc.enabled);
+        assert!(apply_change(&mut cfg, &[], label("Notes Enabled"), 1));
+        assert!(!cfg.midi.notes.enabled);
+
+        assert_eq!(switch_value(&cfg, label("CC Channel")), None);
+        assert_eq!(switch_value(&cfg, label("MTC Enabled")), None);
     }
 }

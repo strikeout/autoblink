@@ -6,13 +6,15 @@
 //! - `hello`: `{proto, version, device, caps}`. The page shows only the panels in `caps`.
 //! - `status`: a [`status::Status`], about 30 times per second.
 //! - `beat`: `{device, beat}`, sent at the moment a beat arrives. Device 0 is Ableton Link.
-//! - `settings`: `{items: [{idx, label, section, kind, value, raw}]}`, after each change.
+//! - `settings`: `{items: [{idx, label, section, kind, value, raw, step, on}]}`, after each
+//!   change. A note or CC setting has `on`, the state of its switch. Other settings have no `on`.
 //! - `ports`: `{ports, active, connected}`, after each change.
 //! - `log`: `{lines}`, the new log lines.
 //! - `error`: `{text}`, when a command fails.
 //!
 //! Client to server:
-//! - `{type: "cycle", idx, dir}` steps a toggle, a cycle or a fixed-step setting.
+//! - `{type: "cycle", idx, dir}` steps a toggle, a cycle or a fixed-step setting. On a setting
+//!   with `on`, it flips the switch.
 //! - `{type: "set", idx, value}` stores a numeric or text setting.
 //! - `{type: "port", name}` switches the MIDI output port.
 //! - `{type: "rescan"}` lists the MIDI ports and network interfaces again.
@@ -269,6 +271,7 @@ fn produce_once(shared: &Shared) {
             value: settings::get_value(&cfg, &interfaces, idx),
             raw: settings::numeric_edit_value(&cfg, idx),
             step: settings::has_step(idx),
+            on: settings::switch_value(&cfg, idx),
         })
         .collect();
     send_if_changed(
@@ -300,6 +303,9 @@ struct SettingItem {
     raw: Option<String>,
     /// True when `cycle` steps this numeric setting up or down.
     step: bool,
+    /// The switch of a note or CC setting. When false, the app does not send the message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on: Option<bool>,
 }
 
 #[derive(Serialize)]

@@ -57,7 +57,7 @@ The dashboard has these panels:
 | Master | The master BPM, the beat in the bar, the pitch, the phrase of the master deck and its 16-beat position, and the clock state. |
 | Output Status | The MIDI port, the clock pulses, the notes and the CCs, the MTC state, and the OSC targets with the message count, the errors and the last message. |
 | Deck Information | One card for each player, two cards in one row. See below. |
-| Settings | All settings and the MIDI output port. |
+| Settings | All settings and the MIDI output port. Each setting has a tooltip. Each note and CC has an on/off switch (✓ or ✗). |
 | Logs | The latest log lines. |
 
 Each deck card shows the play state, the BPM, the pitch, the beat, the playhead time and the track. When the track has rekordbox analysis data, the card also shows:
@@ -125,6 +125,7 @@ latency_compensation_ms = 0
 phrase_lock_stable_beats = 4
 
 [midi.notes]
+enabled = true         # false: no notes
 channel = 9
 beat = 36
 downbeat = 37
@@ -132,7 +133,11 @@ phrase_change = 38
 phrase_base = 40       # phrase kind notes: phrase_base + kind code (40–51)
 no_bass = 39           # pulses when the bass is cut or comes back on the live XDJ-AZ channels
 
+[midi.notes.send]      # one switch per note; false = not sent
+beat = true            # also: downbeat, phrase_change, phrase_kind, no_bass
+
 [midi.cc]
+enabled = true         # false: no CCs
 channel = 0
 bpm_coarse = 1
 bpm_fine = 33
@@ -145,6 +150,9 @@ phrase_16 = 7
 phrase_kind = 20       # kind code x 10
 phrase_progress = 21
 phrase_beats_left = 22
+
+[midi.cc.send]         # one switch per CC, with the same names as above; false = not sent
+pitch = true
 
 [midi.program]
 enabled = false        # Program Change = kind code at each new phrase
@@ -323,7 +331,7 @@ Open `http://localhost:8080` to view the responsive WebSocket dashboard.
 
 ---
 
-## 🛠 Project State (v1.10.0)
+## 🛠 Project State (v1.11.0)
 - v1.1.0: Migrated emulator to WebSockets.
 - v1.1.2: Added proactive Pro DJ Link participation.
 - v1.1.4: Fixed master handoff and play-state latching.
@@ -333,6 +341,8 @@ Open `http://localhost:8080` to view the responsive WebSocket dashboard.
 - v1.9.0: Added the waveform, the playhead, the loops and the cues to the deck cards.
   Added the OSC state to the Output Status panel.
 - v1.10.0: Added the phrase lane under the waveform and the mixer knobs between the decks.
+- v1.11.0: Added an on/off switch for all MIDI notes, for all MIDI CCs and for each note and CC.
+  Added a tooltip to each setting.
 
 ---
 
