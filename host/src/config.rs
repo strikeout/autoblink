@@ -109,9 +109,11 @@ impl Default for MidiConfig {
 
 // ── Note config ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct NoteConfig {
+    /// Send MIDI notes. When false, the app sends no note.
+    pub enabled: bool,
     /// MIDI channel (0-indexed, 0-15).
     pub channel: u8,
     /// Note number fired on every beat.
@@ -125,26 +127,55 @@ pub struct NoteConfig {
     /// The note that pulses when the bass is cut on all live XDJ-AZ mixer channels.
     /// The note pulses again when the bass comes back.
     pub no_bass: u8,
+    /// The switch of each note. A note that is off is not sent.
+    pub send: NoteSend,
+}
+
+/// One switch for each note of [`NoteConfig`].
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct NoteSend {
+    pub beat: bool,
+    pub downbeat: bool,
+    pub phrase_change: bool,
+    pub phrase_kind: bool,
+    pub no_bass: bool,
+}
+
+impl Default for NoteSend {
+    fn default() -> Self {
+        Self {
+            beat: true,
+            downbeat: true,
+            phrase_change: true,
+            phrase_kind: true,
+            no_bass: true,
+        }
+    }
 }
 
 impl Default for NoteConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             channel: 9,
             beat: 36,
             downbeat: 37,
             phrase_change: 38,
             phrase_base: 40,
             no_bass: 39,
+            send: NoteSend::default(),
         }
     }
 }
 
 // ── CC config ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct CcConfig {
+    /// Send MIDI CC messages. When false, the app sends no CC.
+    pub enabled: bool,
     pub channel: u8,
     pub bpm_coarse: u8,
     pub bpm_fine: u8,
@@ -160,11 +191,49 @@ pub struct CcConfig {
     pub phrase_progress: u8,
     /// Beats left in the current phrase of the master deck (capped at 127).
     pub phrase_beats_left: u8,
+    /// The switch of each CC. A CC that is off is not sent.
+    pub send: CcSend,
+}
+
+/// One switch for each CC of [`CcConfig`].
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct CcSend {
+    pub bpm_coarse: bool,
+    pub bpm_fine: bool,
+    pub pitch: bool,
+    pub bar_phase: bool,
+    pub beat_phase: bool,
+    pub playing: bool,
+    pub master_deck: bool,
+    pub phrase_16: bool,
+    pub phrase_kind: bool,
+    pub phrase_progress: bool,
+    pub phrase_beats_left: bool,
+}
+
+impl Default for CcSend {
+    fn default() -> Self {
+        Self {
+            bpm_coarse: true,
+            bpm_fine: true,
+            pitch: true,
+            bar_phase: true,
+            beat_phase: true,
+            playing: true,
+            master_deck: true,
+            phrase_16: true,
+            phrase_kind: true,
+            phrase_progress: true,
+            phrase_beats_left: true,
+        }
+    }
 }
 
 impl Default for CcConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             channel: 0,
             bpm_coarse: 1,
             bpm_fine: 33,
@@ -177,6 +246,7 @@ impl Default for CcConfig {
             phrase_kind: 20,
             phrase_progress: 21,
             phrase_beats_left: 22,
+            send: CcSend::default(),
         }
     }
 }

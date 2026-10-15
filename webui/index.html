@@ -112,6 +112,8 @@ details.panel:not([open])>summary h2{margin-bottom:0}
 button{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 7px;font:inherit;cursor:pointer}
 button:hover{border-color:var(--accent)}
 button.val{min-width:44px}
+button.sw{min-width:22px;padding:1px 4px}
+.set.off label,.set.off input{opacity:.45}
 input.num{width:58px;background:#0d0d16;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 5px;text-align:right;font-size:12px}
 input.num:focus{outline:none;border-color:var(--accent)}
 input.num.bad{border-color:var(--danger)}
@@ -184,9 +186,9 @@ input.num.text{width:150px;text-align:left}
   <details id="p-settings" class="panel wide" data-cap="settings" open>
     <summary><h2>Settings</h2></summary>
     <div id="sgrid" class="sgrid">
-      <div id="set-input" class="group"><div class="section">Input</div></div>
+      <div id="set-input" class="group"><div class="section" title="Where the app gets the tempo and the beat.">Input</div></div>
       <div class="group" data-cap="ports">
-        <div class="section">Output Port <button id="rescan">Rescan</button></div>
+        <div class="section" title="The MIDI port that gets all MIDI output. Click a port to use it.">Output Port <button id="rescan" title="Find the MIDI ports again.">Rescan</button></div>
         <div id="ports" class="ports"></div>
       </div>
     </div>
@@ -513,6 +515,48 @@ function stripFor(i, c) {
   return st.el;
 }
 
+// The tooltip of each settings row and section, by label.
+const HELP = {
+  'MIDI Clock': 'MIDI clock: 24 pulses per beat, with Start and Stop. A DAW or a drum machine can follow it.',
+  'MIDI Notes': 'Short notes on beats and phrase events. Use them to trigger clips, samples or lights.',
+  'MIDI CC': 'Control Change messages with the tempo, the phase and the state of the master deck.',
+  'MIDI Timecode': 'MIDI Timecode (MTC) for apps that follow a time position.',
+  'OSC Output': 'Open Sound Control over UDP to lighting desks and media servers.',
+  'Network Interface': 'The network port that gets the Pro DJ Link packets from the players. Click to select the next port.',
+  'Source Mode': 'The source of the tempo and the beat. Auto uses Ableton Link when a Link peer is present. If not, it uses Pro DJ Link.',
+  'Device Number': 'The player number (1–15) of this app on Pro DJ Link. Use a number that no player uses. A change applies after a restart.',
+  'Clock Enabled': 'Sends MIDI clock, Start and Stop on the output port.',
+  'Clock Loop Sync': 'Locks the clock to the phrases of the master deck. After a resume, the clock waits for the next phrase start before it sends Start.',
+  'BPM Smoothing': 'The time in ms in which the clock follows a tempo change. A higher value gives less jitter but a slower response. 0 follows at once.',
+  'Latency Comp': 'Moves the clock pulses later (positive) or earlier (negative), in ms. Use it to align the clock with the sound.',
+  'Phrase Lock Stable': 'The number of bars between two full resyncs of the clock to the beat.',
+  'Notes Enabled': 'Sends the MIDI notes below. When off, the app sends no note.',
+  'Note Channel': 'The MIDI channel (1–16) of all notes.',
+  'Beat Note': 'The note on each beat. The velocity is 127 on beat 1, 64 on beat 3 and 80 on beats 2 and 4.',
+  'Downbeat Note': 'The note on beat 1 of each bar.',
+  'Phrase Change Note': 'The note when the phrase of the master deck changes.',
+  'Phrase Kind Base Note': 'The first note of the phrase kinds. At each new phrase, the app sends this note plus the kind code: Intro 0, Verse 1–6, Bridge 7, Chorus 8, Up 9, Down 10, Outro 11. The maximum is 116.',
+  'No Bass Note': 'The note when the bass is cut on all live XDJ-AZ mixer channels. The note comes again when the bass comes back.',
+  'CC Enabled': 'Sends the MIDI CC messages below. When off, the app sends no CC.',
+  'CC Channel': 'The MIDI channel (1–16) of all CC messages.',
+  'BPM Coarse CC': 'The tempo in whole BPM: 60 BPM is 0 and 187 BPM is 127.',
+  'BPM Fine CC': 'The fraction of the tempo: .00 BPM is 0 and .99 BPM is 127.',
+  'Pitch CC': 'The pitch of the master deck: −10 % is 0, 0 % is 64 and +10 % is 127.',
+  'Bar Phase CC': 'The position in the bar: 0 on beat 1, up to 127 at the end of the bar.',
+  'Beat Phase CC': 'The position in the beat: 0 on the beat, up to 127 at the end of the beat.',
+  'Playing CC': '127 when the master deck plays, 0 when it stops.',
+  'Master Deck CC': 'The player number of the tempo master. 0 is no master.',
+  'Phrase 16 CC': 'Sends 0 at the start of each 16-beat block.',
+  'Phrase Kind CC': 'The phrase kind of the master deck times 10: Intro 0, Verse 10–60, Bridge 70, Chorus 80, Up 90, Down 100, Outro 110.',
+  'Phrase Progress CC': 'The position in the current phrase of the master deck: 0 at the start, 127 at the end.',
+  'Beats Left CC': 'The number of beats to the end of the current phrase of the master deck. The maximum is 127.',
+  'MTC Enabled': 'Sends MIDI Timecode on the output port.',
+  'MTC Frame Rate': 'The MTC frame rate: 24, 25 or 30 fps. The receiver must use the same rate.',
+  'OSC Enabled': 'Sends OSC messages to the targets below.',
+  'OSC Targets': 'The receivers as IP:port, with commas between them. A broadcast address is permitted.',
+  'OSC Prefix': 'The text before each OSC address. For example, /xdj gives /xdj/beat. It must start with /.',
+};
+
 // Settings rows are built once per index, then updated in place, so that an input keeps its focus.
 // Each section is a group that the columns of #sgrid do not split.
 const setRows = new Map();
@@ -525,12 +569,15 @@ function onSettings(m) {
       if (it.idx >= MIDI_SETTINGS_START) {
         if (!group || (it.section && it.section !== groupName)) {
           groupName = it.section || 'MIDI';
-          group = h('div', 'group', h('div', 'section', groupName));
+          const head = h('div', 'section', groupName);
+          head.title = HELP[groupName] || '';
+          group = h('div', 'group', head);
           $('sgrid').append(group);
         }
         parent = group;
       }
       row = buildSetting(it);
+      row.el.title = HELP[it.label] || '';
       setRows.set(it.idx, row);
       parent.append(row.el);
     }
@@ -543,7 +590,6 @@ function buildSetting(it) {
   if (it.kind === 'number' || it.kind === 'text') {
     const input = h('input', it.kind === 'text' ? 'num text' : 'num');
     input.inputMode = it.kind === 'text' ? 'text' : 'numeric';
-    input.title = it.label;
     const commit = () => {
       const value = input.value.trim();
       if (value === input.dataset.raw) return;
@@ -557,7 +603,15 @@ function buildSetting(it) {
     });
     input.addEventListener('change', commit);
     const shown = h('span', 'val num');
-    const parts = [label, shown];
+    const parts = [label];
+    // A note or CC has a switch. The server sends its state as "on".
+    const sw = 'on' in it ? h('button', 'sw', '') : null;
+    if (sw) {
+      sw.title = 'Click to switch this message on or off.';
+      sw.addEventListener('click', () => send({ type: 'cycle', idx: it.idx, dir: 1 }));
+      parts.push(sw);
+    }
+    parts.push(shown);
     if (it.step) {
       for (const [text, dir] of [['◀', -1], ['▶', 1]]) {
         const b = h('button', null, text);
@@ -566,9 +620,11 @@ function buildSetting(it) {
       }
     }
     parts.push(input);
+    const el = h('div', 'set', ...parts);
     return {
-      el: h('div', 'set', ...parts),
+      el,
       update(it) {
+        if (sw) { sw.textContent = it.on ? '✓' : '✗'; el.classList.toggle('off', !it.on); }
         input.dataset.raw = it.raw ?? '';
         // The shown value carries the unit; the input holds the raw number.
         shown.textContent = it.value === it.raw ? '' : it.value;

@@ -71,6 +71,9 @@ phrase_lock_stable_beats = 4
 # ── MIDI Note mapping ────────────────────────────────────────────────────────
 
 [midi.notes]
+# Send MIDI notes. When false, the app sends no note.
+enabled = true
+
 # MIDI channel for note messages (0-indexed, so 0 = channel 1).
 channel = 10   # channel 10 — traditional drum/trigger channel
 
@@ -96,9 +99,21 @@ phrase_base = 40
 # The app reads the mixer from the XDJ-AZ USB MIDI port.
 no_bass = 39
 
+# The switch of each note. A note that is set to false is not sent.
+# The web UI shows each switch as ✓ or ✗ next to the note number.
+[midi.notes.send]
+beat = true
+downbeat = true
+phrase_change = true
+phrase_kind = true     # the notes from phrase_base
+no_bass = true
+
 # ── MIDI CC mapping ──────────────────────────────────────────────────────────
 
 [midi.cc]
+# Send MIDI CC messages. When false, the app sends no CC.
+enabled = true
+
 # MIDI channel for CC messages (0-indexed).
 channel = 0   # channel 1
 
@@ -138,6 +153,21 @@ phrase_progress = 21
 
 # Beats left until the next phrase starts (capped at 127).
 phrase_beats_left = 22
+
+# The switch of each CC. A CC that is set to false is not sent.
+# When a CC comes on again, the app sends its current value.
+[midi.cc.send]
+bpm_coarse = true
+bpm_fine = true
+pitch = true
+bar_phase = true
+beat_phase = true
+playing = true
+master_deck = true
+phrase_16 = true
+phrase_kind = true
+phrase_progress = true
+phrase_beats_left = true
 
 # ── MIDI Program Change ──────────────────────────────────────────────────────
 
