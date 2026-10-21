@@ -62,7 +62,8 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP), `prolink.rs` (UDP receive), `webui.rs` (page, protocol v1), `settings.rs` (NVS) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP), `prolink.rs` (UDP receive), `midi.rs` (UART MIDI out), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1), `settings.rs` (NVS) |
+| `crates/xdj-core-midi` | MIDI logic of the firmware, host-testable | `clock.rs`, `mapper.rs`, `settings.rs` (host setting indices) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
@@ -142,13 +143,17 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 | GPIO18, 19, 21, 22, 23, 25, 26, 27 | RMII and MDIO to the LAN8720 (PHY address 1) |
 | IO32 | Beat LED. It pulses for 30 ms on each beat of the master deck. |
 | IO33 | Bar LED. It pulses for 120 ms on beat 1. |
-| IO17 | Reserved for the DMX output (UART2 TX) |
+| IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
+| IO35 | UART2 RX. It is not used, but the UART driver needs a receive pin. |
+| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. Only with `--features dmx`. |
+| IO36 | UART1 RX. It is not used, but the UART driver needs a receive pin. |
 
 Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the flash to 1.8 V and does not start.
 
 ### Network
 
-- The firmware starts its own WiFi network `xdj-clock-XXXX` (the last 2 bytes of the MAC address). The default password is `xdjclock123`. The web page is at http://192.168.71.1.
+- The firmware starts its own WiFi network `xdj-clock-XXXX` (the last 2 bytes of the MAC address). The default password is `xdjclock123`. The web page is at http://192.168.1.1.
+- Do not connect the Ethernet port to a 192.168.1.x network. The WiFi network uses that subnet, and the firmware can then send a reply out on the wrong port. The firmware logs a warning for this case.
 - Ethernet gets its address from DHCP. Without a DHCP server (a direct cable to the XDJ-AZ), it takes a 169.254.x.x address.
 - The firmware receives the keepalive (port 50000) and beat (port 50001) broadcasts. It does not join the network as a virtual CDJ. The master is the deck that sent the last beat, until that deck stops.
 - The WebSocket handshake completes before the firmware can read the `Origin` header. When the Origin check fails, the firmware closes the connection and sends no data. It cannot reply with 403.
@@ -156,7 +161,10 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 ## Refactor Context (for future sessions)
 
 - `crates/xdj-core-prolink` holds a copy of the protocol constants and the packet parsing from `host/src/prolink/`. The host does not use the shared crate yet.
-- The ESP32 firmware has no MIDI output and no DMX output yet. The emulator still emulates the old MIDI firmware.
+- The ESP32 MIDI output follows the host rules (`xdj-core-midi`). The firmware receives only the keepalive and beat packets. Thus it has no phrase notes, no phrase CCs, no No Bass note, no MTC and no OSC. Without status packets, a deck plays while its beats arrive.
+- The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
+- The DMX output (`--features dmx`) flashes channel 1 on each beat. It has no settings yet.
+- The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `xdj-core-midi` yet.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`
 - `host/src/state.rs` and `host/src/main.rs` are the highest-coupling files in the host crate
 - Adding a new architecture target should mirror the `esp32`/`esp32-emulator` split:

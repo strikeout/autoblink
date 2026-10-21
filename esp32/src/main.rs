@@ -1,8 +1,12 @@
 //! xdj-clock firmware for the WT32-ETH01 (ESP32 + LAN8720 Ethernet).
 //!
-//! The Ethernet port receives the Pro DJ Link beats. Two LEDs show the beats. The firmware
-//! serves the web page on its own WiFi network at http://192.168.71.1.
+//! The Ethernet port receives the Pro DJ Link beats. The MIDI output on IO17 sends the clock,
+//! the beat notes and the CCs. Two LEDs show the beats. The firmware serves the web page on its
+//! own WiFi network at http://192.168.1.1.
 
+#[cfg(feature = "dmx")]
+mod dmx;
+mod midi;
 mod net;
 mod prolink;
 mod settings;
@@ -19,6 +23,7 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys;
 use xdj_core_prolink::Tracker;
 
+use crate::midi::MidiStatus;
 use crate::net::{EthPins, AP_IP};
 use crate::settings::Settings;
 use crate::webui::Clients;
@@ -28,12 +33,17 @@ pub struct State {
     pub tracker: Mutex<Tracker>,
     /// The Ethernet address, for the "iface" field of the status.
     pub iface: Mutex<String>,
+    pub midi: Mutex<MidiStatus>,
     start: Instant,
 }
 
 impl State {
     pub fn now_ms(&self) -> u64 {
         self.start.elapsed().as_millis() as u64
+    }
+
+    pub fn now_us(&self) -> u64 {
+        self.start.elapsed().as_micros() as u64
     }
 }
 
@@ -74,9 +84,11 @@ fn main() -> anyhow::Result<()> {
     let state = Arc::new(State {
         tracker: Mutex::new(Tracker::new()),
         iface: Mutex::new("Ethernet: no address".into()),
+        midi: Mutex::new(MidiStatus::default()),
         start: Instant::now(),
     });
     let clients = Arc::new(Clients::default());
+    let midi_beats = midi::start(p.uart2, p.pins.gpio17, p.pins.gpio35, state.clone(), settings.midi.clone())?;
     let _server = webui::start(state.clone(), clients.clone(), Arc::new(Mutex::new(settings)))?;
 
     // IO32 pulses on each beat of the master deck, IO33 on the first beat of the bar.
@@ -101,9 +113,15 @@ fn main() -> anyhow::Result<()> {
             }
         })?;
 
-    prolink::spawn(state.clone(), move |device, beat| {
-        let _ = beat_tx.send(beat);
-        clients.broadcast(&webui::beat_message(device, beat));
+    #[cfg(feature = "dmx")]
+    let dmx = dmx::Dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36)?;
+
+    prolink::spawn(state.clone(), move |beat| {
+        let _ = beat_tx.send(beat.beat_in_bar);
+        #[cfg(feature = "dmx")]
+        dmx.beat();
+        clients.broadcast(&webui::beat_message(beat.device, beat.beat_in_bar));
+        let _ = midi_beats.send(beat);
     })?;
 
     // Log each change of the Ethernet address. A cable to the XDJ-AZ without a DHCP server
@@ -117,7 +135,10 @@ fn main() -> anyhow::Result<()> {
                 Some(ip) => {
                     log::info!("Ethernet address: {ip}");
                     if ip.octets()[..3] == AP_IP.octets()[..3] {
-                        log::warn!("The Ethernet network uses 192.168.71.x, the same as the WiFi network");
+                        log::warn!(
+                            "The Ethernet network uses the subnet of the WiFi network ({AP_IP}/24). \
+                             Replies can go out on the wrong port."
+                        );
                     }
                 }
                 None => log::info!("Ethernet has no address"),

@@ -1,7 +1,7 @@
 //! Serves `webui/index.html` and speaks WebSocket protocol v1 (see `host/src/web/mod.rs`).
 //!
-//! The firmware sends the capabilities `beat`, `decks` and `settings`. The page hides the
-//! sections of the other capabilities.
+//! The firmware sends the capabilities `beat`, `decks`, `output` and `settings`. The page hides
+//! the sections of the other capabilities.
 
 use std::ffi::CString;
 use std::sync::{Arc, Mutex};
@@ -69,6 +69,7 @@ pub fn start(
         })?;
     }
 
+    let midi_cfg = settings.lock().unwrap().midi.clone();
     let ws_clients = clients.clone();
     server.ws_handler("/ws", None, move |ws| -> Result<(), EspError> {
         if let EspHttpWsConnection::New(_, req) = ws {
@@ -85,7 +86,7 @@ pub fn start(
                 "proto": 1,
                 "version": env!("CARGO_PKG_VERSION"),
                 "device": "esp32",
-                "caps": ["beat", "decks", "settings"],
+                "caps": ["beat", "decks", "output", "settings"],
             });
             ws.send(FrameType::Text(false), hello.to_string().as_bytes())?;
             let msg = settings.lock().unwrap().message().to_string();
@@ -120,7 +121,8 @@ pub fn start(
             let now = state.now_ms();
             state.tracker.lock().unwrap().expire(now);
             if !clients.is_empty() {
-                clients.broadcast(&status_message(&state).to_string());
+                let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
+                clients.broadcast(&status_message(&state, clock_enabled).to_string());
             }
         })?;
 
@@ -134,12 +136,20 @@ fn command(buf: &[u8], settings: &Mutex<Settings>) -> Value {
         return error("The command is not valid JSON");
     };
     match cmd["type"].as_str() {
-        Some("set") => {
-            let (Some(idx), Some(value)) = (cmd["idx"].as_u64(), cmd["value"].as_str()) else {
-                return error("A set command needs idx and value");
+        Some(kind @ ("set" | "cycle")) => {
+            let Some(idx) = cmd["idx"].as_u64().map(|i| i as usize) else {
+                return error("The command needs idx");
             };
             let settings = settings.lock().unwrap();
-            match settings.set(idx as usize, value.trim()) {
+            let result = if kind == "set" {
+                match cmd["value"].as_str() {
+                    Some(value) => settings.set(idx, value.trim()),
+                    None => Err("A set command needs a value".into()),
+                }
+            } else {
+                settings.cycle(idx, if cmd["dir"].as_i64() == Some(-1) { -1 } else { 1 })
+            };
+            match result {
                 Ok(()) => settings.message(),
                 Err(text) => error(&text),
             }
@@ -149,8 +159,9 @@ fn command(buf: &[u8], settings: &Mutex<Settings>) -> Value {
     }
 }
 
-fn status_message(state: &State) -> Value {
+fn status_message(state: &State, clock_enabled: bool) -> Value {
     let now = state.now_ms();
+    let midi = state.midi.lock().unwrap();
     let tracker = state.tracker.lock().unwrap();
     let master = tracker.master();
     let decks: Vec<Value> = tracker
@@ -187,8 +198,26 @@ fn status_message(state: &State) -> Value {
         "decks": decks,
         "link_peers": 0,
         "link_active": false,
-        "clock": null,
-        "output": null,
+        "clock": {
+            "out16": midi.out16,
+            "state": midi.clock_state,
+            "delta_ms": midi.delta_ms,
+        },
+        "output": {
+            "port": "UART2 TX (IO17)",
+            "connected": true,
+            "dropped": 0,
+            "clock_enabled": clock_enabled,
+            "pulses": midi.pulses,
+            "notes": midi.notes,
+            "ccs": midi.ccs,
+            // Like the host: a note shows for 200 ms, a CC for 300 ms.
+            "last_note": midi.last_note.filter(|(_, t)| t.elapsed().as_millis() < 200).map(|(n, _)| n),
+            "last_cc": midi.last_cc.filter(|(_, _, t)| t.elapsed().as_millis() < 300).map(|(n, v, _)| [n, v]),
+            "mtc": null,
+            "mtc_qf": 0,
+            "mtc_full": 0,
+        },
         "mixer": null,
     })
 }
