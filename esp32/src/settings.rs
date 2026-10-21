@@ -1,7 +1,13 @@
-//! The device settings that the web page can change. NVS keeps them across a restart.
+//! The settings that the web page can change. NVS keeps them across a restart.
+//!
+//! The MIDI rows use the host indices (`xdj_core_midi::settings`). The device rows use 100 and
+//! up, so that they do not collide with the host settings.
+
+use std::sync::{Arc, Mutex};
 
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use serde_json::{json, Value};
+use xdj_core_midi::{settings as midi_settings, MidiConfig};
 
 const IDX_SSID: usize = 100;
 const IDX_PASSWORD: usize = 101;
@@ -10,11 +16,21 @@ const DEFAULT_PASSWORD: &str = "xdjclock123";
 pub struct Settings {
     nvs: EspNvs<NvsDefault>,
     default_ssid: String,
+    /// The MIDI thread reads this configuration.
+    pub midi: Arc<Mutex<MidiConfig>>,
 }
 
 impl Settings {
     pub fn new(partition: EspDefaultNvsPartition, default_ssid: String) -> anyhow::Result<Self> {
-        Ok(Self { nvs: EspNvs::new(partition, "xdj", true)?, default_ssid })
+        let nvs = EspNvs::new(partition, "xdj", true)?;
+        let mut buf = vec![0u8; 2048];
+        let midi = nvs
+            .get_str("midi", &mut buf)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        Ok(Self { nvs, default_ssid, midi: Arc::new(Mutex::new(midi)) })
     }
 
     pub fn ssid(&self) -> String {
@@ -25,37 +41,49 @@ impl Settings {
         self.get("pass").unwrap_or_else(|| DEFAULT_PASSWORD.into())
     }
 
-    /// Builds the protocol v1 settings message. The indices start at 100, so that they do not
-    /// collide with the host settings.
+    /// Builds the protocol v1 settings message.
     pub fn message(&self) -> Value {
         let ssid = self.ssid();
-        json!({
-            "type": "settings",
-            "items": [
-                {"idx": IDX_SSID, "label": "WiFi name (applies after restart)", "section": "Device",
-                 "kind": "text", "value": ssid, "raw": ssid, "step": false},
-                // The page does not show the password. A new value replaces it.
-                {"idx": IDX_PASSWORD, "label": "WiFi password (applies after restart)", "section": "Device",
-                 "kind": "text", "value": "••••••••", "raw": null, "step": false},
-            ],
-        })
+        let mut items = serde_json::to_value(midi_settings::items(&self.midi.lock().unwrap()))
+            .unwrap_or_default();
+        if let Value::Array(rows) = &mut items {
+            rows.push(json!({"idx": IDX_SSID, "label": "WiFi name (applies after restart)",
+                "section": "Device", "kind": "text", "value": ssid, "raw": ssid, "step": false}));
+            // The page does not show the password. A new value replaces it.
+            rows.push(json!({"idx": IDX_PASSWORD, "label": "WiFi password (applies after restart)",
+                "section": "Device", "kind": "text", "value": "••••••••", "raw": null, "step": false}));
+        }
+        json!({"type": "settings", "items": items})
     }
 
-    /// Stores a setting. Returns the error text for the page when the value is not valid.
+    /// Stores a typed value. Returns the error text for the page when the value is not valid.
     pub fn set(&self, idx: usize, value: &str) -> Result<(), String> {
-        let (key, ok) = match idx {
-            IDX_SSID => ("ssid", (1..=32).contains(&value.len())),
-            IDX_PASSWORD => ("pass", (8..=63).contains(&value.len()) && value.is_ascii()),
-            _ => return Err(format!("Setting {idx} is not on this device")),
-        };
-        if !ok {
-            return Err(match idx {
-                IDX_SSID => "The WiFi name must have 1 to 32 bytes".into(),
-                _ => "The WiFi password must have 8 to 63 ASCII characters".into(),
-            });
+        match idx {
+            IDX_SSID if (1..=32).contains(&value.len()) => self.put("ssid", value),
+            IDX_SSID => Err("The WiFi name must have 1 to 32 bytes".into()),
+            IDX_PASSWORD if (8..=63).contains(&value.len()) && value.is_ascii() => self.put("pass", value),
+            IDX_PASSWORD => Err("The WiFi password must have 8 to 63 ASCII characters".into()),
+            _ => self.change_midi(|cfg| midi_settings::set(cfg, idx, value)),
         }
+    }
+
+    /// Flips a toggle or a switch, or steps a number.
+    pub fn cycle(&self, idx: usize, dir: i8) -> Result<(), String> {
+        self.change_midi(|cfg| midi_settings::cycle(cfg, idx, dir))
+    }
+
+    fn change_midi(&self, f: impl FnOnce(&mut MidiConfig) -> Result<(), String>) -> Result<(), String> {
+        let json = {
+            let mut cfg = self.midi.lock().unwrap();
+            f(&mut cfg)?;
+            serde_json::to_string(&*cfg).map_err(|e| e.to_string())?
+        };
+        self.nvs.set_str("midi", &json).map_err(|e| format!("Cannot save the setting: {e}"))
+    }
+
+    fn put(&self, key: &str, value: &str) -> Result<(), String> {
         self.nvs.set_str(key, value).map_err(|e| format!("Cannot save the setting: {e}"))?;
-        log::info!("Setting {idx} changed. It applies after a restart.");
+        log::info!("Setting {key} changed. It applies after a restart.");
         Ok(())
     }
 

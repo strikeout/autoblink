@@ -17,3 +17,6 @@ CONFIG_LWIP_AUTOIP_TRIES=3
 
 # The WT32-ETH01 has 4 MB of flash.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# A 1 ms tick lets the MIDI thread sleep until 1 ms before the next clock pulse.
+CONFIG_FREERTOS_HZ=1000

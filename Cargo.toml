@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "host",
   "esp32-emulator",
+  "crates/xdj-core-midi",
   "crates/xdj-core-prolink",
 ]
 
@@ -11,7 +12,7 @@ members = [
 exclude = ["esp32"]
 
 [workspace.package]
-version = "1.12.0"
+version = "1.13.0"
 edition = "2021"
 license = "Proprietary"
 authors = ["xdj-midi team"]

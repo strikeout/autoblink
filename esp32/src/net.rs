@@ -12,8 +12,8 @@ use esp_idf_svc::netif::{EspNetif, NetifConfiguration, NetifStack};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{AccessPointConfiguration, AuthMethod, Configuration, EspWifi, WifiDriver};
 
-/// The address of the firmware on its own WiFi network. The web page is at http://192.168.71.1.
-pub const AP_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 71, 1);
+/// The address of the firmware on its own WiFi network. The web page is at http://192.168.1.1.
+pub const AP_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
 
 /// The pins of the LAN8720 PHY on the WT32-ETH01.
 pub struct EthPins {
@@ -65,7 +65,7 @@ pub fn start_ethernet(
     Ok((eth, osc))
 }
 
-/// Starts the WiFi access point at `AP_IP`. Its DHCP server gives the clients 192.168.71.2 and up.
+/// Starts the WiFi access point at `AP_IP`. Its DHCP server gives the clients 192.168.1.2 and up.
 pub fn start_access_point(
     modem: Modem<'static>,
     sysloop: EspSystemEventLoop,

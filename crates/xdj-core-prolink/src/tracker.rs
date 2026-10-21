@@ -31,9 +31,19 @@ pub struct Deck {
 impl Deck {
     /// Returns true when the next beat is not late by more than one beat period.
     pub fn is_playing(&self, now_ms: u64) -> bool {
-        let period = if self.bpm > 0.0 { 60_000.0 / self.bpm } else { 1_000.0 };
         self.last_beat_ms
-            .is_some_and(|t| now_ms.saturating_sub(t) as f64 <= 2.0 * period)
+            .is_some_and(|t| now_ms.saturating_sub(t) as f64 <= 2.0 * self.period_ms())
+    }
+
+    /// The position in the current beat, 0.0 to 1.0. It stays at 1.0 when the next beat is late.
+    pub fn beat_phase(&self, now_ms: u64) -> f64 {
+        self.last_beat_ms.map_or(0.0, |t| {
+            (now_ms.saturating_sub(t) as f64 / self.period_ms()).min(1.0)
+        })
+    }
+
+    fn period_ms(&self) -> f64 {
+        if self.bpm > 0.0 { 60_000.0 / self.bpm } else { 1_000.0 }
     }
 }
 
@@ -159,6 +169,8 @@ mod tests {
         let m = t.master().unwrap();
         assert_eq!((m.num, m.beat, m.phrase16), (2, 1, 1));
         assert!(m.is_playing(0));
+        assert_eq!(m.beat_phase(250), 0.5);
+        assert_eq!(m.beat_phase(900), 1.0);
     }
 
     #[test]

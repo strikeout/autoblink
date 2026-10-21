@@ -9,13 +9,13 @@ use std::thread;
 
 use xdj_core_prolink::{parse_beat, parse_keepalive, PORT_BEAT, PORT_DISCOVERY};
 
+use crate::midi::Beat;
 use crate::State;
 
-/// Starts one receive thread for each port. `on_master_beat` gets the device and the beat in
-/// the bar (1 to 4) for each beat of the master deck.
+/// Starts one receive thread for each port. `on_master_beat` gets each beat of the master deck.
 pub fn spawn(
     state: Arc<State>,
-    on_master_beat: impl Fn(u8, u8) + Send + 'static,
+    on_master_beat: impl Fn(Beat) + Send + 'static,
 ) -> anyhow::Result<()> {
     let discovery = UdpSocket::bind(("0.0.0.0", PORT_DISCOVERY))?;
     let beats = UdpSocket::bind(("0.0.0.0", PORT_BEAT))?;
@@ -43,13 +43,19 @@ pub fn spawn(
             loop {
                 let Ok((len, _)) = beats.recv_from(&mut buf) else { continue };
                 let Some(beat) = parse_beat(&buf[..len]) else { continue };
-                let now = state.now_ms();
+                let at_us = state.now_us();
+                let now = at_us / 1000;
                 let is_master = state.tracker.lock().unwrap().on_beat(&beat, now);
                 if is_master {
                     if beat.beat_in_bar == 1 {
                         log::info!("Bar: deck {} at {:.2} BPM", beat.device_number, beat.effective_bpm);
                     }
-                    on_master_beat(beat.device_number, beat.beat_in_bar);
+                    on_master_beat(Beat {
+                        device: beat.device_number,
+                        beat_in_bar: beat.beat_in_bar,
+                        bpm: beat.effective_bpm,
+                        at_us,
+                    });
                 }
             }
         })?;

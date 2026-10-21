@@ -33,6 +33,10 @@ jobs:
             esp32/target
           key: esp32-${{ hashFiles('esp32/Cargo.lock', 'esp32/.cargo/config.toml', 'esp32/sdkconfig.defaults') }}
 
+      - name: Build with the DMX output
+        working-directory: esp32
+        run: cargo build --release --locked --features dmx
+
       - name: Build
         working-directory: esp32
         run: cargo build --release --locked
