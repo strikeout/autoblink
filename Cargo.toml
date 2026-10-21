@@ -2,22 +2,16 @@
 resolver = "2"
 members = [
   "host",
-  "esp32",
   "esp32-emulator",
   "crates/xdj-core-prolink",
 ]
 
-# `xdj-clock-esp32` requires an ESP-IDF toolchain/environment; keep it as a
-# workspace member but exclude it from the default test/build set so
-# `cargo test --locked` remains runnable on non-ESP32 hosts.
-default-members = [
-  "host",
-  "esp32-emulator",
-  "crates/xdj-core-prolink",
-]
+# The firmware builds with the Xtensa toolchain and its own target. It has its own
+# Cargo.lock and its own target directory in `esp32/`.
+exclude = ["esp32"]
 
 [workspace.package]
-version = "1.11.0"
+version = "1.12.0"
 edition = "2021"
 license = "Proprietary"
 authors = ["xdj-midi team"]

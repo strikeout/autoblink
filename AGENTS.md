@@ -3,6 +3,7 @@
 ## Workspace
 
 - **3 crates**: `xdj-clock-host` (desktop app), `xdj-clock-esp32` (firmware), `xdj-clock-esp32-emulator` (native emulator)
+- The root workspace excludes `esp32`. The firmware has its own `Cargo.lock`, toolchain (`esp`) and target directory.
 - **Root `Cargo.toml`** defines workspace members and patches `rusty_link` from `vendor/rusty_link`
 - Package version is set once at workspace level (`[workspace.package]`)
 
@@ -18,9 +19,10 @@ cargo run -p xdj-clock-host -- --list-midi
 cargo run -p xdj-clock-host -- --list-interfaces
 cargo build -p xdj-clock-host --release
 
-# ESP32 firmware (requires ESP-IDF environment)
-. /path/to/esp-idf/export.sh
-cargo build --release -p xdj-clock-esp32
+# ESP32 firmware for the WT32-ETH01 (see "ESP32 Build Requirements")
+. ~/export-esp.sh
+cd esp32 && cargo build --release
+cd esp32 && cargo run --release   # flashes the board and opens the serial monitor
 
 # Emulator (Web dashboard at http://localhost:8080)
 cargo run -p xdj-clock-esp32-emulator
@@ -60,7 +62,7 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware, bare metal | `prolink.rs` (different impl), `midi.rs` (UART), `webui.rs` |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP), `prolink.rs` (UDP receive), `webui.rs` (page, protocol v1), `settings.rs` (NVS) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
@@ -100,12 +102,12 @@ Plus `pub fn interface_priority()` for network interface ranking.
 
 All have `#[cfg(not(windows))]` guards around reuse_port calls.
 
-**ESP32 vs host**: ESP32 uses `smoltcp` instead of `std::net::UdpSocket` and has no `tokio` runtime. Its `prolink.rs` re-implements protocol concepts from the host but with a different network stack.
+**ESP32 vs host**: The ESP32 uses `std::net::UdpSocket` on the ESP-IDF network stack. It has no `tokio` runtime; each task is a `std::thread`. It parses packets with `xdj-core-prolink`, and `xdj_core_prolink::Tracker` keeps the deck and master state. The host does not use the `Tracker` yet.
 
 ## Toolchain & Dependencies
 
-- **Async runtime**: tokio (multi-threaded) on host/emulator; no-std + `embassy-sync` on ESP32
-- **Error handling**: `anyhow::Result` on host/emulator; `anyhow` optional on ESP32
+- **Async runtime**: tokio (multi-threaded) on host/emulator; `std::thread` on ESP32
+- **Error handling**: `anyhow::Result` on host, emulator and ESP32
 - **Logging**: `tracing` + `tracing-subscriber` on host; `log` on ESP32
 - **State sync**: `parking_lot::RwLock` (not tokio's)
 - **MIDI**: `midir` on host (no ESP32 equivalent)
@@ -116,22 +118,45 @@ All have `#[cfg(not(windows))]` guards around reuse_port calls.
 
 - **`cargo test --locked`** runs tests across all crates
 - No dedicated test infrastructure found (no `tests/` directory, no fixtures)
-- ESP32 CI runs a QEMU smoke test in `esp32-emulator-test` job
+- ESP32 CI (`esp32-ci.yml`) builds the firmware when a change touches `esp32/`, `crates/` or `webui/`. No test runs on the device.
 - Coverage gaps: packet parsing, state machine transitions, BPM smoothing, MIDI clock transport
 
 ## ESP32 Build Requirements
 
-1. Source ESP-IDF environment: `. /path/to/esp-idf/export.sh`
-2. Install Rust target: `rustup target add riscv32imc-esp-elf`
-3. Build with: `cargo build --release --locked -p xdj-clock-esp32`
-4. Output: `esp32/target/riscv32imc-esp-elf/release/xdj-clock-esp32`
+The firmware is for the WT32-ETH01 board: a classic ESP32 (Xtensa) with a LAN8720 Ethernet PHY.
 
-ESP32 CI uses the `espressif/idf:latest` Docker container and builds on the `esp32` branch.
+1. Install the toolchain once: `espup install`, then `cargo install espflash ldproxy`.
+2. In each new shell, run `. ~/export-esp.sh`.
+3. Build in `esp32/`: `cargo build --release`. The first build downloads ESP-IDF v5.5.3 to `~/.espressif`.
+4. Connect the USB-C programming dock. Run `cargo run --release` in `esp32/` to flash the board.
+5. If espflash cannot connect, hold BOOT, push RST, then release BOOT.
+
+The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
+
+### WT32-ETH01 pins
+
+| Pin | Use |
+|---|---|
+| GPIO16 | Switches on the 50 MHz oscillator of the PHY. Set it high before the Ethernet driver starts. |
+| GPIO0 | RMII clock input from the oscillator |
+| GPIO18, 19, 21, 22, 23, 25, 26, 27 | RMII and MDIO to the LAN8720 (PHY address 1) |
+| IO32 | Beat LED. It pulses for 30 ms on each beat of the master deck. |
+| IO33 | Bar LED. It pulses for 120 ms on beat 1. |
+| IO17 | Reserved for the DMX output (UART2 TX) |
+
+Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the flash to 1.8 V and does not start.
+
+### Network
+
+- The firmware starts its own WiFi network `xdj-clock-XXXX` (the last 2 bytes of the MAC address). The default password is `xdjclock123`. The web page is at http://192.168.71.1.
+- Ethernet gets its address from DHCP. Without a DHCP server (a direct cable to the XDJ-AZ), it takes a 169.254.x.x address.
+- The firmware receives the keepalive (port 50000) and beat (port 50001) broadcasts. It does not join the network as a virtual CDJ. The master is the deck that sent the last beat, until that deck stops.
+- The WebSocket handshake completes before the firmware can read the `Origin` header. When the Origin check fails, the firmware closes the connection and sends no data. It cannot reply with 403.
 
 ## Refactor Context (for future sessions)
 
-- The protocol constants and packet parsing in `host/src/prolink/` are duplicated in `esp32/src/prolink.rs`
-- The `esp32` crate does not compile. `main.rs`, `state.rs`, `midi.rs` and `prolink.rs` use APIs that do not exist (for example `heapless::singleton::Smp`, `smoltcp::iface::EthernetInterface`, the embedded-hal 0.2 serial traits). Nothing receives Pro DJ Link packets. The target `riscv32imc` (ESP32-C3) has no Ethernet MAC. Before the firmware can serve `webui/index.html` with protocol v1, it needs a rewrite. The ESP32 CI on the `esp32` branch fails since 2026-09-17.
+- `crates/xdj-core-prolink` holds a copy of the protocol constants and the packet parsing from `host/src/prolink/`. The host does not use the shared crate yet.
+- The ESP32 firmware has no MIDI output and no DMX output yet. The emulator still emulates the old MIDI firmware.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`
 - `host/src/state.rs` and `host/src/main.rs` are the highest-coupling files in the host crate
 - Adding a new architecture target should mirror the `esp32`/`esp32-emulator` split:
