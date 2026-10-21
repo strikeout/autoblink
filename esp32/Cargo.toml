@@ -1,19 +1,29 @@
 [package]
 name = "xdj-clock-esp32"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+# The firmware is not in the workspace. Keep this version the same as the workspace version.
+version = "1.12.0"
+edition = "2021"
+license = "Proprietary"
+authors = ["xdj-midi team"]
+rust-version = "1.82"
+
+[[bin]]
+name = "xdj-clock-esp32"
+harness = false
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true
+opt-level = "z"
 
 [dependencies]
-esp-idf-sys = "0.37"
-esp-idf-hal = "0.46"
-esp-idf-svc = "0.52"
-embedded-hal = "1.0"
-smoltcp = "0.11"
-heapless = "0.8"
+anyhow = "1"
+esp-idf-svc = "0.53"
 log = "0.4"
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-embassy-sync = "0.8"
-embassy-time = "0.5"
-xdj-core-prolink = { path = "../crates/xdj-core-prolink", default-features = false }
+serde_json = "1"
+xdj-core-prolink = { path = "../crates/xdj-core-prolink" }
+
+[build-dependencies]
+embuild = "0.33.5"

@@ -12,41 +12,32 @@ jobs:
   build-esp32-release:
     name: Build ESP32 Release
     runs-on: ubuntu-latest
-    container: espressif/idf:latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install the Xtensa Rust toolchain
+        uses: esp-rs/xtensa-toolchain@v1.6
         with:
-          targets: riscv32imc-esp-elf
+          default: true
+          buildtargets: esp32
+          ldproxy: true
 
-      - name: Cache Cargo registry & build artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Install espflash
+        uses: taiki-e/install-action@v2
         with:
-          cache-on-failure: true
-
-      - name: Set up ESP32 build environment
-        run: |
-          . ${IDF_PATH}/export.sh
-          idf.py --version
+          tool: espflash
 
       - name: Build ESP32 firmware
-        run: |
-          . ${IDF_PATH}/export.sh
-          cd esp32
-          cargo build --release --locked
+        working-directory: esp32
+        run: cargo build --release --locked
 
       - name: Prepare release package
         run: |
           mkdir -p esp32-release
-          cp esp32/target/riscv32imc-esp-elf/release/xdj-clock-esp32 esp32-release/
-          cp esp32/sdkconfig esp32-release/ 2>/dev/null || true
-
-          . ${IDF_PATH}/export.sh
-          idf.py esptool export-sdkconfig 2>/dev/null || true
-          cp build/sdkconfig esp32-release/ 2>/dev/null || true
-
+          elf=esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32
+          cp "$elf" esp32-release/
+          # One image with the bootloader and the partition table. Write it at address 0x0.
+          espflash save-image --chip esp32 --merge "$elf" esp32-release/xdj-clock-esp32-merged.bin
           tar -czf esp32-firmware.tar.gz esp32-release/
 
       - name: Upload firmware artifact

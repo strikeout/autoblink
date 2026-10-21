@@ -1,0 +1,19 @@
+# Rust needs more stack than C. The default main task stack is 3 KB.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
+
+# The internal EMAC drives the LAN8720 PHY of the WT32-ETH01.
+CONFIG_ETH_USE_ESP32_EMAC=y
+
+# The web page talks to the firmware over a WebSocket.
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# A direct cable to the XDJ-AZ has no DHCP server. After 3 DHCP tries, lwIP gives the port a
+# 169.254.x.x address.
+CONFIG_LWIP_AUTOIP=y
+CONFIG_LWIP_AUTOIP_TRIES=3
+
+# The WT32-ETH01 has 4 MB of flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
