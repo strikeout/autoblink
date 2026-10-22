@@ -650,7 +650,7 @@ fn log_setting_change(idx: usize, cfg: &Config) {
     match idx {
         2 => tracing::info!(
             device_number = cfg.device_number,
-            "Device number changed; restart required for network tasks"
+            "Device number changed; the virtual CDJ joins the network again"
         ),
         4 => tracing::info!(
             enabled = cfg.midi.clock_loop_enabled,

@@ -16,8 +16,9 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(2);
 ///
 /// The supervisor finds the network interface and runs all Pro DJ Link tasks
 /// as one group. It rebuilds the group when the IP address goes away, when a
-/// better interface comes up in auto mode, when the interface setting changes,
-/// or when a task in the group stops. The app never exits for a network fault.
+/// better interface comes up in auto mode, when the interface setting or the
+/// device number changes, or when a task in the group stops. The app never
+/// exits for a network fault.
 pub fn spawn(
     ctx: &TaskContext,
     startup_cfg: crate::config::Config,
@@ -37,18 +38,21 @@ pub fn spawn(
                 tracing::info!(%bind_ip, %bcast_ip, "Network interface initialized");
 
                 let mut group = JoinSet::new();
+                let device_number = ctx.cfg.read().device_number;
                 spawn_group(
                     &mut group,
                     &ctx,
                     &startup_cfg,
                     &device_table,
                     &track_change_rx,
+                    device_number,
                     bind_ip,
                     bcast_ip,
                     mac,
                 );
 
-                let reason = watch_group(&mut group, &ctx, &hint, bind_ip, &device_table).await;
+                let reason =
+                    watch_group(&mut group, &ctx, &hint, device_number, bind_ip, &device_table).await;
                 tracing::warn!(%reason, "Rebuilding the Pro DJ Link network tasks");
                 group.shutdown().await;
                 tokio::time::sleep(CHECK_INTERVAL).await;
@@ -86,6 +90,7 @@ async fn watch_group(
     group: &mut JoinSet<()>,
     ctx: &TaskContext,
     hint: &str,
+    device_number: u8,
     bind_ip: Ipv4Addr,
     device_table: &DeviceTable,
 ) -> String {
@@ -102,6 +107,9 @@ async fn watch_group(
             _ = ticker.tick() => {
                 if ctx.cfg.read().interface != hint {
                     return "the interface setting changed".to_string();
+                }
+                if ctx.cfg.read().device_number != device_number {
+                    return "the device number changed".to_string();
                 }
                 // `getifaddrs` can block, so keep it off the async workers.
                 let hint2 = hint.to_string();
@@ -147,6 +155,7 @@ fn spawn_group(
     startup_cfg: &crate::config::Config,
     device_table: &DeviceTable,
     track_change_rx: &Arc<tokio::sync::Mutex<mpsc::Receiver<TrackChange>>>,
+    device_number: u8,
     bind_ip: Ipv4Addr,
     bcast_ip: Ipv4Addr,
     mac: [u8; 6],
@@ -168,7 +177,7 @@ fn spawn_group(
 
     let vcdj_name = startup_cfg.device_name.clone();
     let vcdj_ready_tx = ctx.vcdjready_tx.clone();
-    let vcdj_dev_num = startup_cfg.device_number;
+    let vcdj_dev_num = device_number;
     let vcdj_table = Arc::clone(device_table);
     group.spawn(async move {
         if let Err(e) = crate::prolink::virtual_cdj::run(
