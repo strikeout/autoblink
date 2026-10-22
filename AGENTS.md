@@ -143,7 +143,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 | GPIO0 | RMII clock input from the oscillator |
 | GPIO18, 19, 21, 22, 23, 25, 26, 27 | RMII and MDIO to the LAN8720 (PHY address 1) |
 | IO32 | Beat LED. It pulses for 30 ms on each beat of the master deck. |
-| IO33 | Bar LED. It pulses for 120 ms on beat 1. |
+| IO33 | Bar LED, with the label 485_EN on the board. It pulses for 120 ms on beat 1. When no beat arrives for 2 s, it blinks two times every 2 s. |
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
 | IO35 | UART2 RX. It is not used, but the UART driver needs a receive pin. |
 | IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. Only with `--features dmx`. |
