@@ -1,7 +1,8 @@
 //! The settings that the web page can change. NVS keeps them across a restart.
 //!
 //! The MIDI rows and "Device Number" use the host indices (`xdj_core_midi::settings`). The WiFi
-//! rows use 100 and up, so that they do not collide with the host settings.
+//! rows use 100 and up, so that they do not collide with the host settings. Rows 100 and 101 set
+//! the own access point. Rows 102 and 103 set an existing network that the firmware joins.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,6 +17,8 @@ const IDX_DEVICE: usize = 2;
 const DEFAULT_DEVICE: u8 = 7;
 const IDX_SSID: usize = 100;
 const IDX_PASSWORD: usize = 101;
+const IDX_JOIN_SSID: usize = 102;
+const IDX_JOIN_PASSWORD: usize = 103;
 const DEFAULT_PASSWORD: &str = "xdjclock123";
 /// The MIDI configuration goes to NVS when it has not changed for this time.
 const SAVE_DELAY: Duration = Duration::from_secs(2);
@@ -59,6 +62,13 @@ impl Settings {
         self.get("pass").unwrap_or_else(|| DEFAULT_PASSWORD.into())
     }
 
+    /// The name and the password of the existing network to join. `None` when NVS has no name.
+    /// An empty password is for an open network.
+    pub fn join(&self) -> Option<(String, String)> {
+        let ssid = self.get("jssid")?;
+        Some((ssid, self.get("jpass").unwrap_or_default()))
+    }
+
     /// Builds the protocol v1 settings message.
     pub fn message(&self) -> Value {
         let ssid = self.ssid();
@@ -72,6 +82,12 @@ impl Settings {
                 "section": "Device", "kind": "text", "value": ssid, "raw": ssid, "step": false}));
             // The page does not show the password. A new value replaces it.
             rows.push(json!({"idx": IDX_PASSWORD, "label": "WiFi password (applies after restart)",
+                "section": "Device", "kind": "text", "value": "••••••••", "raw": null, "step": false}));
+            let join = self.join().map(|(s, _)| s).unwrap_or_default();
+            rows.push(json!({"idx": IDX_JOIN_SSID, "label": "Join WiFi name (applies after restart)",
+                "section": "Device", "kind": "text", "value": if join.is_empty() { "off" } else { join.as_str() },
+                "raw": join, "step": false}));
+            rows.push(json!({"idx": IDX_JOIN_PASSWORD, "label": "Join WiFi password (applies after restart)",
                 "section": "Device", "kind": "text", "value": "••••••••", "raw": null, "step": false}));
         }
         json!({"type": "settings", "items": items})
@@ -95,6 +111,16 @@ impl Settings {
             IDX_SSID => Err("The WiFi name must have 1 to 32 bytes".into()),
             IDX_PASSWORD if (8..=63).contains(&value.len()) && value.is_ascii() => self.put("pass", value),
             IDX_PASSWORD => Err("The WiFi password must have 8 to 63 ASCII characters".into()),
+            // An empty name stops the join. The page cannot send an empty password, so the
+            // password goes too. Then the next name can be an open network.
+            IDX_JOIN_SSID if value.is_empty() => self.remove("jpass").and_then(|()| self.remove("jssid")),
+            IDX_JOIN_SSID if value.len() <= 32 => self.put("jssid", value),
+            IDX_JOIN_SSID => Err("The WiFi name must have 0 to 32 bytes".into()),
+            IDX_JOIN_PASSWORD if value.is_empty() => self.remove("jpass"),
+            IDX_JOIN_PASSWORD if (8..=63).contains(&value.len()) && value.is_ascii() => self.put("jpass", value),
+            IDX_JOIN_PASSWORD => {
+                Err("The WiFi password must be empty (open network) or have 8 to 63 ASCII characters".into())
+            }
             _ => self.change_midi(|cfg| midi_settings::set(cfg, idx, value)),
         }
     }
@@ -131,6 +157,12 @@ impl Settings {
     fn put(&self, key: &str, value: &str) -> Result<(), String> {
         self.nvs.set_str(key, value).map_err(|e| format!("Cannot save the setting: {e}"))?;
         log::info!("Setting {key} changed. It applies after a restart.");
+        Ok(())
+    }
+
+    fn remove(&self, key: &str) -> Result<(), String> {
+        self.nvs.remove(key).map_err(|e| format!("Cannot save the setting: {e}"))?;
+        log::info!("Setting {key} removed. It applies after a restart.");
         Ok(())
     }
 

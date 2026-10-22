@@ -3,7 +3,9 @@
 //! The firmware joins the Pro DJ Link network on the Ethernet port as a virtual CDJ. It reads
 //! the beats, the player status and the track data from the players. The MIDI output on IO17
 //! sends the clock, the notes and the CCs. Two LEDs show the beats. The firmware serves the web
-//! page on its own WiFi network at http://192.168.1.1.
+//! page on its own WiFi network at http://192.168.1.1. When the settings have a join network,
+//! the page is also on that network, at the address from its DHCP server and at
+//! http://xdj-clock.local.
 
 #[cfg(feature = "dmx")]
 mod dmx;
@@ -23,6 +25,7 @@ use std::time::{Duration, Instant};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::gpio::PinDriver;
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::mdns::EspMdns;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys;
 use xdj_core_prolink::Tracker;
@@ -88,8 +91,15 @@ fn run() -> anyhow::Result<()> {
     let default_ssid = format!("xdj-clock-{:02X}{:02X}", mac[4], mac[5]);
     let settings = Settings::new(nvs.clone(), default_ssid)?;
     let ssid = settings.ssid();
-    let _wifi = net::start_access_point(p.modem, sysloop.clone(), nvs, &ssid, &settings.password())?;
+    let join = settings.join();
+    let join_ssid = join.as_ref().map(|(s, _)| s.clone());
+    let mut wifi = net::start_wifi(p.modem, sysloop.clone(), nvs, &ssid, &settings.password(), join)?;
     log::info!("WiFi \"{ssid}\" is on. The web page is at http://{AP_IP}");
+    if let Some(join) = &join_ssid {
+        log::info!("WiFi \"{join}\": the firmware joins this network");
+    }
+    // mDNS answers on all networks. Without it, the page is still at its IP addresses.
+    let _mdns = start_mdns().inspect_err(|e| log::warn!("mDNS is off: {e}")).ok();
 
     let (eth, _osc) = net::start_ethernet(
         EthPins {
@@ -171,8 +181,9 @@ fn run() -> anyhow::Result<()> {
     // gives a 169.254.x.x address after some seconds.
     log::info!("Ethernet is waiting for a cable and an address");
     let eth_mac = eth.netif().get_mac()?;
-    let mut last = None;
+    let mut last = (None, None);
     let mut next_heap_log = Instant::now();
+    let mut next_join = Instant::now() + JOIN_RETRY;
     loop {
         state.tracker.lock().unwrap().expire(state.now_ms());
         settings.lock().unwrap().save_midi();
@@ -191,32 +202,96 @@ fn run() -> anyhow::Result<()> {
                 state.now_ms() / 1000
             );
         }
+        // ponytail: a fixed retry interval. Each try scans all channels, and the phones on the
+        // access point can lose the page during a scan. Use an exponential back-off if 30 s is
+        // too often.
+        if join_ssid.is_some() && Instant::now() >= next_join {
+            next_join = Instant::now() + JOIN_RETRY;
+            if !wifi.is_connected().unwrap_or(false) {
+                if let Err(e) = wifi.connect() {
+                    log::warn!("WiFi: the connection did not start: {e}");
+                }
+            }
+        }
+
         let info = eth.netif().get_ip_info().ok().filter(|i| !i.ip.is_unspecified());
-        let ip = info.map(|i| i.ip);
+        let eth_ip = info.map(|i| (i.ip, i.subnet.mask.0));
         *state.eth.lock().unwrap() = info.map(|i| EthInfo {
             ip: i.ip,
             broadcast: broadcast(i.ip, i.subnet.mask.0),
             mac: eth_mac,
         });
-        if ip != last {
-            match ip {
-                Some(ip) => {
-                    log::info!("Ethernet address: {ip}");
-                    if ip.octets()[..3] == AP_IP.octets()[..3] {
-                        log::warn!(
-                            "The Ethernet network uses the subnet of the WiFi network ({AP_IP}/24). \
-                             Replies can go out on the wrong port."
-                        );
+        let sta_ip = join_ssid
+            .as_ref()
+            .and_then(|_| wifi.sta_netif().get_ip_info().ok())
+            .map(|i| i.ip)
+            .filter(|ip| !ip.is_unspecified());
+        let now = (eth_ip.map(|(ip, _)| ip), sta_ip);
+        if now != last {
+            if now.0 != last.0 {
+                match eth_ip {
+                    Some((ip, prefix)) => {
+                        log::info!("Ethernet address: {ip}");
+                        if same_subnet(ip, AP_IP, 24) {
+                            log::warn!(
+                                "The Ethernet network uses the subnet of the WiFi network ({AP_IP}/24). \
+                                 Replies can go out on the wrong port."
+                            );
+                        }
+                        if sta_ip.is_some_and(|sta| same_subnet(ip, sta, prefix)) {
+                            log::warn!(
+                                "The Ethernet network and the joined WiFi network use one subnet. \
+                                 Pro DJ Link packets can go out on the WiFi."
+                            );
+                        }
                     }
+                    None => log::info!("Ethernet has no address"),
                 }
-                None => log::info!("Ethernet has no address"),
             }
-            *state.iface.lock().unwrap() =
-                ip.map_or("Ethernet: no address".into(), |ip| format!("Ethernet {ip}"));
-            last = ip;
+            if now.1 != last.1 {
+                let name = join_ssid.as_deref().unwrap_or_default();
+                match sta_ip {
+                    Some(ip) => {
+                        log::info!(
+                            "WiFi \"{name}\" address: {ip}. The web page is at http://{ip} and http://{}.local",
+                            net::MDNS_NAME
+                        );
+                        if same_subnet(ip, AP_IP, 24) {
+                            log::warn!(
+                                "The WiFi network \"{name}\" uses the subnet of the own WiFi network \
+                                 ({AP_IP}/24). The page can fail on one of the two networks."
+                            );
+                        }
+                    }
+                    None => log::info!("WiFi \"{name}\" is not connected"),
+                }
+            }
+            let mut iface = now.0.map_or("Ethernet: no address".into(), |ip| format!("Ethernet {ip}"));
+            if let Some(ip) = now.1 {
+                iface.push_str(&format!(" · WiFi {ip}"));
+            }
+            *state.iface.lock().unwrap() = iface;
+            last = now;
         }
         thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// The time between two tries to join the WiFi network.
+const JOIN_RETRY: Duration = Duration::from_secs(30);
+
+/// Starts mDNS with the name `MDNS_NAME` and an HTTP service on port 80.
+fn start_mdns() -> anyhow::Result<EspMdns> {
+    let mut mdns = EspMdns::take()?;
+    mdns.set_hostname(net::MDNS_NAME)?;
+    mdns.add_service(None, "_http", "_tcp", 80, &[])?;
+    Ok(mdns)
+}
+
+/// Returns `true` when `a` and `b` are in one subnet with a prefix of `prefix` bits.
+fn same_subnet(a: Ipv4Addr, b: Ipv4Addr, prefix: u8) -> bool {
+    let mask = u32::MAX.checked_shl(32 - u32::from(prefix.min(32))).unwrap_or(0);
+    u32::from(a) & mask == u32::from(b) & mask
 }
 
 /// The name of a reset reason of `esp_reset_reason`.
