@@ -62,7 +62,7 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS) |
 | `crates/xdj-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/xdj-core-midi` | MIDI logic of the firmware, host-testable | `clock.rs`, `mapper.rs`, `settings.rs` (host setting indices) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
@@ -143,11 +143,24 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 | GPIO0 | RMII clock input from the oscillator |
 | GPIO18, 19, 21, 22, 23, 25, 26, 27 | RMII and MDIO to the LAN8720 (PHY address 1) |
 | IO32 | Beat LED. It pulses for 30 ms on each beat of the master deck. |
-| IO33 | Bar LED, with the label 485_EN on the board. It pulses for 120 ms on beat 1. When no beat arrives for 2 s, it blinks two times every 2 s. |
+| IO33 | Status LED, with the label 485_EN on the board. While the master deck plays, it pulses for 120 ms on beat 1 and for 25 ms on the other beats. When no beat arrives for 2 s, it shows a blink code (see below). |
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
 | IO35 | UART2 RX. It is not used, but the UART driver needs a receive pin. |
 | IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. Only with `--features dmx`. |
 | IO36 | UART1 RX. It is not used, but the UART driver needs a receive pin. |
+
+The blink code of IO33 repeats every 2 s. The LED shows the first line that applies:
+
+| IO33 | State |
+|---|---|
+| On | The firmware starts. |
+| 1 blink | Ethernet has no address. Examine the cable. |
+| 2 blinks | The virtual CDJ is not on the Pro DJ Link network. It joins, or another device has its device number. |
+| 3 blinks | The firmware finds no player. |
+| 4 blinks | The firmware cannot join the WiFi network of the settings (index 102). |
+| 1 s on, 1 s off | The box is ready. No deck plays. |
+
+After a panic, a watchdog or a brownout restart, an 800 ms flash comes before the code for 10 minutes. The code is in `esp32/src/led.rs`.
 
 Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the flash to 1.8 V and does not start.
 

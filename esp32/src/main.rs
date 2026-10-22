@@ -2,13 +2,15 @@
 //!
 //! The firmware joins the Pro DJ Link network on the Ethernet port as a virtual CDJ. It reads
 //! the beats, the player status and the track data from the players. The MIDI output on IO17
-//! sends the clock, the notes and the CCs. Two LEDs show the beats. The firmware serves the web
+//! sends the clock, the notes and the CCs. IO32 shows the beats. IO33 shows the beats and the
+//! state of the box (see `led.rs`). The firmware serves the web
 //! page on its own WiFi network at http://192.168.1.1. When the settings have a join network,
 //! the page is also on that network, at the address from its DHCP server and at
 //! http://xdj-clock.local.
 
 #[cfg(feature = "dmx")]
 mod dmx;
+mod led;
 mod midi;
 mod net;
 mod prolink;
@@ -17,9 +19,8 @@ mod tracks;
 mod webui;
 
 use std::net::Ipv4Addr;
-use std::sync::atomic::AtomicU8;
-use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,8 @@ pub struct State {
     pub conflict: AtomicU8,
     /// The device number of the virtual CDJ. 0 while it is not on the network.
     pub own_device: AtomicU8,
+    /// `true` while the settings have a join network and the firmware is not connected to it.
+    pub wifi_join_down: AtomicBool,
     /// The reason for the last restart, for example "power-on" or "panic".
     pub reset_reason: &'static str,
     start: Instant,
@@ -85,6 +88,9 @@ fn run() -> anyhow::Result<()> {
     let p = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
+    // IO33 stays on until the LED thread starts. Then it shows the state of the box.
+    let mut status_led = PinDriver::output(p.pins.gpio33)?;
+    status_led.set_high()?;
 
     let mut mac = [0u8; 6];
     // SAFETY: the buffer has the 6 bytes that a MAC address needs.
@@ -127,6 +133,7 @@ fn run() -> anyhow::Result<()> {
         eth: Mutex::new(None),
         conflict: AtomicU8::new(0),
         own_device: AtomicU8::new(0),
+        wifi_join_down: AtomicBool::new(false),
         reset_reason,
         start: Instant::now(),
     });
@@ -136,56 +143,7 @@ fn run() -> anyhow::Result<()> {
     let (_server, web_beats) = webui::start(state.clone(), settings.clone())?;
     let track_changes = tracks::start(state.clone())?;
 
-    // IO32 pulses on each beat of the master deck, IO33 on the first beat of the bar.
-    // IO33 has the label 485_EN on the board. When no beat arrives for IDLE_AFTER, IO33 blinks
-    // two times every 2 s.
-    const IDLE_AFTER: Duration = Duration::from_secs(2);
-    // The idle pattern: the level of IO33 and its time in milliseconds.
-    const IDLE_PATTERN: [(bool, u64); 4] = [(true, 60), (false, 140), (true, 60), (false, 1740)];
-    let mut beat_led = PinDriver::output(p.pins.gpio32)?;
-    let mut bar_led = PinDriver::output(p.pins.gpio33)?;
-    let (beat_tx, beat_rx) = mpsc::channel::<u8>();
-    thread::Builder::new()
-        .name("leds".into())
-        .stack_size(3 * 1024)
-        .spawn(move || {
-            let mut last_beat: Option<Instant> = None;
-            let mut step = 0;
-            loop {
-                let since = last_beat.map_or(IDLE_AFTER, |t| t.elapsed());
-                let idle = since >= IDLE_AFTER;
-                let timeout = if idle {
-                    let (on, ms) = IDLE_PATTERN[step];
-                    let _ = bar_led.set_level(on.into());
-                    Duration::from_millis(ms)
-                } else {
-                    IDLE_AFTER - since
-                };
-                let beat = match beat_rx.recv_timeout(timeout) {
-                    Ok(beat) => beat,
-                    Err(RecvTimeoutError::Timeout) => {
-                        if idle {
-                            step = (step + 1) % IDLE_PATTERN.len();
-                        }
-                        continue;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => break,
-                };
-                last_beat = Some(Instant::now());
-                step = 0;
-                let _ = bar_led.set_low();
-                let _ = beat_led.set_high();
-                if beat == 1 {
-                    let _ = bar_led.set_high();
-                }
-                thread::sleep(Duration::from_millis(30));
-                let _ = beat_led.set_low();
-                if beat == 1 {
-                    thread::sleep(Duration::from_millis(90));
-                    let _ = bar_led.set_low();
-                }
-            }
-        })?;
+    let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
 
     #[cfg(feature = "dmx")]
     let dmx = dmx::Dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36)?;
@@ -256,6 +214,7 @@ fn run() -> anyhow::Result<()> {
             .and_then(|_| wifi.sta_netif().get_ip_info().ok())
             .map(|i| i.ip)
             .filter(|ip| !ip.is_unspecified());
+        state.wifi_join_down.store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);
         let now = (eth_ip.map(|(ip, _)| ip), sta_ip);
         if now != last {
             if now.0 != last.0 {
