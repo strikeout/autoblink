@@ -130,13 +130,16 @@ pub fn init() -> anyhow::Result<AppContext> {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        // Stdout for the journal, and the buffer for the web UI log panel.
+        // Stdout for the journal, and the buffer for the web UI log panel. The stdout writer
+        // does not block, so a stopped terminal cannot stop the MIDI thread.
+        let stdout = crate::logbuf::LossyStdout::start()?;
         tracing_subscriber::registry()
             .with(env_filter)
             .with(
                 fmt::layer()
                     .with_target(true)
-                    .with_timer(fmt::time::Uptime::default()),
+                    .with_timer(fmt::time::Uptime::default())
+                    .with_writer(move || stdout.clone()),
             )
             .with(
                 fmt::layer()
