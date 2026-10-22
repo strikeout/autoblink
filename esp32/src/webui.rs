@@ -4,9 +4,10 @@
 //! page hides the sections of the other capabilities: `mixer`, `ports` and `logs`.
 
 use std::ffi::CString;
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use esp_idf_svc::http::server::ws::{EspHttpWsConnection, EspHttpWsDetachedSender};
 use esp_idf_svc::http::server::{Configuration, EspHttpServer};
@@ -27,12 +28,15 @@ const INDEX_HTML: &str = include_str!("../../webui/index.html");
 /// The firmware ignores a command that is longer than this.
 const MAX_COMMAND_LEN: usize = 512;
 
+/// The page gets the status this often.
+const STATUS_INTERVAL: Duration = Duration::from_millis(100);
+
 /// The open WebSocket connections. A send that fails removes the connection.
 #[derive(Default)]
-pub struct Clients(Mutex<Vec<EspHttpWsDetachedSender>>);
+struct Clients(Mutex<Vec<EspHttpWsDetachedSender>>);
 
 impl Clients {
-    pub fn broadcast(&self, text: &str) {
+    fn broadcast(&self, text: &str) {
         // A send waits for the HTTP server task, and that task takes this lock when a connection
         // closes. Send without the lock, so that the two tasks cannot block each other.
         let clients = self.0.lock().unwrap().clone();
@@ -50,21 +54,24 @@ impl Clients {
     }
 }
 
-pub fn beat_message(device: u8, beat: u8) -> String {
-    json!({"type": "beat", "device": device, "beat": beat}).to_string()
-}
-
-/// Starts the web server and the thread that sends the status 10 times a second.
+/// Starts the web server and the thread that sends the beats and the status to the page.
+///
+/// Returns the server and the sender for the beats: (device number, beat in the bar). Use
+/// `try_send` for a beat. A send to a slow WiFi client can wait up to 5 s, and the beat receive
+/// thread must not wait for it.
 pub fn start(
     state: Arc<State>,
-    clients: Arc<Clients>,
     settings: Arc<Mutex<Settings>>,
-) -> anyhow::Result<EspHttpServer<'static>> {
+) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<(u8, u8)>)> {
+    // Without a limit, a fourth connection closes the oldest one, which is often a live
+    // WebSocket. CONFIG_LWIP_MAX_SOCKETS must have space for these sockets.
     let mut server = EspHttpServer::new(&Configuration {
         stack_size: 10 * 1024,
         uri_match_wildcard: true,
+        max_open_sockets: 10,
         ..Default::default()
     })?;
+    let clients = Arc::new(Clients::default());
 
     let wave_state = state.clone();
     server.fn_handler("/waveform/*", Method::Get, move |req| {
@@ -129,24 +136,39 @@ pub fn start(
         }
         let mut buf = vec![0u8; len];
         ws.recv(&mut buf)?;
-        let reply = command(&buf, &settings);
+        // For a text frame, esp-idf-svc adds 1 to the length and puts a NUL byte at the end.
+        // serde_json refuses that byte, so remove it.
+        let text = buf.strip_suffix(&[0]).unwrap_or(&buf);
+        let reply = command(text, &settings);
         ws.send(FrameType::Text(false), reply.to_string().as_bytes())
     })?;
 
+    // This thread does all the sends to the page. When the queue is full, `try_send` drops the beat.
+    let (beat_tx, beat_rx) = mpsc::sync_channel::<(u8, u8)>(8);
     thread::Builder::new()
         .name("web-status".into())
         .stack_size(8 * 1024)
-        .spawn(move || loop {
-            thread::sleep(Duration::from_millis(100));
-            let now = state.now_ms();
-            state.tracker.lock().unwrap().expire(now);
-            if !clients.is_empty() {
-                let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
-                clients.broadcast(&status_message(&state, clock_enabled).to_string());
+        .spawn(move || {
+            let mut next_status = Instant::now();
+            loop {
+                match beat_rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
+                    Ok((device, beat)) => clients.broadcast(
+                        &json!({"type": "beat", "device": device, "beat": beat}).to_string(),
+                    ),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+                if Instant::now() >= next_status {
+                    next_status = Instant::now() + STATUS_INTERVAL;
+                    if !clients.is_empty() {
+                        let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
+                        clients.broadcast(&status_message(&state, clock_enabled).to_string());
+                    }
+                }
             }
         })?;
 
-    Ok(server)
+    Ok((server, beat_tx))
 }
 
 /// Writes the waveform route body in the host format (`host/src/web/mod.rs`).
@@ -191,7 +213,7 @@ fn command(buf: &[u8], settings: &Mutex<Settings>) -> Value {
             let Some(idx) = cmd["idx"].as_u64().map(|i| i as usize) else {
                 return error("The command needs idx");
             };
-            let settings = settings.lock().unwrap();
+            let mut settings = settings.lock().unwrap();
             let result = if kind == "set" {
                 match cmd["value"].as_str() {
                     Some(value) => settings.set(idx, value.trim()),
@@ -341,6 +363,13 @@ fn status_message(state: &State, clock_enabled: bool) -> Value {
             "mtc_full": 0,
         },
         "mixer": null,
+        // SAFETY: the two heap calls only read counters.
+        "system": {
+            "uptime_s": now / 1000,
+            "reset_reason": state.reset_reason,
+            "heap_free": unsafe { sys::esp_get_free_heap_size() },
+            "heap_min": unsafe { sys::esp_get_minimum_free_heap_size() },
+        },
     })
 }
 

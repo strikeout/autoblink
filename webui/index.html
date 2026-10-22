@@ -19,6 +19,7 @@ header{background:#151524;padding:10px 16px;border-bottom:1px solid var(--border
 header h1{font-size:15px;color:var(--accent)}
 header .kv{color:var(--muted)}
 header .kv b{color:var(--text);font-weight:500}
+footer{padding:4px 16px 12px;text-align:center;font-size:11px;color:var(--dim)}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:6px}
 .dot.on{background:var(--play)}
 #state.play{color:var(--play)}#state.stop{color:var(--danger)}
@@ -130,7 +131,7 @@ input.num.text{width:150px;text-align:left}
 </head>
 <body>
 <header>
-  <h1>xdj-clock <span id="version" class="kv"></span></h1>
+  <h1>xdj-clock</h1>
   <span class="kv"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   <span class="kv">source <b id="source">—</b></span>
   <span class="kv">mode <b id="mode">—</b></span>
@@ -199,6 +200,7 @@ input.num.text{width:150px;text-align:left}
     <div id="log" class="log"></div>
   </details>
 </main>
+<footer id="version"></footer>
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
@@ -555,6 +557,8 @@ const HELP = {
   'OSC Enabled': 'Sends OSC messages to the targets below.',
   'OSC Targets': 'The receivers as IP:port, with commas between them. A broadcast address is permitted.',
   'OSC Prefix': 'The text before each OSC address. For example, /xdj gives /xdj/beat. It must start with /.',
+  'Join WiFi name (applies after restart)': 'An existing WiFi network that the device joins. The page is then also at http://xdj-clock.local and at the address on the iface line. The own WiFi network stays on. Clear the name to stop the join.',
+  'Join WiFi password (applies after restart)': 'The password of the network to join. For an open network, clear the name, then set it again without a password.',
 };
 
 // Settings rows are built once per index, then updated in place, so that an input keeps its focus.
@@ -627,7 +631,9 @@ function buildSetting(it) {
         if (sw) { sw.textContent = it.on ? '✓' : '✗'; el.classList.toggle('off', !it.on); }
         input.dataset.raw = it.raw ?? '';
         // The shown value carries the unit; the input holds the raw number.
-        shown.textContent = it.value === it.raw ? '' : it.value;
+        // A hidden value (a password) has no raw value. Its mask goes in the input as a placeholder.
+        input.placeholder = it.raw == null ? it.value : '';
+        shown.textContent = it.value === it.raw || it.raw == null ? '' : it.value;
         if (document.activeElement !== input) { input.value = it.raw ?? ''; input.classList.remove('bad'); }
       },
     };

@@ -4,6 +4,9 @@
 //! sends it each master beat through a channel. The thread sleeps until 1 ms before the next
 //! clock pulse, then waits in a loop, so the pulse goes out on time.
 //!
+//! The task watchdog watches the thread. When a loop pass does not end in 5 s, the firmware
+//! restarts (CONFIG_ESP_TASK_WDT_PANIC).
+//!
 //! ponytail: a pulse waits behind the CC bytes that are already in the UART, up to about 2 ms.
 //! The host sends realtime bytes on a priority lane. To do the same, insert the 0xF8 bytes
 //! between the bytes of the other messages.
@@ -16,6 +19,7 @@ use std::time::{Duration, Instant};
 use esp_idf_svc::hal::gpio::{Gpio17, Gpio35};
 use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
+use esp_idf_svc::sys;
 use xdj_core_midi::clock::Master;
 use xdj_core_dbserver::{current_phrase_idx, phrase_info};
 use xdj_core_midi::{Clock, Mapper, MidiConfig, Out, Phrase, Smoother, Snapshot, CLOCK};
@@ -65,6 +69,10 @@ pub fn start(
         .name("midi".into())
         .stack_size(8 * 1024)
         .spawn(move || {
+            // SAFETY: a null handle subscribes the calling task.
+            if let Err(e) = sys::esp!(unsafe { sys::esp_task_wdt_add(std::ptr::null_mut()) }) {
+                log::warn!("The task watchdog does not watch the MIDI thread: {e}");
+            }
             let mut clock = Clock::default();
             let mut mapper = Mapper::default();
             let mut smoother = Smoother::default();
@@ -74,21 +82,35 @@ pub fn start(
             let mut next_cc = Instant::now();
 
             loop {
+                // SAFETY: the task subscribed above. A reset of an unsubscribed task only gives an
+                // error code.
+                unsafe { sys::esp_task_wdt_reset() };
                 // Wait for a beat, the next pulse or the next CC update, whichever comes first.
+                // The thread spins only when the pulse is the next event and 2 ms or less away.
                 let now_us = state.now_us();
                 let until_pulse = next_pulse.map(|t| Duration::from_micros(t.saturating_sub(now_us)));
                 let until_cc = next_cc.saturating_duration_since(Instant::now());
-                let wait = until_pulse.map_or(until_cc, |p| p.min(until_cc));
+                let pulse_first = until_pulse.filter(|p| *p <= until_cc);
+                let wait = match (pulse_first, next_pulse) {
+                    (Some(p), Some(t)) if p <= Duration::from_millis(2) => {
+                        while state.now_us() < t {
+                            std::hint::spin_loop();
+                        }
+                        None
+                    }
+                    (Some(p), _) => Some(p - Duration::from_millis(1)),
+                    (None, _) => Some(until_cc),
+                };
                 let mut beat = None;
-                if wait > Duration::from_millis(2) {
-                    match beat_rx.recv_timeout(wait - Duration::from_millis(1)) {
+                if let Some(wait) = wait {
+                    match beat_rx.recv_timeout(wait) {
                         Ok(b) => beat = Some(b),
                         Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                } else if let Some(t) = next_pulse {
-                    while state.now_us() < t {
-                        std::hint::spin_loop();
+                        Err(RecvTimeoutError::Disconnected) => {
+                            // SAFETY: the task subscribed above.
+                            unsafe { sys::esp_task_wdt_delete(std::ptr::null_mut()) };
+                            return;
+                        }
                     }
                 }
                 if beat.is_none() {

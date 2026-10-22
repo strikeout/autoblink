@@ -1,4 +1,5 @@
-//! Ethernet to the Pro DJ Link network, and the WiFi access point for the web page.
+//! Ethernet to the Pro DJ Link network, and the WiFi for the web page: the own access point and,
+//! when the settings have a join network, a connection to an existing WiFi network.
 
 use std::net::Ipv4Addr;
 
@@ -10,10 +11,15 @@ use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::ipv4::{self, Mask, RouterConfiguration, Subnet};
 use esp_idf_svc::netif::{EspNetif, NetifConfiguration, NetifStack};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::wifi::{AccessPointConfiguration, AuthMethod, Configuration, EspWifi, WifiDriver};
+use esp_idf_svc::wifi::{
+    AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiDriver,
+};
 
 /// The address of the firmware on its own WiFi network. The web page is at http://192.168.1.1.
 pub const AP_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
+
+/// The mDNS name of the firmware. The web page is at http://xdj-clock.local.
+pub const MDNS_NAME: &str = "xdj-clock";
 
 /// The pins of the LAN8720 PHY on the WT32-ETH01.
 pub struct EthPins {
@@ -66,12 +72,17 @@ pub fn start_ethernet(
 }
 
 /// Starts the WiFi access point at `AP_IP`. Its DHCP server gives the clients 192.168.1.2 and up.
-pub fn start_access_point(
+///
+/// When `join` has a network name and a password, the firmware also connects to that network.
+/// An empty password is for an open network. The access point then uses the channel of that
+/// network. Call `EspWifi::connect` again when the connection is lost.
+pub fn start_wifi(
     modem: Modem<'static>,
     sysloop: EspSystemEventLoop,
     nvs: EspDefaultNvsPartition,
     ssid: &str,
     password: &str,
+    join: Option<(String, String)>,
 ) -> anyhow::Result<EspWifi<'static>> {
     let driver = WifiDriver::new(modem, sysloop, Some(nvs))?;
     let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
@@ -84,14 +95,33 @@ pub fn start_access_point(
         ..NetifConfiguration::wifi_default_router()
     })?;
     let mut wifi = EspWifi::wrap_all(driver, EspNetif::new(NetifStack::Sta)?, ap_netif)?;
-    wifi.set_configuration(&Configuration::AccessPoint(AccessPointConfiguration {
+    let ap = AccessPointConfiguration {
         ssid: ssid.try_into().map_err(|_| anyhow::anyhow!("The WiFi name is too long"))?,
         password: password.try_into().map_err(|_| anyhow::anyhow!("The WiFi password is too long"))?,
         auth_method: AuthMethod::WPA2Personal,
         channel: 6,
         max_connections: 4,
         ..Default::default()
-    }))?;
+    };
+    let Some((join_ssid, join_password)) = join else {
+        wifi.set_configuration(&Configuration::AccessPoint(ap))?;
+        wifi.start()?;
+        return Ok(wifi);
+    };
+    let client = ClientConfiguration {
+        ssid: join_ssid.as_str().try_into().map_err(|_| anyhow::anyhow!("The join WiFi name is too long"))?,
+        password: join_password
+            .as_str()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("The join WiFi password is too long"))?,
+        auth_method: if join_password.is_empty() { AuthMethod::None } else { AuthMethod::WPA2Personal },
+        ..Default::default()
+    };
+    wifi.set_configuration(&Configuration::Mixed(client, ap))?;
     wifi.start()?;
+    // The connection completes in the background. A failure must not stop the access point.
+    if let Err(e) = wifi.connect() {
+        log::warn!("WiFi \"{join_ssid}\": the connection did not start: {e}");
+    }
     Ok(wifi)
 }

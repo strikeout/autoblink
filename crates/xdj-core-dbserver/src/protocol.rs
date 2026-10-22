@@ -17,7 +17,14 @@ pub const ARG_TAG_BLOB: u8 = 0x03;
 /// A dbserver message has at most 12 arguments. A larger count is a bad peer.
 pub const MAX_ARG_COUNT: usize = 64;
 /// The largest dbserver field that the reader accepts. Waveform blobs are smaller.
+#[cfg(not(target_os = "espidf"))]
 pub const MAX_FIELD_LEN: usize = 16 * 1024 * 1024;
+/// The largest dbserver field that the reader accepts on the ESP32. The PWV4 preview has about
+/// 7200 bytes. The PQTZ beat grid has 8 bytes per beat, so this limit holds about 6000 beats
+/// (47 minutes at 128 BPM). A larger grid gives an error. Without the error, the parse of the grid
+/// can use all the free heap, and the firmware restarts each time that it fetches the track.
+#[cfg(target_os = "espidf")]
+pub const MAX_FIELD_LEN: usize = 48 * 1024;
 
 // Message types.
 pub const MSG_SETUP_REQ: u16 = 0x0000;
