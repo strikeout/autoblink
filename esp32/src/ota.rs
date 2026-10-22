@@ -7,7 +7,8 @@
 //! The new app starts in the state "pending verify". `mark_valid` ends that state. When the new
 //! app restarts before `mark_valid`, the bootloader starts the previous app again.
 
-use std::sync::mpsc::{self, SyncSender};
+use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -19,6 +20,7 @@ use esp_idf_svc::ota::EspOta;
 use esp_idf_svc::sys;
 use serde_json::{json, Value};
 
+use crate::net::AP_IP;
 use crate::State;
 
 // ponytail: the page has no password, so each client on the networks of the box can start an
@@ -57,30 +59,37 @@ impl OtaStatus {
     }
 }
 
-/// Starts the update thread. Returns the sender for the commands of the page.
+/// `true` while an update thread runs.
+static BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Starts a thread for one command of the page. Returns an error while a thread runs.
 ///
-/// Use `try_send` for a command. While the thread works, it does not take a new command.
-pub fn start(state: Arc<State>) -> anyhow::Result<SyncSender<OtaCmd>> {
-    let (tx, rx) = mpsc::sync_channel::<OtaCmd>(1);
-    thread::Builder::new()
+/// The thread exists only for the command. Its stack does not stay on the heap after it.
+pub fn run(state: Arc<State>, cmd: OtaCmd) -> Result<(), &'static str> {
+    if BUSY.swap(true, Ordering::AcqRel) {
+        return Err("The firmware update is busy");
+    }
+    let spawned = thread::Builder::new()
         .name("ota".into())
         // The TLS handshake of mbedTLS needs a large stack.
         .stack_size(12 * 1024)
         .spawn(move || {
-            for cmd in rx {
-                let result = match cmd {
-                    OtaCmd::Check => check(&state.ota).map(|_| ()),
-                    OtaCmd::Install => install(&state.ota),
-                };
-                if let Err(e) = result {
-                    log::warn!("Firmware update: {e:#}");
-                    let mut ota = state.ota.lock().unwrap();
-                    ota.state = "error";
-                    ota.error = Some(format!("{e:#}"));
-                }
+            let result = match cmd {
+                OtaCmd::Check => check(&state.ota).map(|_| ()),
+                OtaCmd::Install => install(&state.ota),
+            };
+            if let Err(e) = result {
+                log::warn!("Firmware update: {e:#}");
+                let mut ota = state.ota.lock().unwrap();
+                ota.state = "error";
+                ota.error = Some(format!("{e:#}"));
             }
-        })?;
-    Ok(tx)
+            BUSY.store(false, Ordering::Release);
+        });
+    spawned.map(|_| ()).map_err(|_| {
+        BUSY.store(false, Ordering::Release);
+        "The firmware update cannot start a thread"
+    })
 }
 
 /// Marks the running app as valid, so that the bootloader keeps it after a restart.
@@ -164,6 +173,7 @@ fn install(state: &Mutex<OtaStatus>) -> anyhow::Result<()> {
 
 /// Sends a GET request. Returns the connection after a 200 response.
 fn get(url: &str) -> anyhow::Result<EspHttpConnection> {
+    fix_dns();
     let mut conn = EspHttpConnection::new(&Configuration {
         // GitHub redirects a release file to a URL with more than 500 characters.
         buffer_size: Some(4096),
@@ -179,6 +189,37 @@ fn get(url: &str) -> anyhow::Result<EspHttpConnection> {
         200 => Ok(conn),
         status => bail!("GET {url} gave the status {status}"),
     }
+}
+
+/// The DNS server for a joined network in the subnet of the own WiFi network.
+const PUBLIC_DNS: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
+
+/// Replaces a DNS server in the subnet of the own WiFi network with `PUBLIC_DNS`.
+///
+/// A router at 192.168.1.1 is often also the DNS server. The firmware has that address on its own
+/// WiFi network, so lwIP sends the DNS query to the firmware itself. A public server goes out
+/// through the default route, which is the joined network.
+fn fix_dns() {
+    // SAFETY: the key is a NUL-terminated string. The handle is null or a live netif.
+    let sta = unsafe { sys::esp_netif_get_handle_from_ifkey(c"WIFI_STA_DEF".as_ptr()) };
+    if sta.is_null() {
+        return;
+    }
+    let mut dns = sys::esp_netif_dns_info_t::default();
+    // SAFETY: `sta` is a live netif, and `dns` is a valid output buffer.
+    if unsafe { sys::esp_netif_get_dns_info(sta, sys::esp_netif_dns_type_t_ESP_NETIF_DNS_MAIN, &mut dns) } != sys::ESP_OK {
+        return;
+    }
+    // SAFETY: the ip4 member is valid for each address type, because it is at the start of the union.
+    let current = Ipv4Addr::from(u32::from_be(unsafe { dns.ip.u_addr.ip4.addr }));
+    if !crate::same_subnet(current, AP_IP, 24) {
+        return;
+    }
+    log::warn!("DNS server {current} is in the subnet of the own WiFi network. The firmware uses {PUBLIC_DNS}.");
+    dns.ip.u_addr.ip4.addr = u32::from_ne_bytes(PUBLIC_DNS.octets());
+    dns.ip.type_ = sys::ESP_IPADDR_TYPE_V4 as u8;
+    // SAFETY: `sta` is a live netif, and `dns` holds an IPv4 address.
+    unsafe { sys::esp_netif_set_dns_info(sta, sys::esp_netif_dns_type_t_ESP_NETIF_DNS_MAIN, &mut dns) };
 }
 
 fn set(state: &Mutex<OtaStatus>, name: &'static str, latest: Option<String>, progress: u8) {

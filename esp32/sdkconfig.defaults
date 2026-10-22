@@ -38,3 +38,7 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # start, the firmware logs the task and the backtrace, and GET /log shows them.
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# The OTA download uses TLS. mbedTLS frees its record buffers after the handshake, so that the
+# heap keeps space for the web server and the track data.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y

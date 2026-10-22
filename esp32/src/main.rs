@@ -147,8 +147,7 @@ fn run() -> anyhow::Result<()> {
     let midi_beats = midi::start(p.uart2, p.pins.gpio17, p.pins.gpio35, state.clone(), settings.midi.clone())?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
-    let ota_tx = ota::start(state.clone())?;
-    let (_server, web_beats) = webui::start(state.clone(), settings.clone(), ota_tx)?;
+    let (_server, web_beats) = webui::start(state.clone(), settings.clone())?;
     let track_changes = tracks::start(state.clone())?;
 
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;

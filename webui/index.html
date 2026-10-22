@@ -182,14 +182,6 @@ input.num.text{width:150px;text-align:left}
     <div class="act num"><span id="anote" class="note"></span><span id="acc" class="cc"></span><span id="aosc" class="osc"></span><span id="aidle" class="empty">idle</span></div>
   </section>
 
-  <section class="panel" data-cap="ota">
-    <h2>Firmware</h2>
-    <div class="row">installed <b id="fwcur">—</b> <span id="fwstate" class="num"></span></div>
-    <div class="row"><button id="fwcheck" title="Read the version of the latest release on GitHub. The box needs a network with internet.">Check for update</button> <button id="fwinstall" hidden></button></div>
-    <progress id="fwbar" max="100" hidden></progress>
-    <div class="row" id="fwerr"></div>
-  </section>
-
   <section class="panel wide" data-cap="decks">
     <h2>Deck Information <span id="link" class="kv"></span></h2>
     <div id="decks" class="decks"></div>
@@ -210,6 +202,14 @@ input.num.text{width:150px;text-align:left}
     <summary><h2>Logs</h2></summary>
     <div id="log" class="log"></div>
   </details>
+
+  <section class="panel wide" data-cap="ota">
+    <h2>Firmware</h2>
+    <div class="row">installed <b id="fwcur">—</b> <span id="fwstate" class="num"></span></div>
+    <div class="row"><button id="fwcheck" title="Read the version of the latest release on GitHub. The box needs a network with internet.">Check for update</button> <button id="fwinstall" hidden></button></div>
+    <progress id="fwbar" max="100" hidden></progress>
+    <div class="row" id="fwerr"></div>
+  </section>
 </main>
 <footer id="version"></footer>
 <script>

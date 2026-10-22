@@ -17,7 +17,7 @@ use esp_idf_svc::sys::{self, EspError, ESP_ERR_INVALID_SIZE, ESP_FAIL};
 use esp_idf_svc::ws::FrameType;
 use serde_json::{json, Value};
 
-use crate::ota::OtaCmd;
+use crate::ota::{self, OtaCmd};
 use crate::settings::Settings;
 use crate::tracks::TrackData;
 use crate::State;
@@ -63,7 +63,6 @@ impl Clients {
 pub fn start(
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
-    ota: SyncSender<OtaCmd>,
 ) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<(u8, u8)>)> {
     // Without a limit, a fourth connection closes the oldest one, which is often a live
     // WebSocket. CONFIG_LWIP_MAX_SOCKETS must have space for these sockets.
@@ -105,6 +104,7 @@ pub fn start(
 
     let midi_cfg = settings.lock().unwrap().midi.clone();
     let ws_clients = clients.clone();
+    let ws_state = state.clone();
     let handle = move |ws: &mut EspHttpWsConnection| -> Result<(), EspError> {
         if let EspHttpWsConnection::New(_, req) = ws {
             let req = *req;
@@ -146,7 +146,7 @@ pub fn start(
         // For a text frame, esp-idf-svc adds 1 to the length and puts a NUL byte at the end.
         // serde_json refuses that byte, so remove it.
         let text = buf.strip_suffix(&[0]).unwrap_or(&buf);
-        let reply = command(text, &settings, &ota);
+        let reply = command(text, &settings, &ws_state);
         ws.send(FrameType::Text(false), reply.to_string().as_bytes())
     };
     server.ws_handler("/ws", None, move |ws| -> Result<(), EspError> {
@@ -216,7 +216,7 @@ fn write_waveform<W: Write>(w: &mut W, o: &TrackOverview) -> Result<(), W::Error
 }
 
 /// Runs one command from the page. Returns the reply: the new settings, or an error.
-fn command(buf: &[u8], settings: &Mutex<Settings>, ota: &SyncSender<OtaCmd>) -> Value {
+fn command(buf: &[u8], settings: &Mutex<Settings>, state: &Arc<State>) -> Value {
     let error = |text: &str| json!({"type": "error", "text": text});
     let Ok(cmd) = serde_json::from_slice::<Value>(buf) else {
         return error("The command is not valid JSON");
@@ -243,9 +243,9 @@ fn command(buf: &[u8], settings: &Mutex<Settings>, ota: &SyncSender<OtaCmd>) -> 
         // The update thread does the work. The page sees the result in the "ota" field of the status.
         Some(kind @ ("ota_check" | "ota_install")) => {
             let cmd = if kind == "ota_check" { OtaCmd::Check } else { OtaCmd::Install };
-            match ota.try_send(cmd) {
+            match ota::run(state.clone(), cmd) {
                 Ok(()) => settings.lock().unwrap().message(),
-                Err(_) => error("The firmware update is busy"),
+                Err(text) => error(text),
             }
         }
         Some(other) => error(&format!("This device does not support the command {other}")),
