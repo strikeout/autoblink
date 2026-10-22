@@ -184,20 +184,26 @@ fn run() -> anyhow::Result<()> {
     let eth_mac = eth.netif().get_mac()?;
     let mut last = (None, None);
     let mut next_heap_log = Instant::now();
+    let mut heap_low = u32::MAX;
     let mut next_join = Instant::now() + JOIN_RETRY;
     loop {
         state.tracker.lock().unwrap().expire(state.now_ms());
         settings.lock().unwrap().save_midi();
+        // SAFETY: the heap calls only read counters.
+        let (free, min, block) = unsafe {
+            (
+                sys::esp_get_free_heap_size(),
+                sys::esp_get_minimum_free_heap_size(),
+                sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT),
+            )
+        };
+        // The time of this line in GET /log shows the event that used the heap in the last second.
+        if min.saturating_add(HEAP_LOW_STEP) <= heap_low {
+            heap_low = min;
+            log::warn!("Heap low point: {min} bytes. Now {free} bytes free, largest block {block} bytes");
+        }
         if Instant::now() >= next_heap_log {
             next_heap_log += Duration::from_secs(60);
-            // SAFETY: the heap calls only read counters.
-            let (free, min, block) = unsafe {
-                (
-                    sys::esp_get_free_heap_size(),
-                    sys::esp_get_minimum_free_heap_size(),
-                    sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT),
-                )
-            };
             log::info!(
                 "Up {} s. Heap: {free} bytes free, {min} bytes minimum, largest block {block} bytes",
                 state.now_ms() / 1000
@@ -295,6 +301,9 @@ fn same_subnet(a: Ipv4Addr, b: Ipv4Addr, prefix: u8) -> bool {
     let mask = u32::MAX.checked_shl(32 - u32::from(prefix.min(32))).unwrap_or(0);
     u32::from(a) & mask == u32::from(b) & mask
 }
+
+/// The main loop logs a new heap low point when the minimum falls by this many bytes.
+const HEAP_LOW_STEP: u32 = 2048;
 
 /// The name of a reset reason of `esp_reset_reason`.
 fn reset_reason(reason: sys::esp_reset_reason_t) -> &'static str {
