@@ -151,7 +151,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 
 - Run `curl http://xdj-clock.local/log` to read the log over WiFi. The page shows no log.
 - The log ring is in RTC slow memory (4 KB). A panic, a watchdog or a software restart keeps it. A power-on clears it.
-- The text has two parts: the lines of the previous start and the lines of this start.
+- The text has three parts: the last crash, the lines of the previous start and the lines of this start.
+- The firmware keeps the crash report outside the ring. Thus a flood of log lines cannot push it out.
 - The ESP-IDF C components (WiFi driver, HTTP server) log only to UART0. The ring has only the Rust log lines.
 - After a crash, the panic handler writes a core dump to the `coredump` partition (0x3E0000). At the next start, the firmware logs the task, the exception and the backtrace. Then it erases the dump.
 - A box with an older partition table has no `coredump` partition. Flash it over USB to add the partition. OTA does not change the partition table.
@@ -209,6 +210,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - When a deck loads a track, the firmware connects to the dbserver of the source player. It gets the title, the artist, the phrases, the waveform preview, the cues and the beat grid. It fetches one track at a time.
 - The `espressif/mdns` component comes from `[package.metadata.esp-idf-sys.extra_components]` in `esp32/Cargo.toml`. After a change to that table, run `cargo clean --release -p esp-idf-sys`. If you do not, the build uses the old ESP-IDF build and `esp_idf_svc::mdns` does not exist.
 - The WebSocket handshake completes before the firmware can read the `Origin` header. When the Origin check fails, the firmware closes the connection and sends no data. It cannot reply with 403.
+- An error from the `ws_handler` closure does not close the socket. esp-idf-svc 0.53 logs it and returns `ESP_OK`. The handler wrapper in `webui.rs` closes the session with `httpd_sess_trigger_close`.
 
 ## Refactor Context (for future sessions)
 

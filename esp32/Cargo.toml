@@ -1,7 +1,7 @@
 [package]
 name = "xdj-clock-esp32"
 # The firmware is not in the workspace. Keep this version the same as the workspace version.
-version = "1.18.1"
+version = "1.18.2"
 edition = "2021"
 license = "Proprietary"
 authors = ["xdj-midi team"]
