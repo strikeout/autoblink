@@ -2,17 +2,23 @@
 //!
 //! One thread fetches the tracks one after the other, because the ESP32 has little RAM and few
 //! sockets. A fetch takes up to about 8 s. The host fetches in parallel.
+//!
+//! When a deck loads more tracks during a fetch, the thread fetches only the last one. When a
+//! fetch fails, the thread tries again once after 3 s, if the deck still holds the track.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use xdj_core_dbserver::{asking_player, fetch, SongStructure, TrackMetadata, TrackOverview};
 use xdj_core_prolink::TrackRef;
 
 use crate::State;
+
+const RETRY_DELAY: Duration = Duration::from_secs(3);
 
 /// The fetched data of the track on one deck.
 #[derive(Default)]
@@ -35,21 +41,38 @@ pub fn start(state: Arc<State>) -> anyhow::Result<Sender<TrackRef>> {
         .name("dbserver".into())
         .stack_size(12 * 1024)
         .spawn(move || {
-            for track in rx {
-                let mut tracks = state.tracks.0.lock().unwrap();
-                if track.rekordbox_id == 0 {
-                    tracks.remove(&track.device);
-                    continue;
+            while let Ok(first) = rx.recv() {
+                // Keep only the last change of each deck. The older changes are stale.
+                let mut latest = vec![first];
+                for track in rx.try_iter() {
+                    latest.retain(|t| t.device != track.device);
+                    latest.push(track);
                 }
-                tracks.insert(track.device, TrackData { rekordbox_id: track.rekordbox_id, ..Default::default() });
-                drop(tracks);
-                fetch_one(&state, track);
+                for track in latest {
+                    let mut tracks = state.tracks.0.lock().unwrap();
+                    if track.rekordbox_id == 0 {
+                        tracks.remove(&track.device);
+                        continue;
+                    }
+                    tracks.insert(track.device, TrackData { rekordbox_id: track.rekordbox_id, ..Default::default() });
+                    drop(tracks);
+                    if fetch_one(&state, track) {
+                        continue;
+                    }
+                    thread::sleep(RETRY_DELAY);
+                    let loaded = state.tracker.lock().unwrap().deck(track.device).map(|d| d.track.rekordbox_id);
+                    if loaded == Some(track.rekordbox_id) {
+                        log::info!("Deck {} track {}: the fetch starts again", track.device, track.rekordbox_id);
+                        fetch_one(&state, track);
+                    }
+                }
             }
         })?;
     Ok(tx)
 }
 
-fn fetch_one(state: &State, track: TrackRef) {
+/// Fetches one track and stores the result. Returns `false` when the fetch failed.
+fn fetch_one(state: &State, track: TrackRef) -> bool {
     let (source, players) = {
         let tracker = state.tracker.lock().unwrap();
         // A track from rekordbox has a source player above 15, which is not a deck.
@@ -77,7 +100,7 @@ fn fetch_one(state: &State, track: TrackRef) {
     let mut tracks = state.tracks.0.lock().unwrap();
     // A newer track on the deck makes this result stale.
     let Some(data) = tracks.get_mut(&track.device).filter(|d| d.rekordbox_id == track.rekordbox_id) else {
-        return;
+        return true;
     };
     match result {
         Ok(f) => {
@@ -88,10 +111,12 @@ fn fetch_one(state: &State, track: TrackRef) {
             data.metadata = Some(f.metadata);
             data.structure = Some(f.song_structure);
             data.overview = f.overview.map(Arc::new);
+            true
         }
         Err(e) => {
             log::warn!("Deck {} track {}: the fetch failed: {e}", track.device, track.rekordbox_id);
             data.structure = Some(Err(e));
+            false
         }
     }
 }

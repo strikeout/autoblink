@@ -5,6 +5,7 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use serde_json::{json, Value};
@@ -16,6 +17,8 @@ const DEFAULT_DEVICE: u8 = 7;
 const IDX_SSID: usize = 100;
 const IDX_PASSWORD: usize = 101;
 const DEFAULT_PASSWORD: &str = "xdjclock123";
+/// The MIDI configuration goes to NVS when it has not changed for this time.
+const SAVE_DELAY: Duration = Duration::from_secs(2);
 
 pub struct Settings {
     nvs: EspNvs<NvsDefault>,
@@ -24,6 +27,8 @@ pub struct Settings {
     pub midi: Arc<Mutex<MidiConfig>>,
     /// The virtual CDJ joins again when this number changes.
     pub device_number: Arc<AtomicU8>,
+    /// The time of the last MIDI change that is not in NVS yet.
+    midi_changed: Option<Instant>,
 }
 
 impl Settings {
@@ -42,6 +47,7 @@ impl Settings {
             default_ssid,
             midi: Arc::new(Mutex::new(midi)),
             device_number: Arc::new(AtomicU8::new(device.unwrap_or(DEFAULT_DEVICE))),
+            midi_changed: None,
         })
     }
 
@@ -72,7 +78,7 @@ impl Settings {
     }
 
     /// Stores a typed value. Returns the error text for the page when the value is not valid.
-    pub fn set(&self, idx: usize, value: &str) -> Result<(), String> {
+    pub fn set(&mut self, idx: usize, value: &str) -> Result<(), String> {
         match idx {
             IDX_DEVICE => {
                 let n = value
@@ -94,17 +100,32 @@ impl Settings {
     }
 
     /// Flips a toggle or a switch, or steps a number.
-    pub fn cycle(&self, idx: usize, dir: i8) -> Result<(), String> {
+    pub fn cycle(&mut self, idx: usize, dir: i8) -> Result<(), String> {
         self.change_midi(|cfg| midi_settings::cycle(cfg, idx, dir))
     }
 
-    fn change_midi(&self, f: impl FnOnce(&mut MidiConfig) -> Result<(), String>) -> Result<(), String> {
-        let json = {
-            let mut cfg = self.midi.lock().unwrap();
-            f(&mut cfg)?;
-            serde_json::to_string(&*cfg).map_err(|e| e.to_string())?
-        };
-        self.nvs.set_str("midi", &json).map_err(|e| format!("Cannot save the setting: {e}"))
+    /// Changes the MIDI configuration in RAM. `save_midi` writes it to NVS later.
+    ///
+    /// An NVS write stops the flash cache of both cores for up to some 100 ms, and the MIDI clock
+    /// stops with it. Many fast clicks on the page then give many stops. The delay gives one.
+    fn change_midi(&mut self, f: impl FnOnce(&mut MidiConfig) -> Result<(), String>) -> Result<(), String> {
+        f(&mut self.midi.lock().unwrap())?;
+        self.midi_changed = Some(Instant::now());
+        Ok(())
+    }
+
+    /// Writes the MIDI configuration to NVS when it has not changed for `SAVE_DELAY`. The main
+    /// loop calls this each second.
+    pub fn save_midi(&mut self) {
+        if !self.midi_changed.is_some_and(|t| t.elapsed() >= SAVE_DELAY) {
+            return;
+        }
+        self.midi_changed = None;
+        let json = serde_json::to_string(&*self.midi.lock().unwrap());
+        match json.map_err(anyhow::Error::from).and_then(|j| Ok(self.nvs.set_str("midi", &j)?)) {
+            Ok(()) => log::info!("The MIDI settings are saved"),
+            Err(e) => log::warn!("Cannot save the MIDI settings: {e}"),
+        }
     }
 
     fn put(&self, key: &str, value: &str) -> Result<(), String> {

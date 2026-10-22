@@ -182,9 +182,14 @@ pub fn parse_pqtz(data: &[u8]) -> Result<Vec<u32>, String> {
     if beats > data.len() / 8 {
         return Err(format!("PQTZ blob {} bytes is too short", data.len()));
     }
-    let grid = (0..beats)
-        .map(|i| u32_at(body.saturating_add(i * 8 + 4)))
-        .collect::<Result<Vec<u32>, String>>()?;
+    // On the ESP32, a long track can need more than the free heap. A failed reservation gives
+    // an error, not an abort.
+    let mut grid = Vec::new();
+    grid.try_reserve_exact(beats)
+        .map_err(|_| format!("PQTZ beat grid of {beats} beats does not fit in memory"))?;
+    for i in 0..beats {
+        grid.push(u32_at(body.saturating_add(i * 8 + 4))?);
+    }
     if grid.is_empty() {
         return Err("PQTZ blob has no beats".into());
     }

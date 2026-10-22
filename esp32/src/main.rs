@@ -32,7 +32,6 @@ use crate::net::{EthPins, AP_IP};
 use crate::prolink::EthInfo;
 use crate::settings::Settings;
 use crate::tracks::Tracks;
-use crate::webui::Clients;
 
 /// The state that the receive threads write and the web page reads.
 pub struct State {
@@ -47,6 +46,8 @@ pub struct State {
     pub conflict: AtomicU8,
     /// The device number of the virtual CDJ. 0 while it is not on the network.
     pub own_device: AtomicU8,
+    /// The reason for the last restart, for example "power-on" or "panic".
+    pub reset_reason: &'static str,
     start: Instant,
 }
 
@@ -64,11 +65,19 @@ fn main() {
     sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
     if let Err(e) = run() {
-        log::error!("The firmware stops: {e:#}");
+        // A start failure can be temporary, for example an Ethernet or NVS error. A restart
+        // tries again. Without it, the box stays dead until a power cycle.
+        log::error!("The firmware restarts: {e:#}");
+        thread::sleep(Duration::from_secs(1));
+        // SAFETY: esp_restart has no preconditions.
+        unsafe { sys::esp_restart() };
     }
 }
 
 fn run() -> anyhow::Result<()> {
+    // SAFETY: esp_reset_reason has no preconditions.
+    let reset_reason = reset_reason(unsafe { sys::esp_reset_reason() });
+    log::info!("xdj-clock {} starts. Reason for the restart: {reset_reason}", env!("CARGO_PKG_VERSION"));
     let p = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
@@ -107,12 +116,13 @@ fn run() -> anyhow::Result<()> {
         eth: Mutex::new(None),
         conflict: AtomicU8::new(0),
         own_device: AtomicU8::new(0),
+        reset_reason,
         start: Instant::now(),
     });
-    let clients = Arc::new(Clients::default());
     let midi_beats = midi::start(p.uart2, p.pins.gpio17, p.pins.gpio35, state.clone(), settings.midi.clone())?;
     let device_number = settings.device_number.clone();
-    let _server = webui::start(state.clone(), clients.clone(), Arc::new(Mutex::new(settings)))?;
+    let settings = Arc::new(Mutex::new(settings));
+    let (_server, web_beats) = webui::start(state.clone(), settings.clone())?;
     let track_changes = tracks::start(state.clone())?;
 
     // IO32 pulses on each beat of the master deck, IO33 on the first beat of the bar.
@@ -144,14 +154,13 @@ fn run() -> anyhow::Result<()> {
         state.clone(),
         device_number,
         move |beat| {
-            let msg = webui::beat_message(beat.device, beat.beat_in_bar);
             let _ = beat_tx.send(beat.beat_in_bar);
             #[cfg(feature = "dmx")]
             dmx.beat();
+            let page_beat = (beat.device, beat.beat_in_bar);
             let _ = midi_beats.send(beat);
-            // The broadcast waits for the web server task, which can be slow on a weak WiFi
-            // link. It therefore comes after the MIDI, the DMX and the LEDs.
-            clients.broadcast(&msg);
+            // The web thread sends the beat to the page. This thread does not wait for it.
+            let _ = web_beats.try_send(page_beat);
         },
         move |track| {
             let _ = track_changes.send(track);
@@ -163,7 +172,25 @@ fn run() -> anyhow::Result<()> {
     log::info!("Ethernet is waiting for a cable and an address");
     let eth_mac = eth.netif().get_mac()?;
     let mut last = None;
+    let mut next_heap_log = Instant::now();
     loop {
+        state.tracker.lock().unwrap().expire(state.now_ms());
+        settings.lock().unwrap().save_midi();
+        if Instant::now() >= next_heap_log {
+            next_heap_log += Duration::from_secs(60);
+            // SAFETY: the heap calls only read counters.
+            let (free, min, block) = unsafe {
+                (
+                    sys::esp_get_free_heap_size(),
+                    sys::esp_get_minimum_free_heap_size(),
+                    sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT),
+                )
+            };
+            log::info!(
+                "Up {} s. Heap: {free} bytes free, {min} bytes minimum, largest block {block} bytes",
+                state.now_ms() / 1000
+            );
+        }
         let info = eth.netif().get_ip_info().ok().filter(|i| !i.ip.is_unspecified());
         let ip = info.map(|i| i.ip);
         *state.eth.lock().unwrap() = info.map(|i| EthInfo {
@@ -189,6 +216,21 @@ fn run() -> anyhow::Result<()> {
             last = ip;
         }
         thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// The name of a reset reason of `esp_reset_reason`.
+fn reset_reason(reason: sys::esp_reset_reason_t) -> &'static str {
+    match reason {
+        sys::esp_reset_reason_t_ESP_RST_POWERON => "power-on",
+        sys::esp_reset_reason_t_ESP_RST_EXT => "external pin",
+        sys::esp_reset_reason_t_ESP_RST_SW => "software restart",
+        sys::esp_reset_reason_t_ESP_RST_PANIC => "panic",
+        sys::esp_reset_reason_t_ESP_RST_INT_WDT => "interrupt watchdog",
+        sys::esp_reset_reason_t_ESP_RST_TASK_WDT => "task watchdog",
+        sys::esp_reset_reason_t_ESP_RST_WDT => "other watchdog",
+        sys::esp_reset_reason_t_ESP_RST_BROWNOUT => "brownout",
+        _ => "unknown",
     }
 }
 
