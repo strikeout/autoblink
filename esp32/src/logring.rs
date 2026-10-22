@@ -35,6 +35,8 @@ static mut RING: MaybeUninit<Ring> = MaybeUninit::uninit();
 static LOCK: Mutex<()> = Mutex::new(());
 /// The lines of the previous start. Empty after a power-on.
 static PREVIOUS: OnceLock<String> = OnceLock::new();
+/// The crash report of this start. A flood of log lines cannot push it out of the ring.
+static CRASH: Mutex<String> = Mutex::new(String::new());
 
 static LOGGER: Logger = Logger;
 static UART: EspIdfLogger = EspIdfLogger::new(());
@@ -136,7 +138,9 @@ pub fn text() -> String {
     };
     let previous = PREVIOUS.get().map_or("", String::as_str);
     let previous = if previous.is_empty() { "(no lines: the box started from power-on)\n" } else { previous };
-    format!("=== The previous start ===\n{previous}=== This start ===\n{current}")
+    let crash = CRASH.lock().unwrap_or_else(|e| e.into_inner());
+    let crash = if crash.is_empty() { "(no core dump)\n" } else { crash.as_str() };
+    format!("=== The last crash ===\n{crash}=== The previous start ===\n{previous}=== This start ===\n{current}")
 }
 
 /// Logs the core dump of the last crash, then erases it. The next crash can then write a new dump.
@@ -158,7 +162,7 @@ pub fn report_core_dump() {
         let mut reason = [0u8; 200];
         if sys::esp_core_dump_get_panic_reason(reason.as_mut_ptr().cast(), reason.len()) == sys::ESP_OK {
             let reason = CStr::from_bytes_until_nul(&reason).map(CStr::to_string_lossy).unwrap_or_default();
-            log::error!("The last crash: {reason}");
+            crash_line(format!("The last crash: {reason}"));
         }
         let mut s: sys::esp_core_dump_summary_t = std::mem::zeroed();
         if sys::esp_core_dump_get_summary(&mut s) == sys::ESP_OK {
@@ -166,15 +170,23 @@ pub fn report_core_dump() {
             let bt = &s.exc_bt_info;
             let depth = (bt.depth as usize).min(bt.bt.len());
             let addrs: Vec<String> = bt.bt[..depth].iter().map(|a| format!("{a:#010x}")).collect();
-            log::error!(
+            crash_line(format!(
                 "The last crash: task {task}, PC {:#010x}, cause {}, address {:#010x}{}",
                 s.exc_pc,
                 s.ex_info.exc_cause,
                 s.ex_info.exc_vaddr,
                 if bt.corrupted { ", the backtrace is corrupt" } else { "" }
-            );
-            log::error!("The last crash: backtrace {}", addrs.join(" "));
+            ));
+            crash_line(format!("The last crash: backtrace {}", addrs.join(" ")));
         }
         sys::esp_core_dump_image_erase();
     }
+}
+
+/// Logs a line of the crash report, and keeps it for the top of `GET /log`.
+fn crash_line(line: String) {
+    log::error!("{line}");
+    let mut crash = CRASH.lock().unwrap_or_else(|e| e.into_inner());
+    crash.push_str(&line);
+    crash.push('\n');
 }

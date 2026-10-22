@@ -105,7 +105,7 @@ pub fn start(
 
     let midi_cfg = settings.lock().unwrap().midi.clone();
     let ws_clients = clients.clone();
-    server.ws_handler("/ws", None, move |ws| -> Result<(), EspError> {
+    let handle = move |ws: &mut EspHttpWsConnection| -> Result<(), EspError> {
         if let EspHttpWsConnection::New(_, req) = ws {
             let req = *req;
             let (origin, host) = (header(req, "Origin"), header(req, "Host"));
@@ -148,6 +148,12 @@ pub fn start(
         let text = buf.strip_suffix(&[0]).unwrap_or(&buf);
         let reply = command(text, &settings, &ota);
         ws.send(FrameType::Text(false), reply.to_string().as_bytes())
+    };
+    server.ws_handler("/ws", None, move |ws| -> Result<(), EspError> {
+        if let Err(e) = handle(ws) {
+            close_session(ws, e);
+        }
+        Ok(())
     })?;
 
     // This thread does all the sends to the page. When the queue is full, `try_send` drops the beat.
@@ -387,6 +393,21 @@ fn status_message(state: &State, clock_enabled: bool) -> Value {
             "heap_min": unsafe { sys::esp_get_minimum_free_heap_size() },
         },
     })
+}
+
+/// Closes a WebSocket session after an error of the handler.
+///
+/// esp-idf-svc logs a handler error and keeps the socket open. The unread data then calls the
+/// handler again every 30 ms, and each call logs the error again. Thus the firmware closes the
+/// session itself.
+fn close_session(ws: &EspHttpWsConnection, e: EspError) {
+    let (EspHttpWsConnection::New(sd, _) | EspHttpWsConnection::Receiving(sd, _, _)) = ws else {
+        return;
+    };
+    let fd = ws.session();
+    log::warn!("WebSocket {fd}: the firmware closes the connection after an error: {e}");
+    // SAFETY: `sd` is the live server handle of this handler call, and `fd` is its socket.
+    unsafe { sys::httpd_sess_trigger_close(*sd, fd) };
 }
 
 fn header(req: *mut sys::httpd_req_t, name: &str) -> Option<String> {
