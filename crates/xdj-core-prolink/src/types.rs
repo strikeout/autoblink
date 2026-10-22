@@ -35,6 +35,24 @@ impl From<u8> for PlayState {
     }
 }
 
+impl core::fmt::Display for PlayState {
+    /// The same text as the host status.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PlayState::NoTrack => f.write_str("No Track"),
+            PlayState::Loading => f.write_str("Loading"),
+            PlayState::Playing => f.write_str("Playing"),
+            PlayState::PlayingLoop => f.write_str("Playing Loop"),
+            PlayState::Paused => f.write_str("Paused"),
+            PlayState::PausedAtCue => f.write_str("Paused at Cue"),
+            PlayState::CuePlaying => f.write_str("Cue Playing"),
+            PlayState::Searching => f.write_str("Searching"),
+            PlayState::EndOfTrack => f.write_str("End of Track"),
+            PlayState::Unknown(v) => write!(f, "Unknown({v})"),
+        }
+    }
+}
+
 impl PlayState {
     pub fn is_playing(self) -> bool {
         matches!(
@@ -98,6 +116,8 @@ pub struct CdjStatus {
     pub track_slot: u8,
     pub track_type: u8,
     pub rekordbox_id: u32,
+    /// The active loop as (start, end) in ms. Only a CDJ-3000 class packet holds it.
+    pub loop_ms: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]

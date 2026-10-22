@@ -137,8 +137,10 @@ pub fn parse_abs_position(data: &[u8]) -> Option<AbsPositionPacket> {
     })
 }
 
+/// Reads a CDJ status packet. Like the host, it accepts the short packets of older players: the
+/// parser reads up to offset 0xa6.
 pub fn parse_cdj_status(data: &[u8]) -> Option<CdjStatus> {
-    if data.len() < 0xd4 {
+    if data.len() < 0xa7 {
         return None;
     }
     if !has_magic(data) || data[0x0a] != PKT_CDJ_STATUS {
@@ -175,7 +177,21 @@ pub fn parse_cdj_status(data: &[u8]) -> Option<CdjStatus> {
         track_slot: data[0x29],
         track_type: data[0x2a],
         rekordbox_id: u32be(data, 0x2c),
+        loop_ms: parse_loop_ms(data),
     })
+}
+
+/// Reads the active loop of a CDJ-3000 class status packet, in ms. Each raw value × 65536 / 1000
+/// is the position in ms. Returns `None` when the packet is too short or when no loop plays.
+fn parse_loop_ms(data: &[u8]) -> Option<(u32, u32)> {
+    const START: usize = 0x1b6;
+    const END: usize = 0x1be;
+    if data.len() < END + 4 {
+        return None;
+    }
+    let ms = |off| (u64::from(u32be(data, off)) * 65_536 / 1_000).min(u64::from(u32::MAX)) as u32;
+    let (start, end) = (ms(START), ms(END));
+    (start != 0 && end > start).then_some((start, end))
 }
 
 pub fn parse_mixer_status(data: &[u8]) -> Option<MixerStatus> {

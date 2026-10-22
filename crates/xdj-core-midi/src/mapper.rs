@@ -6,6 +6,22 @@ use crate::config::{MidiConfig, CC_COUNT};
 use crate::Out;
 
 const PHRASE_16: usize = 7;
+const PHRASE_KIND: usize = 8;
+const PHRASE_PROGRESS: usize = 9;
+const BEATS_LEFT: usize = 10;
+
+/// The current phrase of the master deck, from the song structure of its track.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Phrase {
+    pub rekordbox_id: u32,
+    /// The index of the phrase in the song structure.
+    pub idx: usize,
+    /// The kind code: Intro 0, Verse 1 to 6, Bridge 7, Chorus 8, Up 9, Down 10, Outro 11.
+    /// `None` for a kind that has no code. The kind messages then do not go out.
+    pub code: Option<u8>,
+    pub progress: f64,
+    pub beats_left: u32,
+}
 
 /// The state of the master deck that the CCs show.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -19,6 +35,8 @@ pub struct Snapshot {
     /// The position in the current beat, 0.0 to 1.0.
     pub beat_phase: f64,
     pub playing: bool,
+    /// `None` when the track has no song structure, or the beat number is not known.
+    pub phrase: Option<Phrase>,
 }
 
 fn scale01(v: f64) -> u8 {
@@ -54,11 +72,14 @@ pub struct Mapper {
     /// when it is switched on. Like the host, the start value 0 is not sent.
     prev: [u8; CC_COUNT],
     prev_phrase16: u8,
+    prev_phrase_idx: Option<usize>,
+    /// The (device, track, phrase) that the phrase kind messages went out for.
+    kind_sent_for: Option<(u8, u32, usize)>,
 }
 
 impl Default for Mapper {
     fn default() -> Self {
-        Self { prev: [0; CC_COUNT], prev_phrase16: 0 }
+        Self { prev: [0; CC_COUNT], prev_phrase16: 0, prev_phrase_idx: None, kind_sent_for: None }
     }
 }
 
@@ -99,6 +120,45 @@ impl Mapper {
             out(Out::Cc { ch, num: cc.num, val: 0 });
         }
         self.prev_phrase16 = s.phrase16;
+        self.update_phrase(cfg, s, out);
+    }
+
+    /// The phrase messages, as on the host:
+    /// - The phrase change note goes out when the phrase index changes from one phrase to another.
+    /// - The phrase kind CC (code × 10) and note (base + code) go out once for each phrase of
+    ///   each track. They therefore also go out after a track load or a master change.
+    /// - The progress and beats left CCs go out when they change.
+    fn update_phrase(&mut self, cfg: &MidiConfig, s: &Snapshot, out: &mut impl FnMut(Out)) {
+        let idx = s.phrase.map(|p| p.idx);
+        if let (Some(prev), Some(cur)) = (self.prev_phrase_idx, idx) {
+            if prev != cur && cfg.notes_enabled && cfg.send_phrase_change {
+                out(Out::Note { ch: cfg.note_channel, note: cfg.phrase_change_note, vel: 127 });
+            }
+        }
+        self.prev_phrase_idx = idx;
+
+        let Some(p) = s.phrase else { return };
+        let key = (s.device, p.rekordbox_id, p.idx);
+        if let Some(code) = p.code.filter(|_| self.kind_sent_for != Some(key)) {
+            self.kind_sent_for = Some(key);
+            let cc = cfg.ccs[PHRASE_KIND];
+            if cfg.cc_enabled && cc.on {
+                out(Out::Cc { ch: cfg.cc_channel, num: cc.num, val: (code * 10).min(127) });
+            }
+            if cfg.notes_enabled && cfg.send_phrase_kind {
+                let note = cfg.phrase_base_note.saturating_add(code).min(127);
+                out(Out::Note { ch: cfg.note_channel, note, vel: 127 });
+            }
+        }
+        for (i, val) in [(PHRASE_PROGRESS, scale01(p.progress)), (BEATS_LEFT, p.beats_left.min(127) as u8)] {
+            let cc = cfg.ccs[i];
+            if !cfg.cc_enabled || !cc.on {
+                self.prev[i] = 255;
+            } else if val != self.prev[i] {
+                self.prev[i] = val;
+                out(Out::Cc { ch: cfg.cc_channel, num: cc.num, val });
+            }
+        }
     }
 }
 
@@ -135,7 +195,7 @@ mod tests {
     }
 
     fn snap() -> Snapshot {
-        Snapshot { device: 2, bpm: 128.5, pitch: 2.0, phrase16: 5, beat_phase: 0.5, playing: true }
+        Snapshot { device: 2, bpm: 128.5, pitch: 2.0, phrase16: 5, beat_phase: 0.5, playing: true, phrase: None }
     }
 
     #[test]
@@ -183,6 +243,35 @@ mod tests {
         assert!(out.contains(&Out::Cc { ch: 0, num: 7, val: 0 }));
         let out = collect(|o| m.update(&cfg, &at(1), &mut |x| o(x)));
         assert!(!out.contains(&Out::Cc { ch: 0, num: 7, val: 0 }));
+    }
+
+    #[test]
+    fn phrase_messages_follow_the_host_rules() {
+        let cfg = MidiConfig::default();
+        let mut m = Mapper::default();
+        let phrase = |idx, code, beats_left| Phrase { rekordbox_id: 207, idx, code: Some(code), progress: 0.5, beats_left };
+        let at = |p| Snapshot { phrase: Some(p), ..snap() };
+        let out = collect(|o| m.update(&cfg, &at(phrase(0, 1, 16)), &mut |x| o(x)));
+        // The first phrase: kind CC 10, kind note 40 + 1, progress 64, beats left 16. No change note.
+        assert!(out.contains(&Out::Cc { ch: 0, num: 20, val: 10 }));
+        assert!(out.contains(&Out::Note { ch: 9, note: 41, vel: 127 }));
+        assert!(out.contains(&Out::Cc { ch: 0, num: 21, val: 64 }));
+        assert!(out.contains(&Out::Cc { ch: 0, num: 22, val: 16 }));
+        assert!(!out.contains(&Out::Note { ch: 9, note: 38, vel: 127 }));
+        // The same phrase again sends nothing new.
+        let out = collect(|o| m.update(&cfg, &at(phrase(0, 1, 16)), &mut |x| o(x)));
+        assert!(out.is_empty());
+        // The next phrase: the change note and the new kind.
+        let out = collect(|o| m.update(&cfg, &at(phrase(1, 8, 32)), &mut |x| o(x)));
+        assert!(out.contains(&Out::Note { ch: 9, note: 38, vel: 127 }));
+        assert!(out.contains(&Out::Cc { ch: 0, num: 20, val: 80 }));
+        assert!(out.contains(&Out::Note { ch: 9, note: 48, vel: 127 }));
+        // A phrase with an unknown kind still sends the change note and the progress CCs.
+        let unknown = Phrase { code: None, ..phrase(2, 0, 8) };
+        let out = collect(|o| m.update(&cfg, &at(unknown), &mut |x| o(x)));
+        assert!(out.contains(&Out::Note { ch: 9, note: 38, vel: 127 }));
+        assert!(out.contains(&Out::Cc { ch: 0, num: 22, val: 8 }));
+        assert!(!out.iter().any(|o| matches!(o, Out::Cc { num: 20, .. })));
     }
 
     #[test]

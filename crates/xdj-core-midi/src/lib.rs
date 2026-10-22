@@ -2,8 +2,8 @@
 //! mapper. The code has no clock and no I/O. The caller gives the time in microseconds and
 //! sends the `Out` messages, so the host tests can run it.
 //!
-//! The behaviour follows the host (`host/src/midi/`). The firmware receives only the beat
-//! packets, so it has no phrase, no song structure and no mixer data.
+//! The behaviour follows the host (`host/src/midi/`). The firmware has no mixer data, so it has
+//! no No Bass note.
 
 pub mod clock;
 pub mod config;
@@ -12,7 +12,7 @@ pub mod settings;
 
 pub use clock::Clock;
 pub use config::{Cc, MidiConfig, CC_COUNT};
-pub use mapper::{Mapper, Smoother, Snapshot};
+pub use mapper::{Mapper, Phrase, Smoother, Snapshot};
 pub use settings::SettingItem;
 
 pub const CLOCK: u8 = 0xF8;

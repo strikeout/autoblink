@@ -62,7 +62,8 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP), `prolink.rs` (UDP receive), `midi.rs` (UART MIDI out), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1), `settings.rs` (NVS) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS) |
+| `crates/xdj-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/xdj-core-midi` | MIDI logic of the firmware, host-testable | `clock.rs`, `mapper.rs`, `settings.rs` (host setting indices) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
@@ -103,7 +104,7 @@ Plus `pub fn interface_priority()` for network interface ranking.
 
 All have `#[cfg(not(windows))]` guards around reuse_port calls.
 
-**ESP32 vs host**: The ESP32 uses `std::net::UdpSocket` on the ESP-IDF network stack. It has no `tokio` runtime; each task is a `std::thread`. It parses packets with `xdj-core-prolink`, and `xdj_core_prolink::Tracker` keeps the deck and master state. The host does not use the `Tracker` yet.
+**ESP32 vs host**: The ESP32 uses `std::net::UdpSocket` and `TcpStream` on the ESP-IDF network stack. It has no `tokio` runtime; each task is a `std::thread`. It parses packets with `xdj-core-prolink`, and `xdj_core_prolink::Tracker` keeps the deck and master state. It fetches the track data with `xdj-core-dbserver`, one track after the other. The host does not use these crates yet. It has its own async copy of the dbserver client in `host/src/prolink/metadata.rs`.
 
 ## Toolchain & Dependencies
 
@@ -155,13 +156,18 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - The firmware starts its own WiFi network `xdj-clock-XXXX` (the last 2 bytes of the MAC address). The default password is `xdjclock123`. The web page is at http://192.168.1.1.
 - Do not connect the Ethernet port to a 192.168.1.x network. The WiFi network uses that subnet, and the firmware can then send a reply out on the wrong port. The firmware logs a warning for this case.
 - Ethernet gets its address from DHCP. Without a DHCP server (a direct cable to the XDJ-AZ), it takes a 169.254.x.x address.
-- The firmware receives the keepalive (port 50000) and beat (port 50001) broadcasts. It does not join the network as a virtual CDJ. The master is the deck that sent the last beat, until that deck stops.
+- The firmware joins the network as a virtual CDJ, like the host. The page setting "Device Number" (index 2, default 7) sets the number. A change makes the virtual CDJ join again.
+- The XDJ-AZ sends the track ID only to a virtual CDJ with number 7 or higher. Do not run the host and the firmware on one network with the same number.
+- The players send their CDJ status (port 50002) to the virtual CDJ. The master flag in the status decides the master. Without a status, the master is the deck that sent the last beat, until that deck stops.
+- The firmware reads the absolute position packets (port 50001) for the playhead and the track length.
+- When a deck loads a track, the firmware connects to the dbserver of the source player. It gets the title, the artist, the phrases, the waveform preview, the cues and the beat grid. It fetches one track at a time.
 - The WebSocket handshake completes before the firmware can read the `Origin` header. When the Origin check fails, the firmware closes the connection and sends no data. It cannot reply with 403.
 
 ## Refactor Context (for future sessions)
 
 - `crates/xdj-core-prolink` holds a copy of the protocol constants and the packet parsing from `host/src/prolink/`. The host does not use the shared crate yet.
-- The ESP32 MIDI output follows the host rules (`xdj-core-midi`). The firmware receives only the keepalive and beat packets. Thus it has no phrase notes, no phrase CCs, no No Bass note, no MTC and no OSC. Without status packets, a deck plays while its beats arrive.
+- The ESP32 MIDI output follows the host rules (`xdj-core-midi`), with the phrase notes and CCs. It has no No Bass note, no MTC and no OSC.
+- The ESP32 page has no mixer section. The XDJ-AZ sends the EQ and fader positions only as USB MIDI, and the classic ESP32 has no USB host.
 - The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
 - The DMX output (`--features dmx`) flashes channel 1 on each beat. It has no settings yet.
 - The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `xdj-core-midi` yet.

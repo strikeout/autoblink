@@ -1,7 +1,7 @@
 //! Serves `webui/index.html` and speaks WebSocket protocol v1 (see `host/src/web/mod.rs`).
 //!
-//! The firmware sends the capabilities `beat`, `decks`, `output` and `settings`. The page hides
-//! the sections of the other capabilities.
+//! The firmware sends the capabilities `beat`, `decks`, `output`, `settings` and `waveform`. The
+//! page hides the sections of the other capabilities: `mixer`, `ports` and `logs`.
 
 use std::ffi::CString;
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,10 @@ use esp_idf_svc::ws::FrameType;
 use serde_json::{json, Value};
 
 use crate::settings::Settings;
+use crate::tracks::TrackData;
 use crate::State;
+use xdj_core_dbserver::{phrase_status, TrackOverview};
+use xdj_core_prolink::Deck;
 
 const INDEX_HTML: &str = include_str!("../../webui/index.html");
 
@@ -59,7 +62,24 @@ pub fn start(
 ) -> anyhow::Result<EspHttpServer<'static>> {
     let mut server = EspHttpServer::new(&Configuration {
         stack_size: 10 * 1024,
+        uri_match_wildcard: true,
         ..Default::default()
+    })?;
+
+    let wave_state = state.clone();
+    server.fn_handler("/waveform/*", Method::Get, move |req| {
+        let deck = req.uri().rsplit('/').next().and_then(|n| n.parse::<u8>().ok());
+        let overview = deck.and_then(|n| {
+            let tracks = wave_state.tracks.0.lock().unwrap();
+            tracks.get(&n).and_then(|t| t.overview.clone())
+        });
+        match overview {
+            Some(o) => {
+                let mut resp = req.into_response(200, None, &[("Content-Type", "application/json")])?;
+                write_waveform(&mut resp, &o)
+            }
+            None => req.into_status_response(404)?.write_all(b"no waveform"),
+        }
     })?;
 
     for path in ["/", "/index.html"] {
@@ -86,7 +106,7 @@ pub fn start(
                 "proto": 1,
                 "version": env!("CARGO_PKG_VERSION"),
                 "device": "esp32",
-                "caps": ["beat", "decks", "output", "settings"],
+                "caps": ["beat", "decks", "output", "settings", "waveform"],
             });
             ws.send(FrameType::Text(false), hello.to_string().as_bytes())?;
             let msg = settings.lock().unwrap().message().to_string();
@@ -129,6 +149,37 @@ pub fn start(
     Ok(server)
 }
 
+/// Writes the waveform route body in the host format (`host/src/web/mod.rs`).
+///
+/// The preview has about 7200 bytes. As a `serde_json::Value`, it needs a block of more than
+/// 115 KB, which the heap of the ESP32 often does not have. The function therefore writes the
+/// preview as text in small chunks.
+fn write_waveform<W: Write>(w: &mut W, o: &TrackOverview) -> Result<(), W::Error> {
+    w.write_all(format!("{{\"rekordbox_id\":{},\"preview\":[", o.rekordbox_id).as_bytes())?;
+    for (i, chunk) in o.preview.chunks(256).enumerate() {
+        let mut text = String::with_capacity(chunk.len() * 4);
+        for (k, b) in chunk.iter().enumerate() {
+            if i > 0 || k > 0 {
+                text.push(',');
+            }
+            text.push_str(&b.to_string());
+        }
+        w.write_all(text.as_bytes())?;
+    }
+    let cues: Vec<Value> = o
+        .cues
+        .iter()
+        .map(|c| json!({"hot": c.hot_cue, "start": c.start_ms, "end": c.end_ms}))
+        .collect();
+    let phrases: Vec<Value> = o
+        .phrases
+        .iter()
+        .map(|p| json!({"kind": p.kind.to_string(), "start": p.start_ms, "end": p.end_ms, "fill": p.fill_ms}))
+        .collect();
+    let tail = format!("],\"cues\":{},\"phrases\":{}}}", Value::from(cues), Value::from(phrases));
+    w.write_all(tail.as_bytes())
+}
+
 /// Runs one command from the page. Returns the reply: the new settings, or an error.
 fn command(buf: &[u8], settings: &Mutex<Settings>) -> Value {
     let error = |text: &str| json!({"type": "error", "text": text});
@@ -159,27 +210,98 @@ fn command(buf: &[u8], settings: &Mutex<Settings>) -> Value {
     }
 }
 
+/// The track fields of a deck in the status.
+#[derive(Default)]
+struct TrackFields {
+    wave: Option<u32>,
+    track: Option<String>,
+    phrase: Option<Value>,
+    phrase_note: Option<String>,
+}
+
+/// Builds the track fields like `host/src/web/status.rs`.
+fn track_fields(d: &Deck, t: Option<&TrackData>) -> TrackFields {
+    let Some(t) = t.filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0) else {
+        return TrackFields::default();
+    };
+    let mut f = TrackFields { wave: t.overview.as_ref().map(|o| o.rekordbox_id), ..Default::default() };
+    if let Some(m) = &t.metadata {
+        let mut parts: Vec<String> = [&m.artist, &m.title, &m.key]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
+        if !m.title.is_empty() || !m.artist.is_empty() {
+            if let Some(bpm) = m.bpm {
+                parts.push(format!("{bpm:.0}bpm"));
+            }
+            f.track = Some(parts.join(" - "));
+        }
+    }
+    match &t.structure {
+        Some(Ok(ss)) => {
+            f.phrase = d.beat_count.and_then(|bc| phrase_status(ss, bc)).map(|p| {
+                json!({"kind": p.kind.to_string(), "progress": p.progress, "fill": p.fill,
+                       "beats_left": p.beats_left})
+            });
+        }
+        Some(Err(reason)) => f.phrase_note = Some(format!("phrase info unavailable: {reason}")),
+        // The fetch is still in progress.
+        None => f.phrase_note = Some("phrase info loading…".into()),
+    }
+    f
+}
+
+/// Builds the status message. It takes each lock alone, never two at once, like the host.
 fn status_message(state: &State, clock_enabled: bool) -> Value {
     let now = state.now_ms();
-    let midi = state.midi.lock().unwrap();
-    let tracker = state.tracker.lock().unwrap();
-    let master = tracker.master();
-    let decks: Vec<Value> = tracker
-        .decks()
+    let (decks, master_num, master_virtual) = {
+        let tracker = state.tracker.lock().unwrap();
+        (tracker.decks().to_vec(), tracker.master().map(|m| m.num), tracker.master_is_virtual())
+    };
+    let fields: Vec<TrackFields> = {
+        let tracks = state.tracks.0.lock().unwrap();
+        decks.iter().map(|d| track_fields(d, tracks.get(&d.num))).collect()
+    };
+    let master = master_num.and_then(|n| decks.iter().find(|d| d.num == n));
+    let deck_json: Vec<Value> = decks
         .iter()
-        .map(|d| {
+        .zip(fields)
+        .map(|(d, f)| {
+            let is_master = master_num == Some(d.num);
+            let slot = match d.track.slot {
+                1 => "CD",
+                2 => "SD",
+                3 => "USB",
+                4 => "rekordbox",
+                _ => "?",
+            };
             json!({
                 "num": d.num,
                 "name": if d.name.is_empty() { format!("Deck {}", d.num) } else { d.name.clone() },
                 "playing": d.is_playing(now),
-                "master": master.is_some_and(|m| m.num == d.num),
-                "virtual_master": false,
+                "master": is_master,
+                "virtual_master": is_master && master_virtual,
+                "on_air": d.on_air,
+                "sync": d.sync,
                 "bpm": (d.bpm > 0.0).then_some(d.bpm),
                 "pitch": d.pitch,
+                "play_state": d.play_state.map(|p| p.to_string()),
                 "beat": (1..=4).contains(&d.beat).then_some(d.beat),
+                "beat_count": d.beat_count,
+                "playhead_ms": d.playhead_ms,
+                "track_len_ms": d.track_len_ms,
+                "loop_ms": d.loop_ms.map(|(a, b)| [a, b]),
+                "wave": f.wave,
+                "track": f.track,
+                "src": (d.track.rekordbox_id != 0).then(|| format!(
+                    "deck#{} {} (rb#{})", d.track.source_player, slot, d.track.rekordbox_id)),
+                "phrase": f.phrase,
+                "phrase_note": f.phrase_note,
             })
         })
         .collect();
+    let midi = state.midi.lock().unwrap();
     json!({
         "type": "status",
         "source": master.map(|_| "ProLink (network)"),
@@ -187,15 +309,15 @@ fn status_message(state: &State, clock_enabled: bool) -> Value {
         "iface": state.iface.lock().unwrap().clone(),
         "master": {
             "device": master.map_or(0, |m| m.num),
-            "virtual_master": false,
+            "virtual_master": master.is_some() && master_virtual,
             "bpm": master.map_or(0.0, |m| m.bpm),
             "pitch": master.map_or(0.0, |m| m.pitch),
             "beat": master.map_or(0, |m| m.beat),
             "phrase16": master.map_or(0, |m| m.phrase16),
             "playing": master.is_some_and(|m| m.is_playing(now)),
         },
-        "no_devices": decks.is_empty(),
-        "decks": decks,
+        "no_devices": deck_json.is_empty(),
+        "decks": deck_json,
         "link_peers": 0,
         "link_active": false,
         "clock": {

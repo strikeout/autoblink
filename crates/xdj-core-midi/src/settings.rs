@@ -1,8 +1,8 @@
 //! The MIDI rows of the settings message of protocol v1. The indices, labels, values and ranges
 //! are the same as in `host/src/settings.rs`, so the page shows the same rows and help texts.
 //!
-//! The firmware leaves out the rows that need data that it does not receive: the phrase notes
-//! and CCs (12 to 14 and 25 to 27), MTC and OSC.
+//! The firmware leaves out the rows that need data that it does not receive: the No Bass note
+//! (14, from the USB MIDI of the XDJ-AZ), MTC and OSC.
 
 use serde::Serialize;
 
@@ -19,10 +19,14 @@ const CC_LABELS: [&str; CC_COUNT] = [
     "Playing CC",
     "Master Deck CC",
     "Phrase 16 CC",
+    "Phrase Kind CC",
+    "Phrase Progress CC",
+    "Beats Left CC",
 ];
 
 /// The host indices that the firmware supports.
-pub const INDICES: [usize; 19] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
+pub const INDICES: [usize; 24] =
+    [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
 
 /// One row of the settings message.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -81,6 +85,8 @@ fn item(cfg: &MidiConfig, idx: usize) -> SettingItem {
         9 => plain("Note Channel", (cfg.note_channel + 1).to_string(), None),
         10 => plain("Beat Note", cfg.beat_note.to_string(), Some(cfg.send_beat)),
         11 => plain("Downbeat Note", cfg.downbeat_note.to_string(), Some(cfg.send_downbeat)),
+        12 => plain("Phrase Change Note", cfg.phrase_change_note.to_string(), Some(cfg.send_phrase_change)),
+        13 => plain("Phrase Kind Base Note", cfg.phrase_base_note.to_string(), Some(cfg.send_phrase_kind)),
         15 => toggle("CC Enabled", Some("MIDI CC"), cfg.cc_enabled),
         16 => plain("CC Channel", (cfg.cc_channel + 1).to_string(), None),
         _ => {
@@ -103,6 +109,9 @@ pub fn set(cfg: &mut MidiConfig, idx: usize, value: &str) -> Result<(), String> 
         9 => parse(value, 1u8, 16).map(|v| cfg.note_channel = v - 1),
         10 => parse(value, 0u8, 127).map(|v| cfg.beat_note = v),
         11 => parse(value, 0u8, 127).map(|v| cfg.downbeat_note = v),
+        12 => parse(value, 0u8, 127).map(|v| cfg.phrase_change_note = v),
+        // The highest kind code is 11, so the base note is 116 or lower.
+        13 => parse(value, 0u8, 116).map(|v| cfg.phrase_base_note = v),
         16 => parse(value, 1u8, 16).map(|v| cfg.cc_channel = v - 1),
         i if (CC_FIRST..CC_FIRST + CC_COUNT).contains(&i) => {
             parse(value, 0u8, 127).map(|v| cfg.ccs[i - CC_FIRST].num = v)
@@ -122,6 +131,8 @@ pub fn cycle(cfg: &mut MidiConfig, idx: usize, dir: i8) -> Result<(), String> {
         8 => cfg.notes_enabled = !cfg.notes_enabled,
         10 => cfg.send_beat = !cfg.send_beat,
         11 => cfg.send_downbeat = !cfg.send_downbeat,
+        12 => cfg.send_phrase_change = !cfg.send_phrase_change,
+        13 => cfg.send_phrase_kind = !cfg.send_phrase_kind,
         15 => cfg.cc_enabled = !cfg.cc_enabled,
         i if (CC_FIRST..CC_FIRST + CC_COUNT).contains(&i) => {
             let cc = &mut cfg.ccs[i - CC_FIRST];
@@ -168,7 +179,19 @@ mod tests {
         set(&mut cfg, 18, "99").unwrap();
         assert_eq!(cfg.ccs[1].num, 99);
         assert!(set(&mut cfg, 3, "1").is_err());
-        assert!(set(&mut cfg, 12, "40").is_err());
+        assert!(set(&mut cfg, 13, "117").is_err());
+        set(&mut cfg, 27, "50").unwrap();
+        assert_eq!(cfg.ccs[10].num, 50);
+        assert!(set(&mut cfg, 14, "39").is_err());
+    }
+
+    #[test]
+    fn a_stored_config_with_8_ccs_keeps_them_and_gets_the_new_defaults() {
+        let mut v = serde_json::to_value(MidiConfig::default()).unwrap();
+        v["ccs"].as_array_mut().unwrap().truncate(8);
+        v["ccs"][0]["num"] = 99.into();
+        let cfg: MidiConfig = serde_json::from_value(v).unwrap();
+        assert_eq!((cfg.ccs[0].num, cfg.ccs[8].num, cfg.ccs[10].num), (99, 20, 22));
     }
 
     #[test]

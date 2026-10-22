@@ -17,7 +17,8 @@ use esp_idf_svc::hal::gpio::{Gpio17, Gpio35};
 use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
 use xdj_core_midi::clock::Master;
-use xdj_core_midi::{Clock, Mapper, MidiConfig, Out, Smoother, Snapshot, CLOCK};
+use xdj_core_dbserver::{current_phrase_idx, phrase_info};
+use xdj_core_midi::{Clock, Mapper, MidiConfig, Out, Phrase, Smoother, Snapshot, CLOCK};
 
 use crate::State;
 
@@ -127,17 +128,40 @@ pub fn start(
                 }
 
                 let now_ms = state.now_ms();
-                let snap = {
+                let (mut snap, track) = {
                     let tracker = state.tracker.lock().unwrap();
-                    tracker.master().map_or(Snapshot::default(), |m| Snapshot {
-                        device: m.num,
-                        bpm: if m.num == last_master && smoothed_bpm > 0.0 { smoothed_bpm } else { m.bpm },
-                        pitch: m.pitch,
-                        phrase16: m.phrase16,
-                        beat_phase: m.beat_phase(now_ms),
-                        playing: m.is_playing(now_ms),
+                    tracker.master().map_or((Snapshot::default(), None), |m| {
+                        let snap = Snapshot {
+                            device: m.num,
+                            bpm: if m.num == last_master && smoothed_bpm > 0.0 { smoothed_bpm } else { m.bpm },
+                            pitch: m.pitch,
+                            phrase16: m.phrase16,
+                            beat_phase: m.beat_phase(now_ms),
+                            playing: m.is_playing(now_ms),
+                            phrase: None,
+                        };
+                        (snap, m.beat_count.map(|bc| (m.track.rekordbox_id, bc)))
                     })
                 };
+                // Lock the tracks only after the tracker is free.
+                if let Some((rbid, beat_count)) = track {
+                    let tracks = state.tracks.0.lock().unwrap();
+                    snap.phrase = tracks
+                        .get(&snap.device)
+                        .filter(|t| t.rekordbox_id == rbid)
+                        .and_then(|t| t.structure.as_ref()?.as_ref().ok())
+                        .and_then(|ss| {
+                            let idx = current_phrase_idx(ss, beat_count)?;
+                            let info = phrase_info(ss, idx, beat_count)?;
+                            Some(Phrase {
+                                rekordbox_id: rbid,
+                                idx,
+                                code: info.kind.code(),
+                                progress: info.progress,
+                                beats_left: info.beats_left,
+                            })
+                        });
+                }
                 let master = (snap.device != 0).then_some(Master {
                     device: snap.device,
                     playing: snap.playing,
