@@ -151,6 +151,7 @@ fn run() -> anyhow::Result<()> {
     prolink::spawn(
         state.clone(),
         device_number,
+        eth.netif().get_name().to_string(),
         move |beat| {
             let _ = beat_tx.send(beat.beat_in_bar);
             #[cfg(feature = "dmx")]
@@ -230,7 +231,7 @@ fn run() -> anyhow::Result<()> {
                         if sta_ip.is_some_and(|sta| same_subnet(ip, sta, prefix)) {
                             log::warn!(
                                 "The Ethernet network and the joined WiFi network use one subnet. \
-                                 Pro DJ Link packets can go out on the WiFi."
+                                 Pro DJ Link uses only the Ethernet port."
                             );
                         }
                     }
