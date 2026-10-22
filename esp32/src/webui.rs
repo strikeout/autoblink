@@ -243,8 +243,10 @@ fn command(buf: &[u8], settings: &Mutex<Settings>, state: &Arc<State>) -> Value 
         // The update thread does the work. The page sees the result in the "ota" field of the status.
         Some(kind @ ("ota_check" | "ota_install")) => {
             let cmd = if kind == "ota_check" { OtaCmd::Check } else { OtaCmd::Install };
+            // The reply is small on purpose. The TLS handshake of the OTA thread takes about
+            // 40 KB of heap, and the full settings message can then fail to allocate.
             match ota::run(state.clone(), cmd) {
-                Ok(()) => settings.lock().unwrap().message(),
+                Ok(()) => json!({"type": "ota"}),
                 Err(text) => error(text),
             }
         }

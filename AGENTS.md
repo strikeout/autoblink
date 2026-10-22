@@ -147,7 +147,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.18.3 uses 83 % of the slot.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.18.4 uses 83 % of the slot.
 
 ### Debug logs
 
