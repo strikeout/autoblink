@@ -4,16 +4,22 @@
 //! virtual_cdj.rs`). The players then send it their CDJ status packets on port 50002. The
 //! keepalive (port 50000), beat and absolute position (port 50001) packets are broadcasts.
 //!
+//! The sockets receive and send only on the Ethernet port while it has an address. Without this
+//! binding, a joined WiFi network in the same subnet gives a second, later copy of each broadcast.
+//! Without an Ethernet address, the sockets use all interfaces.
+//!
 //! The XDJ-AZ sends the track ID in its status packets only to a virtual CDJ with device number
 //! 7 or higher. The default is 7, the same as the host. Do not run the host and the firmware on
 //! one network with the same number.
 
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::os::fd::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use esp_idf_svc::sys;
 use xdj_core_prolink::{
     build_announce, build_claim1, build_claim2, build_claim_final, build_keepalive,
     build_status_packet, has_magic, pad_name, parse_abs_position, parse_beat, parse_cdj_status,
@@ -39,10 +45,12 @@ pub struct EthInfo {
 /// Starts the receive threads and the virtual CDJ.
 ///
 /// `on_master_beat` gets each beat of the master deck. `on_track` gets each change of a loaded
-/// track. `device_number` is the number that the virtual CDJ asks for.
+/// track. `device_number` is the number that the virtual CDJ asks for. `eth_netif` is the lwIP
+/// name of the Ethernet interface.
 pub fn spawn(
     state: Arc<State>,
     device_number: Arc<AtomicU8>,
+    eth_netif: String,
     on_master_beat: impl Fn(Beat) + Send + 'static,
     on_track: impl Fn(TrackRef) + Send + 'static,
 ) -> anyhow::Result<()> {
@@ -53,6 +61,8 @@ pub fn spawn(
     let sender = discovery.clone();
     let beats = UdpSocket::bind(("0.0.0.0", PORT_BEAT))?;
     let status = UdpSocket::bind(("0.0.0.0", PORT_STATUS))?;
+    // The sockets stay open for the run time of the firmware, so the descriptors stay valid.
+    let fds = [discovery.as_raw_fd(), beats.as_raw_fd(), status.as_raw_fd()];
 
     let st = state.clone();
     spawn_loop("prolink-discovery", move |buf| {
@@ -108,7 +118,7 @@ pub fn spawn(
     thread::Builder::new()
         .name("virtual-cdj".into())
         .stack_size(6 * 1024)
-        .spawn(move || virtual_cdj(&sender, &state, &device_number))?;
+        .spawn(move || virtual_cdj(&sender, &state, &device_number, &fds, &eth_netif))?;
     Ok(())
 }
 
@@ -128,13 +138,22 @@ fn spawn_loop(name: &str, mut f: impl FnMut(&mut [u8]) + Send + 'static) -> anyh
 
 /// Joins the network, then sends the keepalive and the status packet every 1.5 s. It joins again
 /// when the Ethernet address or the wanted device number changes.
-fn virtual_cdj(sock: &UdpSocket, state: &State, wanted: &AtomicU8) {
+///
+/// It binds the sockets `fds` to `eth_netif` while the Ethernet port has an address.
+fn virtual_cdj(sock: &UdpSocket, state: &State, wanted: &AtomicU8, fds: &[RawFd], eth_netif: &str) {
     let name = pad_name(NAME);
+    let mut bound = false;
     loop {
         let Some(eth) = *state.eth.lock().unwrap() else {
+            if bound {
+                bound = !bind_netif(fds, "");
+            }
             thread::sleep(Duration::from_secs(1));
             continue;
         };
+        if !bound {
+            bound = bind_netif(fds, eth_netif);
+        }
         let want = wanted.load(Ordering::Relaxed);
         let claimed = match join(sock, state, &name, &eth, want) {
             Ok(n) => n,
@@ -171,6 +190,38 @@ fn virtual_cdj(sock: &UdpSocket, state: &State, wanted: &AtomicU8) {
         }
         state.own_device.store(0, Ordering::Relaxed);
     }
+}
+
+/// Binds each socket in `fds` to the network interface `netif`. An empty `netif` removes the
+/// binding. Returns true when all calls succeed.
+fn bind_netif(fds: &[RawFd], netif: &str) -> bool {
+    let mut req = sys::ifreq::default();
+    for (dst, src) in req.ifr_name.iter_mut().zip(netif.bytes().take(sys::IFNAMSIZ as usize - 1)) {
+        *dst = src as _;
+    }
+    let mut ok = true;
+    for &fd in fds {
+        // SAFETY: `req` is a valid `ifreq`, and the length is its size.
+        let r = unsafe {
+            sys::lwip_setsockopt(
+                fd,
+                sys::SOL_SOCKET as _,
+                sys::SO_BINDTODEVICE as _,
+                (&req as *const sys::ifreq).cast(),
+                std::mem::size_of::<sys::ifreq>() as _,
+            )
+        };
+        if r != 0 {
+            log::warn!("Socket {fd}: the binding to \"{netif}\" failed: {}", std::io::Error::last_os_error());
+            ok = false;
+        }
+    }
+    if ok && netif.is_empty() {
+        log::info!("Pro DJ Link uses all interfaces");
+    } else if ok {
+        log::info!("Pro DJ Link uses only the Ethernet interface \"{netif}\"");
+    }
+    ok
 }
 
 /// Sends the announce and claim packets. Returns the claimed device number. When another device

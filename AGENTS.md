@@ -168,7 +168,8 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 
 - The firmware starts its own WiFi network `xdj-clock-XXXX` (the last 2 bytes of the MAC address). The default password is `xdjclock123`. The web page is at http://192.168.1.1.
 - The page settings "Join WiFi name" and "Join WiFi password" (indices 102 and 103) set an existing WiFi network. After a restart, the firmware joins it, and the own network stays on. The page is then also at the DHCP address of that network and at http://xdj-clock.local (mDNS). The firmware tries to join again every 30 s. The iface field of the status shows the two addresses.
-- Do not join a 192.168.1.x WiFi network, and do not join the network of the Ethernet port. The firmware logs a warning for the two cases.
+- Do not join a 192.168.1.x WiFi network. The firmware logs a warning for this case.
+- The Pro DJ Link sockets receive and send only on the Ethernet port while it has an address (lwIP `SO_BINDTODEVICE`). Thus a joined WiFi network in the subnet of the Ethernet port gives no second copy of each beat. Without an Ethernet address, the sockets use all interfaces. The firmware logs a warning when the two networks use one subnet.
 - Do not connect the Ethernet port to a 192.168.1.x network. The WiFi network uses that subnet, and the firmware can then send a reply out on the wrong port. The firmware logs a warning for this case.
 - Ethernet gets its address from DHCP. Without a DHCP server (a direct cable to the XDJ-AZ), it takes a 169.254.x.x address.
 - The firmware joins the network as a virtual CDJ, like the host. The page setting "Device Number" (index 2, default 7) sets the number. A change makes the virtual CDJ join again.
