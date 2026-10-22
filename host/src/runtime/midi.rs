@@ -50,25 +50,42 @@ pub fn spawn(ctx: TaskContext, cfg_change_rx: watch::Receiver<()>, rt: &Handle) 
 
 /// Reopens the configured MIDI output port after the device goes away.
 ///
-/// The output worker drops the connection on the first send error. This loop
-/// checks the connection every `period`. When the connection is gone, it opens
-/// the port again by the name in `cfg.midi.output`. The loop never ends.
-pub async fn reconnect_loop<F>(
+/// The output worker drops the connection after some send errors in a row. A send to a removed
+/// device does not always give an error: ALSA sends to the subscribers of its own port, and
+/// the kernel removes the subscription without an error. This loop therefore also compares the
+/// port with the port list (`list`) every `period`. When the port is not in the list, the loop
+/// drops the connection. When the connection is gone, the loop opens the port again by the name
+/// in `cfg.midi.output`. The loop never ends.
+pub async fn reconnect_loop<F, L>(
     midi_out: crate::midi::MidiOutHandle,
     cfg: crate::config::SharedConfig,
     open: F,
+    list: L,
     period: Duration,
 ) where
     F: Fn(&str) -> anyhow::Result<(Box<dyn crate::midi::MidiOutConnection>, String)>
         + Clone
         + Send
         + 'static,
+    L: Fn() -> Vec<String> + Clone + Send + 'static,
 {
     let mut warned = false;
     loop {
         tokio::time::sleep(period).await;
         if midi_out.is_connected() {
             warned = false;
+            let wanted = cfg.read().midi.output.clone();
+            let ports = tokio::task::spawn_blocking(list.clone()).await.unwrap_or_default();
+            if port_present(&wanted, &ports) {
+                continue;
+            }
+            let _port = midi_out.port_lock().lock().await;
+            // A port switch from the UI can change the port while this task waits for the lock.
+            if cfg.read().midi.output != wanted {
+                continue;
+            }
+            tracing::warn!(port = %wanted, "MIDI output port is gone; dropping output connection");
+            midi_out.switch_connection(None, false).await;
             continue;
         }
 
@@ -103,6 +120,16 @@ pub async fn reconnect_loop<F>(
             }
         }
     }
+}
+
+/// Returns `true` when `ports` holds the port that `open_midi_output(wanted)` opens: any port for
+/// "auto", otherwise a port whose name contains `wanted` (case-insensitive).
+fn port_present(wanted: &str, ports: &[String]) -> bool {
+    if wanted == "auto" {
+        return !ports.is_empty();
+    }
+    let wanted = wanted.to_lowercase();
+    ports.iter().any(|p| p.to_lowercase().contains(&wanted))
 }
 
 /// Opens a real MIDI output port for [`reconnect_loop`].
@@ -215,8 +242,10 @@ mod tests {
         let midi_out =
             crate::midi::MidiOutHandle::start(64, Some(Box::new(FakeConn { fail: true })));
 
-        // The first send fails, so the worker drops the connection.
-        let _ = midi_out.send_message(&[0xF8]);
+        // Each send fails, so the worker drops the connection after MAX_SEND_FAILURES sends.
+        for _ in 0..4 {
+            let _ = midi_out.send_message(&[0xF8]);
+        }
         midi_out.barrier().await;
         assert!(!midi_out.is_connected());
 
@@ -236,6 +265,7 @@ mod tests {
                     "XDJ-RX3 MIDI".to_string(),
                 ))
             },
+            || vec!["XDJ-RX3 MIDI".to_string()],
             Duration::from_millis(10),
         ));
 
@@ -243,5 +273,45 @@ mod tests {
         assert!(midi_out.is_connected());
         assert_eq!(cfg.read().midi.output, "XDJ-RX3 MIDI");
         assert!(midi_out.send_message(&[0xF8]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn reconnect_loop_drops_a_port_that_left_the_port_list() {
+        let mut cfg = Config::default();
+        cfg.midi.output = "XDJ-RX3 MIDI".to_string();
+        let cfg = new_shared(cfg);
+        // The send never fails, like an ALSA port whose device was removed.
+        let midi_out =
+            crate::midi::MidiOutHandle::start(64, Some(Box::new(FakeConn { fail: false })));
+        let present = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let present2 = Arc::clone(&present);
+        tokio::spawn(reconnect_loop(
+            midi_out.clone(),
+            Arc::clone(&cfg),
+            |_: &str| anyhow::bail!("port not found"),
+            move || {
+                if present2.load(std::sync::atomic::Ordering::SeqCst) {
+                    vec!["XDJ-RX3 MIDI".to_string()]
+                } else {
+                    vec!["Midi Through".to_string()]
+                }
+            },
+            Duration::from_millis(10),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(midi_out.is_connected());
+        present.store(false, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!midi_out.is_connected());
+    }
+
+    #[test]
+    fn port_present_matches_like_the_port_open() {
+        let ports = vec!["IAC Driver Bus 1".to_string(), "XDJ-AZ".to_string()];
+        assert!(port_present("auto", &ports));
+        assert!(!port_present("auto", &[]));
+        assert!(port_present("xdj", &ports));
+        assert!(!port_present("Bus 2", &ports));
     }
 }

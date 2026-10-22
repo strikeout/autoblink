@@ -142,6 +142,37 @@ struct Lanes {
     rx_normal: mpsc::Receiver<Vec<u8>>,
 }
 
+/// The output worker drops the connection after this many send errors in a row.
+///
+/// One error can be temporary, for example a full ALSA queue during a burst of notes and CCs. A
+/// drop causes a MIDI Stop and a clock restart, so one error must not cause it. A removed device
+/// fails each send, and at 48 clock pulses per second this limit takes less than 100 ms.
+const MAX_SEND_FAILURES: u32 = 4;
+
+/// Sends one message on `c`. A failed message is retried once and then counted as dropped.
+///
+/// Returns `false` when the connection had `MAX_SEND_FAILURES` errors in a row. The caller then
+/// drops the connection.
+fn send_or_drop(
+    c: &mut Box<dyn MidiOutConnection>,
+    msg: &[u8],
+    failures: &mut u32,
+    dropped: &AtomicUsize,
+) -> bool {
+    let Err(err) = c.send(msg).or_else(|_| c.send(msg)) else {
+        *failures = 0;
+        return true;
+    };
+    dropped.fetch_add(1, Ordering::Relaxed);
+    *failures += 1;
+    if *failures < MAX_SEND_FAILURES {
+        tracing::debug!(error = %err, failures = *failures, "MIDI send failed");
+        return true;
+    }
+    tracing::warn!(error = %err, "MIDI send failed {MAX_SEND_FAILURES} times in a row; dropping output connection");
+    false
+}
+
 async fn run_worker(
     lanes: Arc<tokio::sync::Mutex<Lanes>>,
     initial: Option<Box<dyn MidiOutConnection>>,
@@ -159,6 +190,8 @@ async fn run_worker(
     let mut sent_total: u64 = 0;
     let mut sent_last: u64 = 0;
     let mut dropped_last: usize = 0;
+    // Consecutive send errors on the current connection.
+    let mut failures: u32 = 0;
 
     loop {
         tokio::select! {
@@ -182,6 +215,7 @@ async fn run_worker(
                         }
 
                         conn = new_conn.take();
+                        failures = 0;
                         connected_worker.store(conn.is_some(), Ordering::Relaxed);
 
                         tracing::trace!(
@@ -214,11 +248,10 @@ async fn run_worker(
                                 continue;
                             };
 
-                            if let Err(err) = c.send(&msg) {
-                                tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
+                            if !send_or_drop(c, &msg, &mut failures, &dropped_messages_worker) {
                                 conn = None;
                                 connected_worker.store(false, Ordering::Relaxed);
-                            } else {
+                            } else if failures == 0 {
                                 sent_total = sent_total.saturating_add(1);
                             }
                         }
@@ -228,11 +261,10 @@ async fn run_worker(
                                 continue;
                             };
 
-                            if let Err(err) = c.send(&msg) {
-                                tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
+                            if !send_or_drop(c, &msg, &mut failures, &dropped_messages_worker) {
                                 conn = None;
                                 connected_worker.store(false, Ordering::Relaxed);
-                            } else {
+                            } else if failures == 0 {
                                 sent_total = sent_total.saturating_add(1);
                             }
                         }
@@ -250,11 +282,10 @@ async fn run_worker(
                     continue;
                 };
 
-                if let Err(err) = c.send(&msg) {
-                    tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
+                if !send_or_drop(c, &msg, &mut failures, &dropped_messages_worker) {
                     conn = None;
                     connected_worker.store(false, Ordering::Relaxed);
-                } else {
+                } else if failures == 0 {
                     sent_total = sent_total.saturating_add(1);
                 }
             }
@@ -268,11 +299,10 @@ async fn run_worker(
                     continue;
                 };
 
-                if let Err(err) = c.send(&msg) {
-                    tracing::warn!(error = %err, "MIDI send failed; dropping output connection");
+                if !send_or_drop(c, &msg, &mut failures, &dropped_messages_worker) {
                     conn = None;
                     connected_worker.store(false, Ordering::Relaxed);
-                } else {
+                } else if failures == 0 {
                     sent_total = sent_total.saturating_add(1);
                 }
             }

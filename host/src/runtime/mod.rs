@@ -198,6 +198,7 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
                 midi_out.clone(),
                 Arc::clone(&cfg),
                 midi::open_midir_output,
+                crate::midi::ports::list_output_ports,
                 Duration::from_secs(2),
             )
         });
