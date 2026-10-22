@@ -55,14 +55,14 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 - Linux x86-64 → `.tar.gz` archive
 - Linux ARM64 (Raspberry Pi) → `.tar.gz` archive, built on the native `ubuntu-24.04-arm` runner. The Linux archives include `contrib/xdj-clock.service`.
 - macOS ARM64 → `.tar.gz` archive
-- ESP32 firmware → `esp32-firmware.tar.gz`
+- ESP32 firmware → `esp32-firmware.tar.gz`. It holds the ELF file, the merged image for address 0x0 and the OTA image. The workflow also puts the OTA image and `esp32-version.txt` into the prerelease `esp32-latest`.
 
 ## Architecture Map
 
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
 | `crates/xdj-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/xdj-core-midi` | MIDI logic of the firmware, host-testable | `clock.rs`, `mapper.rs`, `settings.rs` (host setting indices) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
@@ -130,10 +130,40 @@ The firmware is for the WT32-ETH01 board: a classic ESP32 (Xtensa) with a LAN872
 1. Install the toolchain once: `espup install`, then `cargo install espflash ldproxy`.
 2. In each new shell, run `. ~/export-esp.sh`.
 3. Build in `esp32/`: `cargo build --release`. The first build downloads ESP-IDF v5.5.3 to `~/.espressif`.
-4. Connect the USB-C programming dock. Run `cargo run --release` in `esp32/` to flash the board.
+4. Connect the USB-C programming dock. Run `cargo run --release` in `esp32/` to flash the board. The runner writes the bootloader of the build, `partitions.csv` and the app into `ota_0`. It erases `otadata`.
 5. If espflash cannot connect, hold BOOT, push RST, then release BOOT.
 
 The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
+
+### OTA update
+
+- The flash has two app slots, `ota_0` and `ota_1` (`esp32/partitions.csv`). The NVS partition keeps its old offset and size, so the settings stay.
+- Firmware 1.17 and older use a single-app table. Flash the first firmware with OTA over USB. After that, the box can update itself.
+- The Firmware panel of the page sends `ota_check` and `ota_install`. The `ota` thread reads `esp32-version.txt` from the prerelease `esp32-latest` on GitHub. If that version is newer, it writes `xdj-clock-esp32-ota.bin` into the free slot and restarts.
+- The box needs internet for the update: a joined WiFi network (indices 102 and 103), or an Ethernet network with a router.
+- The flash writes can make the MIDI clock stutter. The page warns when a deck plays. It does not refuse the update.
+- The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
+- Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
+- The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.18.0 uses 83 % of the slot.
+
+### Debug logs
+
+- Run `curl http://xdj-clock.local/log` to read the log over WiFi. The page shows no log.
+- The log ring is in RTC slow memory (4 KB). A panic, a watchdog or a software restart keeps it. A power-on clears it.
+- The text has two parts: the lines of the previous start and the lines of this start.
+- The ESP-IDF C components (WiFi driver, HTTP server) log only to UART0. The ring has only the Rust log lines.
+- After a crash, the panic handler writes a core dump to the `coredump` partition (0x3E0000). At the next start, the firmware logs the task, the exception and the backtrace. Then it erases the dump.
+- A box with an older partition table has no `coredump` partition. Flash it over USB to add the partition. OTA does not change the partition table.
+- Decode the backtrace with the ELF of the same build:
+
+```sh
+~/.rustup/toolchains/esp/xtensa-esp-elf/*/xtensa-esp-elf/bin/xtensa-esp-elf-addr2line -pfiaC \
+  -e esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32 0x400d1234 0x400d5678
+```
+
+- The release workflow puts the ELF into `esp32-firmware.tar.gz`. Use that ELF for a box with a release firmware.
+- A task watchdog timeout also gives the reset reason "panic", because `CONFIG_ESP_TASK_WDT_PANIC` is on.
 
 ### WT32-ETH01 pins
 

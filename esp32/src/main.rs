@@ -11,8 +11,10 @@
 #[cfg(feature = "dmx")]
 mod dmx;
 mod led;
+mod logring;
 mod midi;
 mod net;
+mod ota;
 mod prolink;
 mod settings;
 mod tracks;
@@ -34,6 +36,7 @@ use xdj_core_prolink::Tracker;
 
 use crate::midi::MidiStatus;
 use crate::net::{EthPins, AP_IP};
+use crate::ota::OtaStatus;
 use crate::prolink::EthInfo;
 use crate::settings::Settings;
 use crate::tracks::Tracks;
@@ -55,6 +58,8 @@ pub struct State {
     pub wifi_join_down: AtomicBool,
     /// The reason for the last restart, for example "power-on" or "panic".
     pub reset_reason: &'static str,
+    /// The state of the firmware update for the page.
+    pub ota: Mutex<OtaStatus>,
     start: Instant,
 }
 
@@ -70,7 +75,7 @@ impl State {
 
 fn main() {
     sys::link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+    logring::init();
     if let Err(e) = run() {
         // A start failure can be temporary, for example an Ethernet or NVS error. A restart
         // tries again. Without it, the box stays dead until a power cycle.
@@ -85,6 +90,7 @@ fn run() -> anyhow::Result<()> {
     // SAFETY: esp_reset_reason has no preconditions.
     let reset_reason = reset_reason(unsafe { sys::esp_reset_reason() });
     log::info!("xdj-clock {} starts. Reason for the restart: {reset_reason}", env!("CARGO_PKG_VERSION"));
+    logring::report_core_dump();
     let p = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
@@ -135,12 +141,14 @@ fn run() -> anyhow::Result<()> {
         own_device: AtomicU8::new(0),
         wifi_join_down: AtomicBool::new(false),
         reset_reason,
+        ota: Mutex::new(OtaStatus::default()),
         start: Instant::now(),
     });
     let midi_beats = midi::start(p.uart2, p.pins.gpio17, p.pins.gpio35, state.clone(), settings.midi.clone())?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
-    let (_server, web_beats) = webui::start(state.clone(), settings.clone())?;
+    let ota_tx = ota::start(state.clone())?;
+    let (_server, web_beats) = webui::start(state.clone(), settings.clone(), ota_tx)?;
     let track_changes = tracks::start(state.clone())?;
 
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
@@ -165,6 +173,10 @@ fn run() -> anyhow::Result<()> {
             let _ = track_changes.send(track);
         },
     )?;
+
+    // The web server and the receive threads run. A restart before this line makes the
+    // bootloader start the previous app.
+    ota::mark_valid();
 
     // Log each change of the Ethernet address. A cable to the XDJ-AZ without a DHCP server
     // gives a 169.254.x.x address after some seconds.

@@ -102,6 +102,9 @@ details.panel:not([open])>summary h2{margin-bottom:0}
 .act{display:flex;gap:10px;min-height:20px;margin-top:6px}
 .act .note{color:var(--flash);font-weight:700}.act .cc{color:var(--accent)}.act .osc{color:var(--play);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #ooerr{color:var(--danger)}
+/* firmware */
+#fwerr{color:var(--danger)}
+#fwbar{width:100%;height:6px;margin-top:6px}
 /* settings */
 .sgrid{columns:250px;column-gap:28px}
 .group{break-inside:avoid;margin-bottom:8px}
@@ -179,6 +182,14 @@ input.num.text{width:150px;text-align:left}
     <div class="act num"><span id="anote" class="note"></span><span id="acc" class="cc"></span><span id="aosc" class="osc"></span><span id="aidle" class="empty">idle</span></div>
   </section>
 
+  <section class="panel" data-cap="ota">
+    <h2>Firmware</h2>
+    <div class="row">installed <b id="fwcur">—</b> <span id="fwstate" class="num"></span></div>
+    <div class="row"><button id="fwcheck" title="Read the version of the latest release on GitHub. The box needs a network with internet.">Check for update</button> <button id="fwinstall" hidden></button></div>
+    <progress id="fwbar" max="100" hidden></progress>
+    <div class="row" id="fwerr"></div>
+  </section>
+
   <section class="panel wide" data-cap="decks">
     <h2>Deck Information <span id="link" class="kv"></span></h2>
     <div id="decks" class="decks"></div>
@@ -236,6 +247,7 @@ function onHello(m) {
   caps = new Set(m.caps || []);
   beatCap = caps.has('beat');
   set('version', 'v' + m.version + (m.device && m.device !== 'host' ? ' · ' + m.device : ''));
+  set('fwcur', 'v' + m.version);
   document.querySelectorAll('[data-cap]').forEach((e) => { e.hidden = !caps.has(e.dataset.cap); });
 }
 
@@ -264,7 +276,30 @@ function onStatus(s) {
 
   if (s.output) renderOutput(s.output);
   if (s.decks) renderDecks(s);
+  if (s.ota) renderOta(s.ota);
 }
+
+const OTA_TEXT = { idle: '', checking: 'checking…', available: 'update available', 'up-to-date': 'up to date',
+  downloading: 'downloading…', restarting: 'restarting…', error: 'update failed' };
+
+/** Shows the state of the firmware update. */
+function renderOta(o) {
+  const busy = o.state === 'checking' || o.state === 'downloading' || o.state === 'restarting';
+  set('fwstate', (OTA_TEXT[o.state] || o.state) + (o.latest && o.state !== 'up-to-date' ? ' · v' + o.latest : ''));
+  $('fwcheck').disabled = busy;
+  $('fwinstall').hidden = o.state !== 'available';
+  set('fwinstall', 'Install v' + (o.latest || '?'));
+  $('fwbar').hidden = o.state !== 'downloading';
+  $('fwbar').value = o.progress;
+  set('fwerr', o.error || '');
+}
+
+$('fwcheck').onclick = () => send({ type: 'ota_check' });
+$('fwinstall').onclick = () => {
+  const playing = status && (status.decks || []).some((d) => d.playing);
+  const warn = playing ? 'A deck plays. The MIDI clock can stutter during the download of about 30 s.\n\n' : '';
+  if (confirm(warn + 'Install the new firmware? The box restarts after the download.')) send({ type: 'ota_install' });
+};
 
 /** Shows the phrase of the master deck and its position in the 16-beat phrase. */
 function renderPhrase(s) {
