@@ -28,3 +28,13 @@ CONFIG_LWIP_MAX_SOCKETS=20
 # The MIDI thread resets the task watchdog on each loop pass. When the thread or an idle task
 # stops for 5 s, the firmware restarts.
 CONFIG_ESP_TASK_WDT_PANIC=y
+
+# The bootloader starts the previous app when a new app restarts before it marks itself valid
+# (see ota.rs). Flash the bootloader of this build, because the bootloader of espflash does not
+# have this option.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# After a crash, the panic handler writes a core dump to the coredump partition. At the next
+# start, the firmware logs the task and the backtrace, and GET /log shows them.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y

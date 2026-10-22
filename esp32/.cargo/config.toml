@@ -3,7 +3,9 @@ target = "xtensa-esp32-espidf"
 
 [target.'cfg(target_os = "espidf")']
 linker = "ldproxy"
-runner = "espflash flash --monitor"
+# Run `cargo run --release` in esp32/. The runner flashes the bootloader of this build and the
+# OTA partition table. It erases otadata, so that the board starts the new app in ota_0.
+runner = "espflash flash --monitor --bootloader target/xtensa-esp32-espidf/release/bootloader.bin --partition-table partitions.csv --erase-parts otadata"
 rustflags = ["--cfg", "espidf_time64"]
 
 [unstable]

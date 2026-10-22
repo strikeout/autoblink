@@ -1,7 +1,7 @@
 //! Serves `webui/index.html` and speaks WebSocket protocol v1 (see `host/src/web/mod.rs`).
 //!
-//! The firmware sends the capabilities `beat`, `decks`, `output`, `settings` and `waveform`. The
-//! page hides the sections of the other capabilities: `mixer`, `ports` and `logs`.
+//! The firmware sends the capabilities `beat`, `decks`, `output`, `settings`, `waveform` and
+//! `ota`. The page hides the sections of the other capabilities: `mixer`, `ports` and `logs`.
 
 use std::ffi::CString;
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
@@ -17,6 +17,7 @@ use esp_idf_svc::sys::{self, EspError, ESP_ERR_INVALID_SIZE, ESP_FAIL};
 use esp_idf_svc::ws::FrameType;
 use serde_json::{json, Value};
 
+use crate::ota::OtaCmd;
 use crate::settings::Settings;
 use crate::tracks::TrackData;
 use crate::State;
@@ -62,6 +63,7 @@ impl Clients {
 pub fn start(
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
+    ota: SyncSender<OtaCmd>,
 ) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<(u8, u8)>)> {
     // Without a limit, a fourth connection closes the oldest one, which is often a live
     // WebSocket. CONFIG_LWIP_MAX_SOCKETS must have space for these sockets.
@@ -89,6 +91,11 @@ pub fn start(
         }
     })?;
 
+    server.fn_handler("/log", Method::Get, |req| {
+        req.into_response(200, None, &[("Content-Type", "text/plain; charset=utf-8")])?
+            .write_all(crate::logring::text().as_bytes())
+    })?;
+
     for path in ["/", "/index.html"] {
         server.fn_handler(path, Method::Get, |req| {
             req.into_response(200, None, &[("Content-Type", "text/html; charset=utf-8")])?
@@ -113,7 +120,7 @@ pub fn start(
                 "proto": 1,
                 "version": env!("CARGO_PKG_VERSION"),
                 "device": "esp32",
-                "caps": ["beat", "decks", "output", "settings", "waveform"],
+                "caps": ["beat", "decks", "output", "settings", "waveform", "ota"],
             });
             ws.send(FrameType::Text(false), hello.to_string().as_bytes())?;
             let msg = settings.lock().unwrap().message().to_string();
@@ -139,7 +146,7 @@ pub fn start(
         // For a text frame, esp-idf-svc adds 1 to the length and puts a NUL byte at the end.
         // serde_json refuses that byte, so remove it.
         let text = buf.strip_suffix(&[0]).unwrap_or(&buf);
-        let reply = command(text, &settings);
+        let reply = command(text, &settings, &ota);
         ws.send(FrameType::Text(false), reply.to_string().as_bytes())
     })?;
 
@@ -203,7 +210,7 @@ fn write_waveform<W: Write>(w: &mut W, o: &TrackOverview) -> Result<(), W::Error
 }
 
 /// Runs one command from the page. Returns the reply: the new settings, or an error.
-fn command(buf: &[u8], settings: &Mutex<Settings>) -> Value {
+fn command(buf: &[u8], settings: &Mutex<Settings>, ota: &SyncSender<OtaCmd>) -> Value {
     let error = |text: &str| json!({"type": "error", "text": text});
     let Ok(cmd) = serde_json::from_slice::<Value>(buf) else {
         return error("The command is not valid JSON");
@@ -225,6 +232,14 @@ fn command(buf: &[u8], settings: &Mutex<Settings>) -> Value {
             match result {
                 Ok(()) => settings.message(),
                 Err(text) => error(&text),
+            }
+        }
+        // The update thread does the work. The page sees the result in the "ota" field of the status.
+        Some(kind @ ("ota_check" | "ota_install")) => {
+            let cmd = if kind == "ota_check" { OtaCmd::Check } else { OtaCmd::Install };
+            match ota.try_send(cmd) {
+                Ok(()) => settings.lock().unwrap().message(),
+                Err(_) => error("The firmware update is busy"),
             }
         }
         Some(other) => error(&format!("This device does not support the command {other}")),
@@ -363,6 +378,7 @@ fn status_message(state: &State, clock_enabled: bool) -> Value {
             "mtc_full": 0,
         },
         "mixer": null,
+        "ota": state.ota.lock().unwrap().json(),
         // SAFETY: the two heap calls only read counters.
         "system": {
             "uptime_s": now / 1000,

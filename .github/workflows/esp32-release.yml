@@ -27,6 +27,17 @@ jobs:
         with:
           tool: espflash
 
+      # The box compares the release version with its own version. A mismatch makes it install
+      # the same firmware again after each check.
+      - name: Check the tag against the firmware version
+        run: |
+          tag="${{ github.ref_name }}"
+          version=$(grep -m1 '^version' esp32/Cargo.toml | cut -d'"' -f2)
+          if [ "${tag#esp32-v}" != "$version" ]; then
+            echo "The tag $tag does not match the version $version in esp32/Cargo.toml"
+            exit 1
+          fi
+
       - name: Build ESP32 firmware
         working-directory: esp32
         run: cargo build --release --locked
@@ -37,7 +48,14 @@ jobs:
           elf=esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32
           cp "$elf" esp32-release/
           # One image with the bootloader and the partition table. Write it at address 0x0.
-          espflash save-image --chip esp32 --merge "$elf" esp32-release/xdj-clock-esp32-merged.bin
+          espflash save-image --chip esp32 --merge \
+            --bootloader esp32/target/xtensa-esp32-espidf/release/bootloader.bin \
+            --partition-table esp32/partitions.csv \
+            "$elf" esp32-release/xdj-clock-esp32-merged.bin
+          # The app image without the bootloader. The box downloads it for an OTA update.
+          espflash save-image --chip esp32 "$elf" esp32-release/xdj-clock-esp32-ota.bin
+          tag="${{ github.ref_name }}"
+          echo "${tag#esp32-v}" > esp32-release/esp32-version.txt
           tar -czf esp32-firmware.tar.gz esp32-release/
 
       - name: Upload firmware artifact
@@ -69,7 +87,23 @@ jobs:
         run: |
           tag="${{ github.ref_name }}"
           files=$(find artifacts -type f | tr '\n' ' ')
+          # The host release stays the latest release of the repository.
           gh release create "$tag" \
             --title "xdj-clock ESP32 $tag" \
             --notes "ESP32 firmware release" \
+            --latest=false \
             $files
+
+      # The box reads the version and the image from the fixed release esp32-latest.
+      - name: Update the esp32-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tar -xzf artifacts/*/esp32-firmware.tar.gz
+          if ! gh release view esp32-latest > /dev/null 2>&1; then
+            gh release create esp32-latest --prerelease --latest=false \
+              --title "xdj-clock ESP32 OTA" \
+              --notes "The ESP32 box downloads its firmware updates from this release."
+          fi
+          gh release upload esp32-latest --clobber \
+            esp32-release/esp32-version.txt esp32-release/xdj-clock-esp32-ota.bin
