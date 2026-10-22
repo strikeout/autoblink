@@ -89,7 +89,7 @@ pub fn spawn(
         let is_master = st.tracker.lock().unwrap().on_beat(&beat, now);
         if is_master {
             if beat.beat_in_bar == 1 {
-                log::info!("Bar: deck {} at {:.2} BPM", beat.device_number, beat.effective_bpm);
+                log::debug!("Bar: deck {} at {:.2} BPM", beat.device_number, beat.effective_bpm);
             }
             on_master_beat(Beat {
                 device: beat.device_number,
