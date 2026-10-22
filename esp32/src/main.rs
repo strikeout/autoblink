@@ -18,6 +18,7 @@ mod webui;
 
 use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicU8;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -136,6 +137,11 @@ fn run() -> anyhow::Result<()> {
     let track_changes = tracks::start(state.clone())?;
 
     // IO32 pulses on each beat of the master deck, IO33 on the first beat of the bar.
+    // IO33 has the label 485_EN on the board. When no beat arrives for IDLE_AFTER, IO33 blinks
+    // two times every 2 s.
+    const IDLE_AFTER: Duration = Duration::from_secs(2);
+    // The idle pattern: the level of IO33 and its time in milliseconds.
+    const IDLE_PATTERN: [(bool, u64); 4] = [(true, 60), (false, 140), (true, 60), (false, 1740)];
     let mut beat_led = PinDriver::output(p.pins.gpio32)?;
     let mut bar_led = PinDriver::output(p.pins.gpio33)?;
     let (beat_tx, beat_rx) = mpsc::channel::<u8>();
@@ -143,7 +149,31 @@ fn run() -> anyhow::Result<()> {
         .name("leds".into())
         .stack_size(3 * 1024)
         .spawn(move || {
-            for beat in beat_rx {
+            let mut last_beat: Option<Instant> = None;
+            let mut step = 0;
+            loop {
+                let since = last_beat.map_or(IDLE_AFTER, |t| t.elapsed());
+                let idle = since >= IDLE_AFTER;
+                let timeout = if idle {
+                    let (on, ms) = IDLE_PATTERN[step];
+                    let _ = bar_led.set_level(on.into());
+                    Duration::from_millis(ms)
+                } else {
+                    IDLE_AFTER - since
+                };
+                let beat = match beat_rx.recv_timeout(timeout) {
+                    Ok(beat) => beat,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if idle {
+                            step = (step + 1) % IDLE_PATTERN.len();
+                        }
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
+                last_beat = Some(Instant::now());
+                step = 0;
+                let _ = bar_led.set_low();
                 let _ = beat_led.set_high();
                 if beat == 1 {
                     let _ = bar_led.set_high();
