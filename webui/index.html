@@ -19,6 +19,7 @@ header{background:#151524;padding:10px 16px;border-bottom:1px solid var(--border
 header h1{font-size:15px;color:var(--accent)}
 header .kv{color:var(--muted)}
 header .kv b{color:var(--text);font-weight:500}
+footer{padding:4px 16px 12px;text-align:center;font-size:11px;color:var(--dim)}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:6px}
 .dot.on{background:var(--play)}
 #state.play{color:var(--play)}#state.stop{color:var(--danger)}
@@ -130,7 +131,7 @@ input.num.text{width:150px;text-align:left}
 </head>
 <body>
 <header>
-  <h1>xdj-clock <span id="version" class="kv"></span></h1>
+  <h1>xdj-clock</h1>
   <span class="kv"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   <span class="kv">source <b id="source">—</b></span>
   <span class="kv">mode <b id="mode">—</b></span>
@@ -199,6 +200,7 @@ input.num.text{width:150px;text-align:left}
     <div id="log" class="log"></div>
   </details>
 </main>
+<footer id="version"></footer>
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
