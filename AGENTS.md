@@ -139,7 +139,10 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 
 - The flash has two app slots, `ota_0` and `ota_1` (`esp32/partitions.csv`). The NVS partition keeps its old offset and size, so the settings stay.
 - Firmware 1.17 and older use a single-app table. Flash the first firmware with OTA over USB. After that, the box can update itself.
-- The Firmware panel of the page sends `ota_check` and `ota_install`. Each command starts an `ota` thread, which stops after the command. The thread reads `esp32-version.txt` from the prerelease `esp32-latest` on GitHub. If that version is newer, it writes `xdj-clock-esp32-ota.bin` into the free slot and restarts.
+- The Firmware panel of the page sends `ota_check` and `ota_install`. TLS to GitHub takes about 50 KB of heap. The box has about 75 KB free in normal operation.
+- `ota_check` starts an `ota` thread, which stops after the check. It reads `esp32-version.txt` from the prerelease `esp32-latest` on GitHub. The check refuses to start below 60 KB free heap or a 24 KB largest block. While it runs, the page gets no status.
+- `ota_install` stores a request in NVS (namespace `ota`) and restarts. In this maintenance start, `main` starts only WiFi and Ethernet, and `ota::install_and_restart` downloads the image into the free slot. Then the box restarts. An error goes into NVS, and the page shows it after the next normal start.
+- The maintenance start removes the request first. Thus a crash during the download does not repeat the download at each start.
 - The box needs internet for the update: a joined WiFi network (indices 102 and 103), or an Ethernet network with a router.
 - A router at 192.168.1.1 is often the DNS server too. The box has that address on its own WiFi network, so the DNS query goes to the box itself. In that case, the `ota` thread sets the DNS server to 1.1.1.1.
 - `EspOta::get_running_slot` of esp-idf-svc 0.53 fails with `ESP_ERR_INVALID_SIZE` on this firmware. Read the label from `esp_ota_get_running_partition` instead.
@@ -147,7 +150,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.18.5 uses 83 % of the slot.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.18.6 uses 83 % of the slot.
 
 ### Debug logs
 

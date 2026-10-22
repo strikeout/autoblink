@@ -174,7 +174,9 @@ pub fn start(
             }
             if Instant::now() >= next_status {
                 next_status = Instant::now() + STATUS_INTERVAL;
-                if !clients.is_empty() {
+                // The OTA check takes about 50 KB of heap for TLS. The status message can then
+                // fail to allocate, so the page gets no status until the check ends.
+                if !clients.is_empty() && !ota::busy() {
                     let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
                     clients.broadcast(&status_message(&state, clock_enabled).to_string());
                 }
@@ -248,7 +250,7 @@ fn command(buf: &[u8], settings: &Mutex<Settings>, state: &Arc<State>) -> Value 
             // 40 KB of heap, and the full settings message can then fail to allocate.
             match ota::run(state.clone(), cmd) {
                 Ok(()) => json!({"type": "ota"}),
-                Err(text) => error(text),
+                Err(text) => error(&text),
             }
         }
         Some(other) => error(&format!("This device does not support the command {other}")),

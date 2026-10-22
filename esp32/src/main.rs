@@ -97,6 +97,7 @@ fn run() -> anyhow::Result<()> {
     let p = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
+    let (install, ota_error) = ota::take_request(&nvs)?;
     // IO33 stays on until the LED thread starts. Then it shows the state of the box.
     let mut status_led = PinDriver::output(p.pins.gpio33)?;
     status_led.set_high()?;
@@ -134,6 +135,21 @@ fn run() -> anyhow::Result<()> {
         sysloop,
     )?;
 
+    // The maintenance start: only the network runs, so that TLS gets enough heap.
+    if install {
+        log::info!("Firmware update: the firmware starts only the network for the download");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            let sta = wifi.sta_netif().get_ip_info().is_ok_and(|i| !i.ip.is_unspecified());
+            let eth_ip = eth.netif().get_ip_info().is_ok_and(|i| !i.ip.is_unspecified() && !i.ip.is_link_local());
+            if sta || eth_ip {
+                break;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        ota::install_and_restart();
+    }
+
     let state = Arc::new(State {
         tracker: Mutex::new(Tracker::new()),
         iface: Mutex::new("Ethernet: no address".into()),
@@ -144,7 +160,11 @@ fn run() -> anyhow::Result<()> {
         own_device: AtomicU8::new(0),
         wifi_join_down: AtomicBool::new(false),
         reset_reason,
-        ota: Mutex::new(OtaStatus::default()),
+        ota: Mutex::new(OtaStatus {
+            state: if ota_error.is_some() { "error" } else { "" },
+            error: ota_error,
+            ..Default::default()
+        }),
         start: Instant::now(),
     });
     let midi_beats = midi::start(p.uart2, p.pins.gpio17, p.pins.gpio35, state.clone(), settings.midi.clone())?;
