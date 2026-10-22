@@ -42,3 +42,6 @@ CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 # The OTA download uses TLS. mbedTLS frees its record buffers after the handshake, so that the
 # heap keeps space for the web server and the track data.
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# GET /mem lists the free stack of each task. uxTaskGetSystemState needs the trace facility.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y

@@ -37,37 +37,34 @@ pub struct Tracks(pub Mutex<HashMap<u8, TrackData>>);
 /// Starts the fetch thread. Returns the sender for the track changes.
 pub fn start(state: Arc<State>) -> anyhow::Result<Sender<TrackRef>> {
     let (tx, rx) = mpsc::channel::<TrackRef>();
-    thread::Builder::new()
-        .name("dbserver".into())
-        .stack_size(12 * 1024)
-        .spawn(move || {
-            while let Ok(first) = rx.recv() {
-                // Keep only the last change of each deck. The older changes are stale.
-                let mut latest = vec![first];
-                for track in rx.try_iter() {
-                    latest.retain(|t| t.device != track.device);
-                    latest.push(track);
+    crate::spawn(c"dbserver", 12 * 1024, move || {
+        while let Ok(first) = rx.recv() {
+            // Keep only the last change of each deck. The older changes are stale.
+            let mut latest = vec![first];
+            for track in rx.try_iter() {
+                latest.retain(|t| t.device != track.device);
+                latest.push(track);
+            }
+            for track in latest {
+                let mut tracks = state.tracks.0.lock().unwrap();
+                if track.rekordbox_id == 0 {
+                    tracks.remove(&track.device);
+                    continue;
                 }
-                for track in latest {
-                    let mut tracks = state.tracks.0.lock().unwrap();
-                    if track.rekordbox_id == 0 {
-                        tracks.remove(&track.device);
-                        continue;
-                    }
-                    tracks.insert(track.device, TrackData { rekordbox_id: track.rekordbox_id, ..Default::default() });
-                    drop(tracks);
-                    if fetch_one(&state, track) {
-                        continue;
-                    }
-                    thread::sleep(RETRY_DELAY);
-                    let loaded = state.tracker.lock().unwrap().deck(track.device).map(|d| d.track.rekordbox_id);
-                    if loaded == Some(track.rekordbox_id) {
-                        log::info!("Deck {} track {}: the fetch starts again", track.device, track.rekordbox_id);
-                        fetch_one(&state, track);
-                    }
+                tracks.insert(track.device, TrackData { rekordbox_id: track.rekordbox_id, ..Default::default() });
+                drop(tracks);
+                if fetch_one(&state, track) {
+                    continue;
+                }
+                thread::sleep(RETRY_DELAY);
+                let loaded = state.tracker.lock().unwrap().deck(track.device).map(|d| d.track.rekordbox_id);
+                if loaded == Some(track.rekordbox_id) {
+                    log::info!("Deck {} track {}: the fetch starts again", track.device, track.rekordbox_id);
+                    fetch_one(&state, track);
                 }
             }
-        })?;
+        }
+    })?;
     Ok(tx)
 }
 

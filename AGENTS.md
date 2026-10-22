@@ -147,11 +147,13 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.18.4 uses 83 % of the slot.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.18.5 uses 83 % of the slot.
 
 ### Debug logs
 
 - Run `curl http://xdj-clock.local/log` to read the log over WiFi. The page shows no log.
+- Run `curl http://xdj-clock.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
+- Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - The log ring is in RTC slow memory (4 KB). A panic, a watchdog or a software restart keeps it. A power-on clears it.
 - The text has three parts: the last crash, the lines of the previous start and the lines of this start.
 - The firmware keeps the crash report outside the ring. Thus a flood of log lines cannot push it out.

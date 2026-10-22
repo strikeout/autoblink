@@ -69,23 +69,20 @@ pub fn run(state: Arc<State>, cmd: OtaCmd) -> Result<(), &'static str> {
     if BUSY.swap(true, Ordering::AcqRel) {
         return Err("The firmware update is busy");
     }
-    let spawned = thread::Builder::new()
-        .name("ota".into())
-        // The TLS handshake of mbedTLS needs a large stack.
-        .stack_size(12 * 1024)
-        .spawn(move || {
-            let result = match cmd {
-                OtaCmd::Check => check(&state.ota).map(|_| ()),
-                OtaCmd::Install => install(&state.ota),
-            };
-            if let Err(e) = result {
-                log::warn!("Firmware update: {e:#}");
-                let mut ota = state.ota.lock().unwrap();
-                ota.state = "error";
-                ota.error = Some(format!("{e:#}"));
-            }
-            BUSY.store(false, Ordering::Release);
-        });
+    // The TLS handshake of mbedTLS needs a large stack.
+    let spawned = crate::spawn(c"ota", 12 * 1024, move || {
+        let result = match cmd {
+            OtaCmd::Check => check(&state.ota).map(|_| ()),
+            OtaCmd::Install => install(&state.ota),
+        };
+        if let Err(e) = result {
+            log::warn!("Firmware update: {e:#}");
+            let mut ota = state.ota.lock().unwrap();
+            ota.state = "error";
+            ota.error = Some(format!("{e:#}"));
+        }
+        BUSY.store(false, Ordering::Release);
+    });
     spawned.map(|_| ()).map_err(|_| {
         BUSY.store(false, Ordering::Release);
         "The firmware update cannot start a thread"

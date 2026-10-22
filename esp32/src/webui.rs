@@ -6,7 +6,6 @@
 use std::ffi::CString;
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use esp_idf_svc::http::server::ws::{EspHttpWsConnection, EspHttpWsDetachedSender};
@@ -95,6 +94,11 @@ pub fn start(
             .write_all(crate::logring::text().as_bytes())
     })?;
 
+    server.fn_handler("/mem", Method::Get, |req| {
+        req.into_response(200, None, &[("Content-Type", "text/plain; charset=utf-8")])?
+            .write_all(crate::mem::report().as_bytes())
+    })?;
+
     for path in ["/", "/index.html"] {
         server.fn_handler(path, Method::Get, |req| {
             req.into_response(200, None, &[("Content-Type", "text/html; charset=utf-8")])?
@@ -158,28 +162,25 @@ pub fn start(
 
     // This thread does all the sends to the page. When the queue is full, `try_send` drops the beat.
     let (beat_tx, beat_rx) = mpsc::sync_channel::<(u8, u8)>(8);
-    thread::Builder::new()
-        .name("web-status".into())
-        .stack_size(8 * 1024)
-        .spawn(move || {
-            let mut next_status = Instant::now();
-            loop {
-                match beat_rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
-                    Ok((device, beat)) => clients.broadcast(
-                        &json!({"type": "beat", "device": device, "beat": beat}).to_string(),
-                    ),
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => return,
-                }
-                if Instant::now() >= next_status {
-                    next_status = Instant::now() + STATUS_INTERVAL;
-                    if !clients.is_empty() {
-                        let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
-                        clients.broadcast(&status_message(&state, clock_enabled).to_string());
-                    }
+    crate::spawn(c"web-status", 8 * 1024, move || {
+        let mut next_status = Instant::now();
+        loop {
+            match beat_rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
+                Ok((device, beat)) => clients.broadcast(
+                    &json!({"type": "beat", "device": device, "beat": beat}).to_string(),
+                ),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            if Instant::now() >= next_status {
+                next_status = Instant::now() + STATUS_INTERVAL;
+                if !clients.is_empty() {
+                    let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
+                    clients.broadcast(&status_message(&state, clock_enabled).to_string());
                 }
             }
-        })?;
+        }
+    })?;
 
     Ok((server, beat_tx))
 }

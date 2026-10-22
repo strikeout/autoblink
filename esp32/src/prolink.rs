@@ -12,6 +12,7 @@
 //! 7 or higher. The default is 7, the same as the host. Do not run the host and the firmware on
 //! one network with the same number.
 
+use std::ffi::CStr;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -65,7 +66,7 @@ pub fn spawn(
     let fds = [discovery.as_raw_fd(), beats.as_raw_fd(), status.as_raw_fd()];
 
     let st = state.clone();
-    spawn_loop("prolink-discovery", move |buf| {
+    spawn_loop(c"prolink-discovery", move |buf| {
         let Ok((len, _)) = discovery.recv_from(buf) else { return };
         let data = &buf[..len];
         if data.len() > 0x24 && has_magic(data) && data[0x0a] == PKT_CONFLICT {
@@ -77,7 +78,7 @@ pub fn spawn(
     })?;
 
     let st = state.clone();
-    spawn_loop("prolink-beats", move |buf| {
+    spawn_loop(c"prolink-beats", move |buf| {
         let Ok((len, _)) = beats.recv_from(buf) else { return };
         let at_us = st.now_us();
         let now = at_us / 1000;
@@ -101,7 +102,7 @@ pub fn spawn(
     })?;
 
     let st = state.clone();
-    spawn_loop("prolink-status", move |buf| {
+    spawn_loop(c"prolink-status", move |buf| {
         let Ok((len, _)) = status.recv_from(buf) else { return };
         let Some(cdj) = parse_cdj_status(&buf[..len]) else { return };
         let now = st.now_ms();
@@ -115,24 +116,18 @@ pub fn spawn(
         }
     })?;
 
-    thread::Builder::new()
-        .name("virtual-cdj".into())
-        .stack_size(6 * 1024)
-        .spawn(move || virtual_cdj(&sender, &state, &device_number, &fds, &eth_netif))?;
+    crate::spawn(c"virtual-cdj", 6 * 1024, move || virtual_cdj(&sender, &state, &device_number, &fds, &eth_netif))?;
     Ok(())
 }
 
-fn spawn_loop(name: &str, mut f: impl FnMut(&mut [u8]) + Send + 'static) -> anyhow::Result<()> {
-    thread::Builder::new()
-        .name(name.into())
-        .stack_size(6 * 1024)
-        .spawn(move || {
-            // A CDJ-3000 class status packet has more than 0x1c0 bytes.
-            let mut buf = [0u8; 1500];
-            loop {
-                f(&mut buf);
-            }
-        })?;
+fn spawn_loop(name: &'static CStr, mut f: impl FnMut(&mut [u8]) + Send + 'static) -> anyhow::Result<()> {
+    crate::spawn(name, 6 * 1024, move || {
+        // A CDJ-3000 class status packet has more than 0x1c0 bytes.
+        let mut buf = [0u8; 1500];
+        loop {
+            f(&mut buf);
+        }
+    })?;
     Ok(())
 }
 

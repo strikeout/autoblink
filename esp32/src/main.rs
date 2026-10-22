@@ -12,6 +12,7 @@
 mod dmx;
 mod led;
 mod logring;
+mod mem;
 mod midi;
 mod net;
 mod ota;
@@ -20,6 +21,7 @@ mod settings;
 mod tracks;
 mod webui;
 
+use std::ffi::CStr;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::gpio::PinDriver;
+use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::mdns::EspMdns;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -282,6 +285,25 @@ fn run() -> anyhow::Result<()> {
         }
         thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// Starts a thread. `name` is also the FreeRTOS task name, which `GET /mem` shows.
+///
+/// Without the spawn configuration, each Rust thread has the task name "pthread".
+pub fn spawn<F, T>(name: &'static CStr, stack_size: usize, f: F) -> std::io::Result<thread::JoinHandle<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    // The configuration applies to the threads that the calling thread starts. Reset it after
+    // the start, so that no other thread gets this name.
+    let _ = ThreadSpawnConfiguration { name: Some(name), ..Default::default() }.set();
+    let handle = thread::Builder::new()
+        .name(name.to_string_lossy().into_owned())
+        .stack_size(stack_size)
+        .spawn(f);
+    let _ = ThreadSpawnConfiguration::default().set();
+    handle
 }
 
 /// The time between two tries to join the WiFi network.
