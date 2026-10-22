@@ -631,7 +631,9 @@ function buildSetting(it) {
         if (sw) { sw.textContent = it.on ? '✓' : '✗'; el.classList.toggle('off', !it.on); }
         input.dataset.raw = it.raw ?? '';
         // The shown value carries the unit; the input holds the raw number.
-        shown.textContent = it.value === it.raw ? '' : it.value;
+        // A hidden value (a password) has no raw value. Its mask goes in the input as a placeholder.
+        input.placeholder = it.raw == null ? it.value : '';
+        shown.textContent = it.value === it.raw || it.raw == null ? '' : it.value;
         if (document.activeElement !== input) { input.value = it.raw ?? ''; input.classList.remove('bad'); }
       },
     };

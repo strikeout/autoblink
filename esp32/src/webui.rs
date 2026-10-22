@@ -136,7 +136,10 @@ pub fn start(
         }
         let mut buf = vec![0u8; len];
         ws.recv(&mut buf)?;
-        let reply = command(&buf, &settings);
+        // For a text frame, esp-idf-svc adds 1 to the length and puts a NUL byte at the end.
+        // serde_json refuses that byte, so remove it.
+        let text = buf.strip_suffix(&[0]).unwrap_or(&buf);
+        let reply = command(text, &settings);
         ws.send(FrameType::Text(false), reply.to_string().as_bytes())
     })?;
 
