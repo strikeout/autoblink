@@ -55,7 +55,13 @@ pub enum DeviceEvent {
 pub type DeviceTable = Arc<Mutex<HashMap<u8, Device>>>;
 
 /// How long without a keep-alive before we consider a device gone.
-const EXPIRY: Duration = Duration::from_secs(5);
+///
+/// A device sends a keep-alive each 1.5 s. A short network fault, for example a cable that
+/// somebody pulls and connects again, must not remove the master deck. A removal sends MIDI
+/// Stop, and the clock then waits up to some bars for the next phrase start. Until the expiry,
+/// the clock continues at the last tempo. A deck that stops sends its stop in the status, so
+/// the stop does not wait for this time.
+const EXPIRY: Duration = Duration::from_secs(15);
 
 // ── Main discovery task ───────────────────────────────────────────────────────
 

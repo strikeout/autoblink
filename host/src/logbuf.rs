@@ -97,10 +97,62 @@ impl std::io::Write for LogWriter {
     }
 }
 
+/// The number of log lines that can wait for the stdout thread.
+const STDOUT_QUEUE: usize = 1024;
+
+/// A stdout writer that never blocks the caller.
+///
+/// A thread writes the lines to stdout. A log call from the MIDI thread only puts the line in a
+/// queue, so a paused terminal or a full pipe cannot stop the clock. When the queue is full,
+/// the line is lost.
+///
+/// ponytail: the lines that wait in the queue at the exit are lost. Add a flush at the exit if
+/// the last lines of a run matter.
+#[derive(Clone)]
+pub struct LossyStdout(std::sync::mpsc::SyncSender<Vec<u8>>);
+
+impl LossyStdout {
+    /// Starts the stdout thread.
+    pub fn start() -> std::io::Result<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(STDOUT_QUEUE);
+        std::thread::Builder::new()
+            .name("log-stdout".into())
+            .spawn(move || {
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                for line in rx {
+                    let _ = out.write_all(&line);
+                }
+            })?;
+        Ok(Self(tx))
+    }
+}
+
+impl std::io::Write for LossyStdout {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let _ = self.0.try_send(data.to_vec());
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn lossy_stdout_does_not_block_when_the_queue_is_full() {
+        // A queue that nobody reads, like a stdout thread that waits for a paused terminal.
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+        let mut out = LossyStdout(tx);
+        for _ in 0..10 {
+            assert_eq!(out.write(b"line\n").unwrap(), 5);
+        }
+    }
 
     #[test]
     fn log_buffer_clones_share_inner_ring() {

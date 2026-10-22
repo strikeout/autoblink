@@ -15,7 +15,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::timeout;
 
 use super::discovery::DeviceTable;
@@ -40,6 +40,8 @@ const MAX_ARG_COUNT: usize = 64;
 
 /// Timeout for the entire metadata fetch (connect, metadata, PSSI, waveform and cue list).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+/// A failed fetch starts again once after this delay, when the deck still holds the track.
+const RETRY_DELAY: Duration = Duration::from_secs(3);
 
 /// Timeout for individual TCP read/write operations.
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
@@ -166,6 +168,9 @@ pub async fn run(
     let inflight: InflightMap = Arc::new(Mutex::new(HashMap::new()));
     // The (target, asking player) pairs that already produced a refusal warning.
     let warned: Arc<Mutex<HashSet<(u8, u8)>>> = Arc::new(Mutex::new(HashSet::new()));
+    // One fetch at a time for each player. Two sessions at the same time ask with the same
+    // player number, and a player can refuse the second one.
+    let mut sessions: HashMap<Ipv4Addr, Arc<Semaphore>> = HashMap::new();
 
     while let Some(change) = rx.recv().await {
         // The track source player of each deck. Read it before the device table lock.
@@ -218,6 +223,7 @@ pub async fn run(
             map.insert(key, ());
         }
 
+        let session = Arc::clone(sessions.entry(ip).or_insert_with(|| Arc::new(Semaphore::new(1))));
         let inflight2 = Arc::clone(&inflight);
         let state2 = Arc::clone(&state);
         let warned2 = Arc::clone(&warned);
@@ -229,7 +235,38 @@ pub async fn run(
             let _done = scopeguard(move || {
                 inflight2.lock().remove(&key);
             });
-            match timeout(FETCH_TIMEOUT, fetch_metadata(ip, asking, &change2)).await {
+            let mut retried = false;
+            let result = loop {
+                let result = {
+                    // The semaphore is never closed, so the acquire cannot fail.
+                    let _session = session.acquire().await;
+                    timeout(FETCH_TIMEOUT, fetch_metadata(ip, asking, &change2)).await
+                };
+                let failed = match &result {
+                    Ok(Ok(_)) => false,
+                    Ok(Err(e)) => e.downcast_ref::<SetupRefused>().is_none(),
+                    Err(_) => true,
+                };
+                let loaded = || {
+                    state2
+                        .read()
+                        .devices
+                        .get(&change2.device_number)
+                        .is_some_and(|d| d.rekordbox_id == change2.rekordbox_id)
+                };
+                if !failed || retried || !loaded() {
+                    break result;
+                }
+                retried = true;
+                tracing::info!(
+                    device = change2.device_number,
+                    rekordbox_id = change2.rekordbox_id,
+                    "Metadata fetch failed; the app tries again in {} s",
+                    RETRY_DELAY.as_secs()
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            };
+            match result {
                 Ok(Ok((meta, analysis))) => {
                     tracing::info!(
                         device = change2.device_number,
@@ -329,18 +366,29 @@ pub async fn run(
                     }
                 }
                 Ok(Err(e)) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         device = change2.device_number,
                         rekordbox_id = change2.rekordbox_id,
                         error = %e,
                         "Metadata fetch failed (device may not support dbserver)"
                     );
+                    // Without the error, the page shows "loading" for the rest of the track.
+                    state2.write().set_phrase_error(
+                        change2.device_number,
+                        change2.rekordbox_id,
+                        format!("the fetch failed: {e:#}"),
+                    );
                 }
                 Err(_) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         device = change2.device_number,
                         rekordbox_id = change2.rekordbox_id,
                         "Metadata fetch timed out"
+                    );
+                    state2.write().set_phrase_error(
+                        change2.device_number,
+                        change2.rekordbox_id,
+                        "the fetch timed out".into(),
                     );
                 }
             }

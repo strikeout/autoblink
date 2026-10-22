@@ -16,8 +16,9 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(2);
 ///
 /// The supervisor finds the network interface and runs all Pro DJ Link tasks
 /// as one group. It rebuilds the group when the IP address goes away, when a
-/// better interface comes up in auto mode, when the interface setting changes,
-/// or when a task in the group stops. The app never exits for a network fault.
+/// better interface comes up in auto mode, when the interface setting or the
+/// device number changes, or when a task in the group stops. The app never
+/// exits for a network fault.
 pub fn spawn(
     ctx: &TaskContext,
     startup_cfg: crate::config::Config,
@@ -37,18 +38,21 @@ pub fn spawn(
                 tracing::info!(%bind_ip, %bcast_ip, "Network interface initialized");
 
                 let mut group = JoinSet::new();
+                let device_number = ctx.cfg.read().device_number;
                 spawn_group(
                     &mut group,
                     &ctx,
                     &startup_cfg,
                     &device_table,
                     &track_change_rx,
+                    device_number,
                     bind_ip,
                     bcast_ip,
                     mac,
                 );
 
-                let reason = watch_group(&mut group, &ctx, &hint, bind_ip).await;
+                let reason =
+                    watch_group(&mut group, &ctx, &hint, device_number, bind_ip, &device_table).await;
                 tracing::warn!(%reason, "Rebuilding the Pro DJ Link network tasks");
                 group.shutdown().await;
                 tokio::time::sleep(CHECK_INTERVAL).await;
@@ -86,7 +90,9 @@ async fn watch_group(
     group: &mut JoinSet<()>,
     ctx: &TaskContext,
     hint: &str,
+    device_number: u8,
     bind_ip: Ipv4Addr,
+    device_table: &DeviceTable,
 ) -> String {
     let mut ticker = tokio::time::interval(CHECK_INTERVAL);
     ticker.tick().await;
@@ -102,9 +108,13 @@ async fn watch_group(
                 if ctx.cfg.read().interface != hint {
                     return "the interface setting changed".to_string();
                 }
+                if ctx.cfg.read().device_number != device_number {
+                    return "the device number changed".to_string();
+                }
                 // `getifaddrs` can block, so keep it off the async workers.
                 let hint2 = hint.to_string();
-                let changed = tokio::task::spawn_blocking(move || network_changed(&hint2, bind_ip))
+                let players = !device_table.lock().is_empty();
+                let changed = tokio::task::spawn_blocking(move || network_changed(&hint2, bind_ip, players))
                     .await
                     .unwrap_or_else(|e| Some(format!("the interface check panicked: {e}")));
                 if let Some(reason) = changed {
@@ -117,7 +127,11 @@ async fn watch_group(
 
 /// Returns a reason when `bind_ip` is gone, or when auto mode has a better
 /// interface than the one in use.
-fn network_changed(hint: &str, bind_ip: Ipv4Addr) -> Option<String> {
+///
+/// `players` is true while players send keep-alives on the interface in use. Then a better
+/// interface does not cause a rebuild. For example, a WiFi port whose DHCP failed gets a
+/// 169.254.x.x address and the best priority, but the players are on the Ethernet port.
+fn network_changed(hint: &str, bind_ip: Ipv4Addr, players: bool) -> Option<String> {
     let candidates = match crate::app::interface_candidates(hint) {
         Ok(c) => c,
         Err(e) => return Some(format!("the interface list is not available: {e}")),
@@ -126,7 +140,7 @@ fn network_changed(hint: &str, bind_ip: Ipv4Addr) -> Option<String> {
         return Some(format!("the address {bind_ip} is gone"));
     };
     match candidates.first() {
-        Some(best) if hint == "auto" && best.priority < current.priority => Some(format!(
+        Some(best) if hint == "auto" && !players && best.priority < current.priority => Some(format!(
             "a better interface is up: {} ({})",
             best.name, best.ip
         )),
@@ -141,6 +155,7 @@ fn spawn_group(
     startup_cfg: &crate::config::Config,
     device_table: &DeviceTable,
     track_change_rx: &Arc<tokio::sync::Mutex<mpsc::Receiver<TrackChange>>>,
+    device_number: u8,
     bind_ip: Ipv4Addr,
     bcast_ip: Ipv4Addr,
     mac: [u8; 6],
@@ -162,7 +177,7 @@ fn spawn_group(
 
     let vcdj_name = startup_cfg.device_name.clone();
     let vcdj_ready_tx = ctx.vcdjready_tx.clone();
-    let vcdj_dev_num = startup_cfg.device_number;
+    let vcdj_dev_num = device_number;
     let vcdj_table = Arc::clone(device_table);
     group.spawn(async move {
         if let Err(e) = crate::prolink::virtual_cdj::run(
@@ -229,7 +244,7 @@ mod tests {
     #[test]
     fn a_missing_address_asks_for_a_rebuild() {
         // 203.0.113.0/24 is TEST-NET-3, so no interface on the test machine has it.
-        let reason = network_changed("auto", Ipv4Addr::new(203, 0, 113, 7));
+        let reason = network_changed("auto", Ipv4Addr::new(203, 0, 113, 7), false);
         assert!(reason.is_some_and(|r| r.contains("is gone")));
     }
 }

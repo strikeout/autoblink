@@ -448,8 +448,21 @@ async fn ws_handler(
         );
         return StatusCode::FORBIDDEN.into_response();
     }
-    ws.on_upgrade(move |socket| client(socket, shared))
+    // A command has less than 1 KB. Without a limit, axum buffers a 64 MiB frame before the
+    // command check refuses it.
+    ws.max_message_size(MAX_MESSAGE_LEN)
+        .max_frame_size(MAX_MESSAGE_LEN)
+        .on_upgrade(move |socket| client(socket, shared))
 }
+
+/// The largest WebSocket message that the server accepts from a client.
+const MAX_MESSAGE_LEN: usize = 16 * 1024;
+
+/// A send to a client that takes longer ends the connection.
+///
+/// A phone that leaves the WiFi sends no FIN. Without a timeout, its task waits for the TCP
+/// retransmit timeout of the kernel, which can be 15 minutes. The page connects again by itself.
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -471,7 +484,10 @@ enum Command {
 }
 
 async fn send(socket: &mut WebSocket, msg: &str) -> bool {
-    socket.send(Message::Text(msg.into())).await.is_ok()
+    matches!(
+        tokio::time::timeout(SEND_TIMEOUT, socket.send(Message::Text(msg.into()))).await,
+        Ok(Ok(()))
+    )
 }
 
 async fn client(mut socket: WebSocket, shared: Arc<Shared>) {

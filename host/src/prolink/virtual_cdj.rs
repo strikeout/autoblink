@@ -178,6 +178,7 @@ pub async fn run(
     let status_pkt = build_status_packet(&name, claimed);
     let table = Arc::clone(&device_table);
     let listener_sock = Arc::clone(&sock);
+    let own_name = device_name.to_string();
     // The listener stops with this task, so a rebuilt task group does not
     // leave it behind on the old address.
     let _listener = AbortOnDrop(tokio::spawn(async move {
@@ -187,6 +188,12 @@ pub async fn run(
                 Ok((len, src)) => {
                     let data = &buf[..len];
                     if let Some(ka) = super::packets::parse_keepalive(data) {
+                        // The kernel loops our own broadcast keep-alives back. Like the
+                        // discovery task, compare the name too, because rekordbox can run on
+                        // the same host.
+                        if ka.ip == ip && ka.name == own_name {
+                            continue;
+                        }
                         let dev = super::discovery::Device::from_keepalive(ka);
                         let num = dev.device_number;
                         let mut t = table.lock();
