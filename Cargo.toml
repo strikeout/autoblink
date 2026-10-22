@@ -5,6 +5,7 @@ members = [
   "esp32-emulator",
   "crates/xdj-core-midi",
   "crates/xdj-core-prolink",
+  "crates/xdj-core-dbserver",
 ]
 
 # The firmware builds with the Xtensa toolchain and its own target. It has its own
@@ -12,7 +13,7 @@ members = [
 exclude = ["esp32"]
 
 [workspace.package]
-version = "1.13.0"
+version = "1.14.0"
 edition = "2021"
 license = "Proprietary"
 authors = ["xdj-midi team"]

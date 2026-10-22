@@ -1686,27 +1686,32 @@ dependencies = [
 
 [[package]]
 name = "xdj-clock-esp32"
-version = "1.13.0"
+version = "1.14.0"
 dependencies = [
  "anyhow",
  "embuild",
  "esp-idf-svc",
  "log",
  "serde_json",
+ "xdj-core-dbserver",
  "xdj-core-midi",
  "xdj-core-prolink",
 ]
 
 [[package]]
+name = "xdj-core-dbserver"
+version = "1.14.0"
+
+[[package]]
 name = "xdj-core-midi"
-version = "1.13.0"
+version = "1.14.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "xdj-core-prolink"
-version = "1.13.0"
+version = "1.14.0"
 
 [[package]]
 name = "zmij"

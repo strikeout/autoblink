@@ -1,8 +1,9 @@
 //! xdj-clock firmware for the WT32-ETH01 (ESP32 + LAN8720 Ethernet).
 //!
-//! The Ethernet port receives the Pro DJ Link beats. The MIDI output on IO17 sends the clock,
-//! the beat notes and the CCs. Two LEDs show the beats. The firmware serves the web page on its
-//! own WiFi network at http://192.168.1.1.
+//! The firmware joins the Pro DJ Link network on the Ethernet port as a virtual CDJ. It reads
+//! the beats, the player status and the track data from the players. The MIDI output on IO17
+//! sends the clock, the notes and the CCs. Two LEDs show the beats. The firmware serves the web
+//! page on its own WiFi network at http://192.168.1.1.
 
 #[cfg(feature = "dmx")]
 mod dmx;
@@ -10,8 +11,11 @@ mod midi;
 mod net;
 mod prolink;
 mod settings;
+mod tracks;
 mod webui;
 
+use std::net::Ipv4Addr;
+use std::sync::atomic::AtomicU8;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +29,9 @@ use xdj_core_prolink::Tracker;
 
 use crate::midi::MidiStatus;
 use crate::net::{EthPins, AP_IP};
+use crate::prolink::EthInfo;
 use crate::settings::Settings;
+use crate::tracks::Tracks;
 use crate::webui::Clients;
 
 /// The state that the receive threads write and the web page reads.
@@ -34,6 +40,13 @@ pub struct State {
     /// The Ethernet address, for the "iface" field of the status.
     pub iface: Mutex<String>,
     pub midi: Mutex<MidiStatus>,
+    pub tracks: Tracks,
+    /// The address of the Ethernet port. `None` while the port has no address.
+    pub eth: Mutex<Option<EthInfo>>,
+    /// The device number of the last conflict packet. The virtual CDJ reads it while it claims.
+    pub conflict: AtomicU8,
+    /// The device number of the virtual CDJ. 0 while it is not on the network.
+    pub own_device: AtomicU8,
     start: Instant,
 }
 
@@ -47,10 +60,15 @@ impl State {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    if let Err(e) = run() {
+        log::error!("The firmware stops: {e:#}");
+    }
+}
 
+fn run() -> anyhow::Result<()> {
     let p = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
@@ -85,11 +103,17 @@ fn main() -> anyhow::Result<()> {
         tracker: Mutex::new(Tracker::new()),
         iface: Mutex::new("Ethernet: no address".into()),
         midi: Mutex::new(MidiStatus::default()),
+        tracks: Tracks::default(),
+        eth: Mutex::new(None),
+        conflict: AtomicU8::new(0),
+        own_device: AtomicU8::new(0),
         start: Instant::now(),
     });
     let clients = Arc::new(Clients::default());
     let midi_beats = midi::start(p.uart2, p.pins.gpio17, p.pins.gpio35, state.clone(), settings.midi.clone())?;
+    let device_number = settings.device_number.clone();
     let _server = webui::start(state.clone(), clients.clone(), Arc::new(Mutex::new(settings)))?;
+    let track_changes = tracks::start(state.clone())?;
 
     // IO32 pulses on each beat of the master deck, IO33 on the first beat of the bar.
     let mut beat_led = PinDriver::output(p.pins.gpio32)?;
@@ -116,20 +140,37 @@ fn main() -> anyhow::Result<()> {
     #[cfg(feature = "dmx")]
     let dmx = dmx::Dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36)?;
 
-    prolink::spawn(state.clone(), move |beat| {
-        let _ = beat_tx.send(beat.beat_in_bar);
-        #[cfg(feature = "dmx")]
-        dmx.beat();
-        clients.broadcast(&webui::beat_message(beat.device, beat.beat_in_bar));
-        let _ = midi_beats.send(beat);
-    })?;
+    prolink::spawn(
+        state.clone(),
+        device_number,
+        move |beat| {
+            let msg = webui::beat_message(beat.device, beat.beat_in_bar);
+            let _ = beat_tx.send(beat.beat_in_bar);
+            #[cfg(feature = "dmx")]
+            dmx.beat();
+            let _ = midi_beats.send(beat);
+            // The broadcast waits for the web server task, which can be slow on a weak WiFi
+            // link. It therefore comes after the MIDI, the DMX and the LEDs.
+            clients.broadcast(&msg);
+        },
+        move |track| {
+            let _ = track_changes.send(track);
+        },
+    )?;
 
     // Log each change of the Ethernet address. A cable to the XDJ-AZ without a DHCP server
     // gives a 169.254.x.x address after some seconds.
     log::info!("Ethernet is waiting for a cable and an address");
+    let eth_mac = eth.netif().get_mac()?;
     let mut last = None;
     loop {
-        let ip = eth.netif().get_ip_info().ok().map(|i| i.ip).filter(|ip| !ip.is_unspecified());
+        let info = eth.netif().get_ip_info().ok().filter(|i| !i.ip.is_unspecified());
+        let ip = info.map(|i| i.ip);
+        *state.eth.lock().unwrap() = info.map(|i| EthInfo {
+            ip: i.ip,
+            broadcast: broadcast(i.ip, i.subnet.mask.0),
+            mac: eth_mac,
+        });
         if ip != last {
             match ip {
                 Some(ip) => {
@@ -149,4 +190,10 @@ fn main() -> anyhow::Result<()> {
         }
         thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// The broadcast address of the subnet of `ip` with a prefix of `prefix` bits.
+fn broadcast(ip: Ipv4Addr, prefix: u8) -> Ipv4Addr {
+    let host_bits = u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
+    Ipv4Addr::from(u32::from(ip) | host_bits)
 }
