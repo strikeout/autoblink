@@ -20,7 +20,19 @@ jobs:
         with:
           default: true
           buildtargets: esp32
-          ldproxy: true
+          ldproxy: false
+
+      # The toolchain action downloads ldproxy with curl and no retry. GitHub sometimes gives
+      # "Not Found" for that download, and then the build stops. This step downloads a pinned
+      # version with retries. If the download fails, the step builds ldproxy from source.
+      - name: Install ldproxy
+        run: |
+          url=https://github.com/esp-rs/embuild/releases/download/ldproxy-v0.3.2/ldproxy-x86_64-unknown-linux-gnu.zip
+          if curl -fsSL --retry 5 --retry-all-errors -o ldproxy.zip "$url" && unzip -o ldproxy.zip -d "$HOME/.cargo/bin"; then
+            chmod +x "$HOME/.cargo/bin/ldproxy"*
+          else
+            cargo install ldproxy --locked
+          fi
 
       - name: Install espflash
         uses: taiki-e/install-action@v2
