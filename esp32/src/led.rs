@@ -14,7 +14,7 @@
 //! 10 minutes.
 
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,17 +30,18 @@ const SHOW_RESTART_MS: u64 = 10 * 60 * 1000;
 /// The time of one repetition of a blink code, in milliseconds.
 const CODE_MS: u64 = 2000;
 
-/// Starts the LED thread. Send the beat in the bar (1 to 4) to the returned channel.
+/// Starts the LED thread. Send the beat in the bar (1 to 4) to the returned channel with
+/// `try_send`. The queue holds 4 beats.
 pub fn start(
     mut beat_led: PinDriver<'static, Output>,
     mut status_led: PinDriver<'static, Output>,
     state: Arc<State>,
-) -> anyhow::Result<Sender<u8>> {
+) -> anyhow::Result<SyncSender<u8>> {
     let abnormal = matches!(
         state.reset_reason,
         "panic" | "interrupt watchdog" | "task watchdog" | "other watchdog" | "brownout"
     );
-    let (tx, rx) = mpsc::channel::<u8>();
+    let (tx, rx) = mpsc::sync_channel::<u8>(4);
     crate::spawn(c"leds", 3 * 1024, move || {
         let mut last_beat: Option<Instant> = None;
         let mut code = Vec::new();

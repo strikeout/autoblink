@@ -11,19 +11,24 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use xdj_core_dbserver::{asking_player, fetch_with, SongStructure, TrackMetadata, TrackOverview};
 use xdj_core_prolink::TrackRef;
+
+use esp_idf_svc::sys;
 
 use crate::State;
 
 const RETRY_DELAY: Duration = Duration::from_secs(3);
 
-/// The firmware keeps the preview with this number of columns or fewer. A player sends 1200
-/// columns of 6 bytes. 600 columns keep 3600 bytes of heap for each deck, and the page draws
-/// them across the full width.
-const PREVIEW_COLUMNS: usize = 600;
+/// The retry waits this long at most for the end of an OTA check.
+const OTA_WAIT: Duration = Duration::from_secs(30);
+/// The fetch does not start below this free heap. The OTA check can use the heap for some
+/// seconds. The retry then waits for the end of the check.
+const MIN_FREE_HEAP: u32 = 24 * 1024;
+/// The fetch does not start when the largest free block is smaller than this.
+const MIN_HEAP_BLOCK: usize = 8 * 1024;
 
 /// The fetched data of the track on one deck.
 #[derive(Default)]
@@ -62,6 +67,12 @@ pub fn start(state: Arc<State>) -> anyhow::Result<Sender<TrackRef>> {
                     continue;
                 }
                 thread::sleep(RETRY_DELAY);
+                // The OTA check takes about 50 KB of heap for some seconds. Wait for its end, up
+                // to OTA_WAIT, so that the heap guard of the retry passes.
+                let until = Instant::now() + OTA_WAIT;
+                while crate::ota::busy() && Instant::now() < until {
+                    thread::sleep(Duration::from_secs(1));
+                }
                 let loaded = state.tracker.lock().unwrap().deck(track.device).map(|d| d.track.rekordbox_id);
                 if loaded == Some(track.rekordbox_id) {
                     log::info!("Deck {} track {}: the fetch starts again", track.device, track.rekordbox_id);
@@ -83,7 +94,13 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
             tracker.decks().iter().map(|d| (d.num, d.track.source_player)).collect();
         (source, players)
     };
+    // SAFETY: the two heap calls only read counters.
+    let (free, block) =
+        unsafe { (sys::esp_get_free_heap_size(), sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT)) };
     let result = match source {
+        _ if free < MIN_FREE_HEAP || block < MIN_HEAP_BLOCK => {
+            Err(format!("not enough memory for the track data ({free} bytes free, largest block {block} bytes)"))
+        }
         Some((ip, name)) if ip != [0; 4] => {
             let own = state.own_device.load(Ordering::Relaxed);
             let asking = asking_player(own, track.source_player, &name, players);
@@ -115,10 +132,7 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
             log::info!("Deck {}: {} - {}", track.device, f.metadata.artist, f.metadata.title);
             data.metadata = Some(f.metadata);
             data.structure = Some(f.song_structure);
-            data.overview = f.overview.map(|mut o| {
-                o.preview = shrink(&o.preview);
-                Arc::new(o)
-            });
+            data.overview = f.overview.map(Arc::new);
             true
         }
         Err(e) => {
@@ -127,14 +141,4 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
             false
         }
     }
-}
-
-/// Reduces the preview to `PREVIEW_COLUMNS` columns or fewer. Each new column has the largest
-/// value of each byte of the columns that it replaces.
-fn shrink(preview: &[u8]) -> Vec<u8> {
-    let group = (preview.len() / 6).div_ceil(PREVIEW_COLUMNS).max(1) * 6;
-    preview
-        .chunks(group)
-        .flat_map(|g| (0..6).map(move |b| g.iter().skip(b).step_by(6).copied().max().unwrap_or(0)))
-        .collect()
 }

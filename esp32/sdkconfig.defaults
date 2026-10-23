@@ -1,8 +1,8 @@
 # Rust needs more stack than C. The default main task stack is 3 KB. Each stack comes from the
 # heap. GET /mem shows the stack that each task used (2026-10-23, with 1 track loaded): main
 # 4.3 KB, system event 1.5 KB, idle 0.6 KB, esp_timer 0.4 KB. Each size keeps a margin of 1.5 KB
-# or more.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240
+# or more. The OTA download has its own thread, so the main task needs 7 KB.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=7168
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3072
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=2560
 CONFIG_ESP_TIMER_TASK_STACK_SIZE=2560
@@ -14,13 +14,40 @@ CONFIG_ETH_USE_ESP32_EMAC=y
 # receive buffers stay, because the players send many broadcasts.
 CONFIG_ETH_DMA_TX_BUFFER_NUM=5
 
-# Each static WiFi receive buffer takes 1.6 KB of heap. 6 buffers keep 6.4 KB. The dynamic
-# transmit buffers come from the heap only while a packet waits, and 16 limit that peak.
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+# Each static WiFi receive buffer takes 1.6 KB of heap. The box receives little on WiFi, so 4
+# buffers are sufficient. The dynamic buffers come from the heap only while a packet waits, and 16
+# limit that peak for each direction.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
+
+# The firmware sets the WiFi configuration at each start (net.rs). Without NVS, the WiFi driver
+# does not write it to the flash. A flash write stops all tasks for some time.
+CONFIG_ESP_WIFI_NVS_ENABLED=n
+
+# A WPA2-Enterprise network is not a use case of the box. WPA3 stays on, so that a WPA3 network
+# of a venue stays available.
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+
+# Without A-MPDU, the WiFi driver keeps no reorder window. This uses less RAM, and a beat packet
+# does not wait for a missing frame of an aggregate.
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
 
 # The web page talks to the firmware over a WebSocket.
 CONFIG_HTTPD_WS_SUPPORT=y
+
+# The networks of the box use only IPv4. Without IPv6, lwIP keeps no neighbour tables and no IPv6
+# state for each interface.
+CONFIG_LWIP_IPV6=n
+
+# Four CDJ-3000 class players send about 150 UDP packets per second. A larger receive queue for
+# each UDP socket keeps a burst while the receive thread waits for a lock.
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
+
+# The access point accepts 4 clients (net.rs), so the DHCP server needs 4 leases.
+CONFIG_LWIP_DHCPS_MAX_STATION_NUM=4
 
 # A direct cable to the XDJ-AZ has no DHCP server. After 3 DHCP tries, lwIP gives the port a
 # 169.254.x.x address.
@@ -53,8 +80,18 @@ CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 
 # The OTA download uses TLS. mbedTLS frees its record buffers after the handshake, so that the
-# heap keeps space for the web server and the track data.
+# heap keeps space for the web server and the track data. It also frees the certificate data
+# after the handshake. The OTA requests are small, so the output buffer has 2 KB.
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+# The OTA download connects only to GitHub. Its certificate chains end at DigiCert and USERTrust,
+# which are in the common bundle. The common bundle is half the size of the full bundle.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 
 # GET /mem lists the free stack of each task. uxTaskGetSystemState needs the trace facility.
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# The C components write their log lines to UART0, and each write blocks the task. Thus they log
+# only warnings and errors. The Rust log ring (GET /log) keeps the INFO lines.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y

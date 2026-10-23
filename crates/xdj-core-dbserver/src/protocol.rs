@@ -3,7 +3,7 @@
 //! The functions are pure or generic over `std::io::Read`. They do not open a socket.
 //! An error is a text string that names the fault.
 
-use std::io::Read;
+use std::io::{BufReader, Read};
 
 /// TCP port used to discover the dbserver port of a player.
 pub const DB_SERVER_QUERY_PORT: u16 = 12523;
@@ -19,12 +19,26 @@ pub const MAX_ARG_COUNT: usize = 64;
 /// The largest dbserver field that the reader accepts. Waveform blobs are smaller.
 #[cfg(not(target_os = "espidf"))]
 pub const MAX_FIELD_LEN: usize = 16 * 1024 * 1024;
-/// The largest dbserver field that the reader accepts on the ESP32. The PWV4 preview has about
-/// 7200 bytes. The PQTZ beat grid has 8 bytes per beat, so this limit holds about 6000 beats
-/// (47 minutes at 128 BPM). A larger grid gives an error. Without the error, the parse of the grid
-/// can use all the free heap, and the firmware restarts each time that it fetches the track.
+/// The largest dbserver field that the reader accepts on the ESP32. The client streams the PWV4
+/// preview and the PQTZ beat grid (see `MAX_STREAM_LEN`). This limit applies to the other fields.
+/// Without a limit, one large field can use all the free heap. The firmware then restarts each
+/// time that it fetches the track.
 #[cfg(target_os = "espidf")]
 pub const MAX_FIELD_LEN: usize = 48 * 1024;
+
+/// The largest blob that [`read_message_with`] streams. A streamed blob does not use
+/// `MAX_FIELD_LEN`, because the reader keeps only a part of it. Thus a long track gets a beat
+/// grid too.
+pub const MAX_STREAM_LEN: usize = 1024 * 1024;
+
+/// The largest number of waveform preview columns that the client keeps. A player sends 1200
+/// columns of 6 bytes. On the ESP32, 600 columns keep 3600 bytes of heap for each deck, and the
+/// page draws them across the full width.
+#[cfg(target_os = "espidf")]
+pub const PREVIEW_COLUMNS: usize = 600;
+/// The largest number of waveform preview columns that the client keeps. The host keeps all.
+#[cfg(not(target_os = "espidf"))]
+pub const PREVIEW_COLUMNS: usize = usize::MAX;
 
 // Message types.
 pub const MSG_SETUP_REQ: u16 = 0x0000;
@@ -164,13 +178,13 @@ pub fn encode_message(tx_id: u32, msg_type: u16, args: &[Field], type_tags: &[u8
     buf
 }
 
-fn read_exact<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<(), String> {
+fn read_exact<R: Read + ?Sized>(r: &mut R, buf: &mut [u8]) -> Result<(), String> {
     r.read_exact(buf)
         .map_err(|e| format!("dbserver read failed: {e}"))
 }
 
 /// Reads `len` bytes after a length check. A bad peer can send any length.
-fn read_sized<R: Read>(r: &mut R, len: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_sized<R: Read + ?Sized>(r: &mut R, len: usize) -> Result<Vec<u8>, String> {
     if len > MAX_FIELD_LEN {
         return Err(format!(
             "dbserver field length {len} is larger than {MAX_FIELD_LEN}"
@@ -188,11 +202,30 @@ fn read_sized<R: Read>(r: &mut R, len: usize) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
+/// Reads and discards `n` bytes.
+///
+/// `std::io::copy` puts an 8 KB buffer on the stack. The fetch thread of the ESP32 has a smaller
+/// stack. Thus this function uses a buffer of 64 bytes.
+pub(crate) fn skip<R: Read + ?Sized>(r: &mut R, mut n: usize) -> Result<(), String> {
+    let mut buf = [0u8; 64];
+    while n > 0 {
+        let k = n.min(buf.len());
+        read_exact(r, &mut buf[..k])?;
+        n -= k;
+    }
+    Ok(())
+}
+
 /// Reads a single field from a stream.
 pub fn read_field<R: Read>(r: &mut R) -> Result<Field, String> {
     let mut tag = [0u8; 1];
     read_exact(r, &mut tag)?;
-    match tag[0] {
+    read_value(r, tag[0])
+}
+
+/// Reads the value of a field after its type tag.
+fn read_value<R: Read>(r: &mut R, tag: u8) -> Result<Field, String> {
+    match tag {
         FIELD_U8 => {
             let mut b = [0u8; 1];
             read_exact(r, &mut b)?;
@@ -227,6 +260,30 @@ pub fn read_field<R: Read>(r: &mut R) -> Result<Field, String> {
 
 /// Reads a dbserver message from a stream.
 pub fn read_message<R: Read>(r: &mut R) -> Result<DbMessage, String> {
+    type NoStream = fn(usize, &mut dyn Read) -> Result<(), String>;
+    read_message_inner(r, None::<NoStream>).map(|(msg, _)| msg)
+}
+
+/// Reads a dbserver message like [`read_message`], but streams the first blob argument that is
+/// longer than 20 bytes.
+///
+/// `blob` gets the length of the blob and a reader for its bytes. It can stop before the end.
+/// The function then discards the rest, so that the stream stays at the next argument. The
+/// message holds an empty blob in place of the streamed blob. The result of `blob` comes back
+/// with the message, also when it is an error. Thus the caller can examine the message type
+/// first.
+pub fn read_message_with<R: Read, T>(
+    r: &mut R,
+    blob: impl FnOnce(usize, &mut dyn Read) -> Result<T, String>,
+) -> Result<(DbMessage, Option<Result<T, String>>), String> {
+    read_message_inner(r, Some(blob))
+}
+
+fn read_message_inner<R: Read, T>(
+    r: &mut R,
+    mut blob: Option<impl FnOnce(usize, &mut dyn Read) -> Result<T, String>>,
+) -> Result<(DbMessage, Option<Result<T, String>>), String> {
+    let mut streamed = None;
     // The magic is a u32 field.
     let magic = read_field(r)?;
     if magic != Field::Number(DB_MAGIC) {
@@ -250,9 +307,33 @@ pub fn read_message<R: Read>(r: &mut R) -> Result<DbMessage, String> {
     let _tags = read_field(r)?;
     let mut args = Vec::with_capacity(arg_count);
     for _ in 0..arg_count {
-        args.push(read_field(r)?);
+        let mut tag = [0u8; 1];
+        read_exact(r, &mut tag)?;
+        if tag[0] != FIELD_BLOB {
+            args.push(read_value(r, tag[0])?);
+            continue;
+        }
+        let mut len_buf = [0u8; 4];
+        read_exact(r, &mut len_buf)?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+        match blob.take_if(|_| len > 20) {
+            Some(f) => {
+                if len > MAX_STREAM_LEN {
+                    return Err(format!(
+                        "dbserver blob length {len} is larger than {MAX_STREAM_LEN}"
+                    ));
+                }
+                // The small buffer gives fewer socket reads than the 6-byte and 8-byte entries.
+                let mut part = BufReader::with_capacity(256, (&mut *r).take(len as u64));
+                streamed = Some(f(len, &mut part));
+                let rest = part.buffer().len() + part.get_ref().limit() as usize;
+                skip(&mut part, rest)?;
+                args.push(Field::Blob(Vec::new()));
+            }
+            None => args.push(Field::Blob(read_sized(r, len)?)),
+        }
     }
-    Ok(DbMessage { msg_type, args })
+    Ok((DbMessage { msg_type, args }, streamed))
 }
 
 // The chunk size is constant on purpose. `as_chunks` is not in older toolchains (the esp one).
@@ -354,6 +435,24 @@ mod tests {
         let msg = read_message(&mut Cursor::new(bytes)).unwrap();
         assert_eq!(msg.msg_type, MSG_MENU_ITEM);
         assert_eq!(msg.args, args);
+    }
+
+    #[test]
+    fn a_streamed_blob_keeps_the_stream_at_the_next_message() {
+        let blob: Vec<u8> = (0..100).collect();
+        let args = [Field::Blob(blob), Field::Number(7)];
+        let mut bytes = encode_message(5, MSG_ANLZ_TAG_RESP, &args, &[]);
+        bytes.extend(encode_message(6, MSG_MENU_FOOTER, &[Field::Number(1)], &[]));
+        let mut r = Cursor::new(bytes);
+        let (msg, first) = read_message_with(&mut r, |len, r| {
+            let mut b = [0u8; 2];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            Ok((len, b))
+        })
+        .unwrap();
+        assert_eq!(first, Some(Ok((100, [0, 1]))));
+        assert_eq!(msg.args, vec![Field::Blob(Vec::new()), Field::Number(7)]);
+        assert_eq!(read_message(&mut r).unwrap().msg_type, MSG_MENU_FOOTER);
     }
 
     #[test]

@@ -15,6 +15,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::gpio::{Gpio17, Gpio35};
 use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
@@ -64,7 +65,8 @@ pub fn start(
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio35>, None::<Gpio17>, &uart_cfg)?;
     let (beat_tx, beat_rx) = mpsc::channel::<Beat>();
 
-    crate::spawn(c"midi", 5 * 1024, move || {
+    // Priority 10 is above the HTTP server task (5). Core 1 does not run the WiFi task.
+    crate::spawn_rt(c"midi", 5 * 1024, 10, Some(Core::Core1), move || {
         // SAFETY: a null handle subscribes the calling task.
         if let Err(e) = sys::esp!(unsafe { sys::esp_task_wdt_add(std::ptr::null_mut()) }) {
             log::warn!("The task watchdog does not watch the MIDI thread: {e}");
