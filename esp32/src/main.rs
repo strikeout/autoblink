@@ -12,6 +12,7 @@
 mod dmx;
 mod led;
 mod logring;
+mod mem;
 mod midi;
 mod net;
 mod ota;
@@ -20,6 +21,7 @@ mod settings;
 mod tracks;
 mod webui;
 
+use std::ffi::CStr;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::gpio::PinDriver;
+use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::mdns::EspMdns;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -37,7 +40,7 @@ use xdj_core_prolink::Tracker;
 use crate::midi::MidiStatus;
 use crate::net::{EthPins, AP_IP};
 use crate::ota::OtaStatus;
-use crate::prolink::EthInfo;
+use crate::prolink::LinkInfo;
 use crate::settings::Settings;
 use crate::tracks::Tracks;
 
@@ -48,8 +51,9 @@ pub struct State {
     pub iface: Mutex<String>,
     pub midi: Mutex<MidiStatus>,
     pub tracks: Tracks,
-    /// The address of the Ethernet port. `None` while the port has no address.
-    pub eth: Mutex<Option<EthInfo>>,
+    /// The interface of Pro DJ Link: the Ethernet port, or the joined WiFi network when the port
+    /// has no address. `None` while the two interfaces have no address.
+    pub link: Mutex<Option<LinkInfo>>,
     /// The device number of the last conflict packet. The virtual CDJ reads it while it claims.
     pub conflict: AtomicU8,
     /// The device number of the virtual CDJ. 0 while it is not on the network.
@@ -94,6 +98,7 @@ fn run() -> anyhow::Result<()> {
     let p = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
+    let (install, ota_error) = ota::take_request(&nvs)?;
     // IO33 stays on until the LED thread starts. Then it shows the state of the box.
     let mut status_led = PinDriver::output(p.pins.gpio33)?;
     status_led.set_high()?;
@@ -131,24 +136,45 @@ fn run() -> anyhow::Result<()> {
         sysloop,
     )?;
 
+    // The maintenance start: only the network runs, so that TLS gets enough heap.
+    if install {
+        log::info!("Firmware update: the firmware starts only the network for the download");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            let sta = wifi.sta_netif().get_ip_info().is_ok_and(|i| !i.ip.is_unspecified());
+            let eth_ip = eth.netif().get_ip_info().is_ok_and(|i| !i.ip.is_unspecified() && !i.ip.is_link_local());
+            if sta || eth_ip {
+                break;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        // TLS needs more stack than the main task has, so a thread with 12 KB does the download.
+        let _ = crate::spawn(c"ota", 12 * 1024, || -> () { ota::install_and_restart() })?.join();
+        // SAFETY: esp_restart has no preconditions. The join returns only after a panic of the thread.
+        unsafe { sys::esp_restart() };
+    }
+
     let state = Arc::new(State {
         tracker: Mutex::new(Tracker::new()),
         iface: Mutex::new("Ethernet: no address".into()),
         midi: Mutex::new(MidiStatus::default()),
         tracks: Tracks::default(),
-        eth: Mutex::new(None),
+        link: Mutex::new(None),
         conflict: AtomicU8::new(0),
         own_device: AtomicU8::new(0),
         wifi_join_down: AtomicBool::new(false),
         reset_reason,
-        ota: Mutex::new(OtaStatus::default()),
+        ota: Mutex::new(OtaStatus {
+            state: if ota_error.is_some() { "error" } else { "" },
+            error: ota_error,
+            ..Default::default()
+        }),
         start: Instant::now(),
     });
     let midi_beats = midi::start(p.uart2, p.pins.gpio17, p.pins.gpio35, state.clone(), settings.midi.clone())?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
-    let ota_tx = ota::start(state.clone())?;
-    let (_server, web_beats) = webui::start(state.clone(), settings.clone(), ota_tx)?;
+    let (_server, web_beats) = webui::start(state.clone(), settings.clone())?;
     let track_changes = tracks::start(state.clone())?;
 
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
@@ -159,7 +185,6 @@ fn run() -> anyhow::Result<()> {
     prolink::spawn(
         state.clone(),
         device_number,
-        eth.netif().get_name().to_string(),
         move |beat| {
             let _ = beat_tx.send(beat.beat_in_bar);
             #[cfg(feature = "dmx")]
@@ -182,12 +207,20 @@ fn run() -> anyhow::Result<()> {
     // gives a 169.254.x.x address after some seconds.
     log::info!("Ethernet is waiting for a cable and an address");
     let eth_mac = eth.netif().get_mac()?;
+    let sta_mac = wifi.sta_netif().get_mac()?;
+    // The link info is `Copy`, so it keeps the interface names as static text. The two leaks
+    // happen once.
+    let eth_name: &'static str = String::leak(eth.netif().get_name().to_string());
+    let sta_name: &'static str = String::leak(wifi.sta_netif().get_name().to_string());
     let mut last = (None, None);
     let mut next_heap_log = Instant::now();
     let mut heap_low = u32::MAX;
     let mut next_join = Instant::now() + JOIN_RETRY;
     loop {
         state.tracker.lock().unwrap().expire(state.now_ms());
+        // Free the track data of a deck that left the network.
+        let decks: Vec<u8> = state.tracker.lock().unwrap().decks().iter().map(|d| d.num).collect();
+        state.tracks.0.lock().unwrap().retain(|n, _| decks.contains(n));
         settings.lock().unwrap().save_midi();
         // SAFETY: the heap calls only read counters.
         let (free, min, block) = unsafe {
@@ -223,16 +256,22 @@ fn run() -> anyhow::Result<()> {
 
         let info = eth.netif().get_ip_info().ok().filter(|i| !i.ip.is_unspecified());
         let eth_ip = info.map(|i| (i.ip, i.subnet.mask.0));
-        *state.eth.lock().unwrap() = info.map(|i| EthInfo {
-            ip: i.ip,
-            broadcast: broadcast(i.ip, i.subnet.mask.0),
-            mac: eth_mac,
-        });
-        let sta_ip = join_ssid
+        let sta_info = join_ssid
             .as_ref()
             .and_then(|_| wifi.sta_netif().get_ip_info().ok())
-            .map(|i| i.ip)
-            .filter(|ip| !ip.is_unspecified());
+            .filter(|i| !i.ip.is_unspecified());
+        let sta_ip = sta_info.map(|i| i.ip);
+        let link = match (info, sta_info) {
+            (Some(i), _) => Some((eth_name, i, eth_mac)),
+            (None, Some(i)) => Some((sta_name, i, sta_mac)),
+            (None, None) => None,
+        };
+        *state.link.lock().unwrap() = link.map(|(netif, i, mac)| LinkInfo {
+            netif,
+            ip: i.ip,
+            broadcast: broadcast(i.ip, i.subnet.mask.0),
+            mac,
+        });
         state.wifi_join_down.store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);
         let now = (eth_ip.map(|(ip, _)| ip), sta_ip);
         if now != last {
@@ -283,6 +322,25 @@ fn run() -> anyhow::Result<()> {
         }
         thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// Starts a thread. `name` is also the FreeRTOS task name, which `GET /mem` shows.
+///
+/// Without the spawn configuration, each Rust thread has the task name "pthread".
+pub fn spawn<F, T>(name: &'static CStr, stack_size: usize, f: F) -> std::io::Result<thread::JoinHandle<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    // The configuration applies to the threads that the calling thread starts. Reset it after
+    // the start, so that no other thread gets this name.
+    let _ = ThreadSpawnConfiguration { name: Some(name), ..Default::default() }.set();
+    let handle = thread::Builder::new()
+        .name(name.to_string_lossy().into_owned())
+        .stack_size(stack_size)
+        .spawn(f);
+    let _ = ThreadSpawnConfiguration::default().set();
+    handle
 }
 
 /// The time between two tries to join the WiFi network.

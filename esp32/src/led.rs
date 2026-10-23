@@ -4,7 +4,7 @@
 //! It shows the state of the box. While the master deck plays, IO33 pulses for 120 ms on beat 1
 //! and for 25 ms on the other beats. When no beat arrives for 2 s, IO33 shows a blink code:
 //!
-//! - 1 blink: Ethernet has no address.
+//! - 1 blink: the Ethernet port and the joined WiFi network have no address.
 //! - 2 blinks: the virtual CDJ is not on the Pro DJ Link network.
 //! - 3 blinks: the firmware finds no player.
 //! - 4 blinks: the firmware cannot join the WiFi network of the settings.
@@ -41,61 +41,58 @@ pub fn start(
         "panic" | "interrupt watchdog" | "task watchdog" | "other watchdog" | "brownout"
     );
     let (tx, rx) = mpsc::channel::<u8>();
-    thread::Builder::new()
-        .name("leds".into())
-        .stack_size(3 * 1024)
-        .spawn(move || {
-            let mut last_beat: Option<Instant> = None;
-            let mut code = Vec::new();
-            let mut step = 0;
-            loop {
-                let since = last_beat.map_or(IDLE_AFTER, |t| t.elapsed());
-                let idle = since >= IDLE_AFTER;
-                let timeout = if idle {
-                    // Read the state again at the start of each repetition of the code.
-                    if step == 0 {
-                        let restart = abnormal && state.now_ms() < SHOW_RESTART_MS;
-                        code = pattern(blinks(&state), restart);
-                    }
-                    let (on, ms) = code[step];
-                    let _ = status_led.set_level(on.into());
-                    Duration::from_millis(ms)
-                } else {
-                    IDLE_AFTER - since
-                };
-                let beat = match rx.recv_timeout(timeout) {
-                    Ok(beat) => beat,
-                    Err(RecvTimeoutError::Timeout) => {
-                        if idle {
-                            step = (step + 1) % code.len();
-                        }
-                        continue;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => break,
-                };
-                last_beat = Some(Instant::now());
-                step = 0;
-                let _ = beat_led.set_high();
-                let _ = status_led.set_high();
-                thread::sleep(Duration::from_millis(25));
-                if beat != 1 {
-                    let _ = status_led.set_low();
+    crate::spawn(c"leds", 3 * 1024, move || {
+        let mut last_beat: Option<Instant> = None;
+        let mut code = Vec::new();
+        let mut step = 0;
+        loop {
+            let since = last_beat.map_or(IDLE_AFTER, |t| t.elapsed());
+            let idle = since >= IDLE_AFTER;
+            let timeout = if idle {
+                // Read the state again at the start of each repetition of the code.
+                if step == 0 {
+                    let restart = abnormal && state.now_ms() < SHOW_RESTART_MS;
+                    code = pattern(blinks(&state), restart);
                 }
-                thread::sleep(Duration::from_millis(5));
-                let _ = beat_led.set_low();
-                if beat == 1 {
-                    thread::sleep(Duration::from_millis(90));
-                    let _ = status_led.set_low();
+                let (on, ms) = code[step];
+                let _ = status_led.set_level(on.into());
+                Duration::from_millis(ms)
+            } else {
+                IDLE_AFTER - since
+            };
+            let beat = match rx.recv_timeout(timeout) {
+                Ok(beat) => beat,
+                Err(RecvTimeoutError::Timeout) => {
+                    if idle {
+                        step = (step + 1) % code.len();
+                    }
+                    continue;
                 }
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            last_beat = Some(Instant::now());
+            step = 0;
+            let _ = beat_led.set_high();
+            let _ = status_led.set_high();
+            thread::sleep(Duration::from_millis(25));
+            if beat != 1 {
+                let _ = status_led.set_low();
             }
-        })?;
+            thread::sleep(Duration::from_millis(5));
+            let _ = beat_led.set_low();
+            if beat == 1 {
+                thread::sleep(Duration::from_millis(90));
+                let _ = status_led.set_low();
+            }
+        }
+    })?;
     Ok(tx)
 }
 
 /// Returns the number of blinks for the first check that fails. Returns `None` when the box is
 /// ready.
 fn blinks(state: &State) -> Option<u64> {
-    if state.eth.lock().unwrap().is_none() {
+    if state.link.lock().unwrap().is_none() {
         return Some(1);
     }
     if state.own_device.load(Ordering::Relaxed) == 0 {

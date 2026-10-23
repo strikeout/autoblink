@@ -139,17 +139,27 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 
 - The flash has two app slots, `ota_0` and `ota_1` (`esp32/partitions.csv`). The NVS partition keeps its old offset and size, so the settings stay.
 - Firmware 1.17 and older use a single-app table. Flash the first firmware with OTA over USB. After that, the box can update itself.
-- The Firmware panel of the page sends `ota_check` and `ota_install`. The `ota` thread reads `esp32-version.txt` from the prerelease `esp32-latest` on GitHub. If that version is newer, it writes `xdj-clock-esp32-ota.bin` into the free slot and restarts.
+- The Firmware panel of the page sends `ota_check` and `ota_install`. TLS to GitHub takes about 50 KB of heap. Version 1.19.0 has about 100 KB free with 1 track loaded and the page open.
+- `ota_check` starts an `ota` thread, which stops after the check. It reads `esp32-version.txt` from the prerelease `esp32-latest` on GitHub. The check refuses to start below 60 KB free heap or a 24 KB largest block. While it runs, the page gets no status.
+- `ota_install` stores a request in NVS (namespace `ota`) and restarts. In this maintenance start, `main` starts only WiFi and Ethernet, and `ota::install_and_restart` downloads the image into the free slot. Then the box restarts. An error goes into NVS, and the page shows it after the next normal start.
+- The maintenance start removes the request first. Thus a crash during the download does not repeat the download at each start.
 - The box needs internet for the update: a joined WiFi network (indices 102 and 103), or an Ethernet network with a router.
+- A router at 192.168.1.1 is often the DNS server too. The box has that address on its own WiFi network, so the DNS query goes to the box itself. In that case, the `ota` thread sets the DNS server to 1.1.1.1.
+- `EspOta::get_running_slot` of esp-idf-svc 0.53 fails with `ESP_ERR_INVALID_SIZE` on this firmware. Read the label from `esp_ota_get_running_partition` instead.
 - The flash writes can make the MIDI clock stutter. The page warns when a deck plays. It does not refuse the update.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.18.0 uses 83 % of the slot.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.19.0 uses 83 % of the slot.
 
 ### Debug logs
 
 - Run `curl http://xdj-clock.local/log` to read the log over WiFi. The page shows no log.
+- Run `curl http://xdj-clock.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
+- Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
+- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread.
+- The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
+- The firmware keeps 600 columns of the waveform preview (`tracks::PREVIEW_COLUMNS`). The players send 1200.
 - The log ring is in RTC slow memory (4 KB). A panic, a watchdog or a software restart keeps it. A power-on clears it.
 - The text has three parts: the last crash, the lines of the previous start and the lines of this start.
 - The firmware keeps the crash report outside the ring. Thus a flood of log lines cannot push it out.
@@ -185,7 +195,7 @@ The blink code of IO33 repeats every 2 s. The LED shows the first line that appl
 | IO33 | State |
 |---|---|
 | On | The firmware starts. |
-| 1 blink | Ethernet has no address. Examine the cable. |
+| 1 blink | The Ethernet port and the joined WiFi network have no address. Examine the cable. |
 | 2 blinks | The virtual CDJ is not on the Pro DJ Link network. It joins, or another device has its device number. |
 | 3 blinks | The firmware finds no player. |
 | 4 blinks | The firmware cannot join the WiFi network of the settings (index 102). |
@@ -199,8 +209,10 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 
 - The firmware starts its own WiFi network `xdj-clock-XXXX` (the last 2 bytes of the MAC address). The default password is `xdjclock123`. The web page is at http://192.168.1.1.
 - The page settings "Join WiFi name" and "Join WiFi password" (indices 102 and 103) set an existing WiFi network. After a restart, the firmware joins it, and the own network stays on. The page is then also at the DHCP address of that network and at http://xdj-clock.local (mDNS). The firmware tries to join again every 30 s. The iface field of the status shows the two addresses.
-- Do not join a 192.168.1.x WiFi network. The firmware logs a warning for this case.
-- The Pro DJ Link sockets receive and send only on the Ethernet port while it has an address (lwIP `SO_BINDTODEVICE`). Thus a joined WiFi network in the subnet of the Ethernet port gives no second copy of each beat. Without an Ethernet address, the sockets use all interfaces. The firmware logs a warning when the two networks use one subnet.
+- Do not join a 192.168.1.x WiFi network. The page can fail on one of the two networks. The firmware logs a warning for this case.
+- The virtual CDJ uses the Ethernet port while it has an address. Without an Ethernet address, it uses the joined WiFi network. The Pro DJ Link sockets receive and send only on that interface (lwIP `SO_BINDTODEVICE`). Thus a joined WiFi network in the subnet of the Ethernet port gives no second copy of each beat. The firmware logs a warning when the two networks use one subnet.
+- A joined 192.168.1.x WiFi network has the subnet of the own WiFi network. Without the binding, lwIP can send the packets of the virtual CDJ on the own network. The players then send no CDJ status, and the page shows no track and no waveform. The dbserver connection also uses the interface of the virtual CDJ (`net::connect_on`). Without it, the connect times out.
+- On WiFi, the access point sends a broadcast only after a DTIM beacon. Thus a beat packet arrives late by up to about 300 ms. The firmware switches off the WiFi power save. The MIDI clock corrects its phase with the earliest beat of the last "Phrase Lock Stable" bars, because a late packet is never early.
 - Do not connect the Ethernet port to a 192.168.1.x network. The WiFi network uses that subnet, and the firmware can then send a reply out on the wrong port. The firmware logs a warning for this case.
 - Ethernet gets its address from DHCP. Without a DHCP server (a direct cable to the XDJ-AZ), it takes a 169.254.x.x address.
 - The firmware joins the network as a virtual CDJ, like the host. The page setting "Device Number" (index 2, default 7) sets the number. A change makes the virtual CDJ join again.

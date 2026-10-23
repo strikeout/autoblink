@@ -1,7 +1,10 @@
 //! Ethernet to the Pro DJ Link network, and the WiFi for the web page: the own access point and,
 //! when the settings have a join network, a connection to an existing WiFi network.
 
-use std::net::Ipv4Addr;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::os::fd::{FromRawFd, RawFd};
+use std::time::Duration;
 
 use esp_idf_svc::eth::{EspEth, EthDriver, RmiiClockConfig, RmiiEth, RmiiEthChipset};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -11,6 +14,7 @@ use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::ipv4::{self, Mask, RouterConfiguration, Subnet};
 use esp_idf_svc::netif::{EspNetif, NetifConfiguration, NetifStack};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::sys;
 use esp_idf_svc::wifi::{
     AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiDriver,
 };
@@ -20,6 +24,79 @@ pub const AP_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
 
 /// The mDNS name of the firmware. The web page is at http://xdj-clock.local.
 pub const MDNS_NAME: &str = "xdj-clock";
+
+/// Binds the socket `fd` to the network interface `netif` (lwIP `SO_BINDTODEVICE`). An empty
+/// `netif` removes the binding.
+pub fn bind_device(fd: RawFd, netif: &str) -> io::Result<()> {
+    let mut req = sys::ifreq::default();
+    for (dst, src) in req.ifr_name.iter_mut().zip(netif.bytes().take(sys::IFNAMSIZ as usize - 1)) {
+        *dst = src as _;
+    }
+    // SAFETY: `req` is a valid `ifreq`, and the length is its size.
+    let r = unsafe {
+        sys::lwip_setsockopt(
+            fd,
+            sys::SOL_SOCKET as _,
+            sys::SO_BINDTODEVICE as _,
+            (&req as *const sys::ifreq).cast(),
+            std::mem::size_of::<sys::ifreq>() as _,
+        )
+    };
+    if r == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Opens a TCP connection to `addr` on the network interface `netif`. An empty `netif` is for
+/// all interfaces.
+///
+/// The own WiFi network and a joined 192.168.1.x network have one subnet. lwIP then can send
+/// the connection out on the own network. The binding prevents this.
+pub fn connect_on(netif: &str, addr: &SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+    let (SocketAddr::V4(v4), false) = (addr, netif.is_empty()) else {
+        return TcpStream::connect_timeout(addr, timeout);
+    };
+    // SAFETY: the call has no preconditions.
+    let fd = unsafe { sys::lwip_socket(sys::AF_INET as _, sys::SOCK_STREAM as _, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a new socket. The stream owns it and closes it.
+    let stream = unsafe { TcpStream::from_raw_fd(fd) };
+    bind_device(fd, netif)?;
+    stream.set_nonblocking(true)?;
+    let sa = sys::sockaddr_in {
+        sin_len: std::mem::size_of::<sys::sockaddr_in>() as _,
+        sin_family: sys::AF_INET as _,
+        sin_port: v4.port().to_be(),
+        sin_addr: sys::in_addr { s_addr: u32::from_ne_bytes(v4.ip().octets()) },
+        sin_zero: Default::default(),
+    };
+    // SAFETY: `sa` is a valid `sockaddr_in`, and the length is its size.
+    let r = unsafe {
+        sys::lwip_connect(
+            fd,
+            (&sa as *const sys::sockaddr_in).cast(),
+            std::mem::size_of::<sys::sockaddr_in>() as _,
+        )
+    };
+    if r != 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(sys::EINPROGRESS as i32) {
+            return Err(e);
+        }
+        let mut p = sys::pollfd { fd, events: sys::POLLOUT as _, revents: 0 };
+        // SAFETY: `p` is one valid `pollfd`.
+        match unsafe { sys::poll(&mut p, 1, timeout.as_millis() as _) } {
+            0 => return Err(io::ErrorKind::TimedOut.into()),
+            n if n < 0 => return Err(io::Error::last_os_error()),
+            _ => {}
+        }
+        if let Some(e) = stream.take_error()? {
+            return Err(e);
+        }
+    }
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
 
 /// The pins of the LAN8720 PHY on the WT32-ETH01.
 pub struct EthPins {
@@ -119,6 +196,10 @@ pub fn start_wifi(
     };
     wifi.set_configuration(&Configuration::Mixed(client, ap))?;
     wifi.start()?;
+    // In power save, the station receives a broadcast only at a DTIM beacon. A beat packet is a
+    // broadcast, so power save makes the beats late by up to 300 ms. The box has mains power.
+    // SAFETY: the WiFi driver has started.
+    sys::esp!(unsafe { sys::esp_wifi_set_ps(sys::wifi_ps_type_t_WIFI_PS_NONE) })?;
     // The connection completes in the background. A failure must not stop the access point.
     if let Err(e) = wifi.connect() {
         log::warn!("WiFi \"{join_ssid}\": the connection did not start: {e}");

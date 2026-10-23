@@ -13,7 +13,6 @@
 
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use esp_idf_svc::hal::gpio::{Gpio17, Gpio35};
@@ -65,147 +64,144 @@ pub fn start(
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio35>, None::<Gpio17>, &uart_cfg)?;
     let (beat_tx, beat_rx) = mpsc::channel::<Beat>();
 
-    thread::Builder::new()
-        .name("midi".into())
-        .stack_size(8 * 1024)
-        .spawn(move || {
-            // SAFETY: a null handle subscribes the calling task.
-            if let Err(e) = sys::esp!(unsafe { sys::esp_task_wdt_add(std::ptr::null_mut()) }) {
-                log::warn!("The task watchdog does not watch the MIDI thread: {e}");
+    crate::spawn(c"midi", 5 * 1024, move || {
+        // SAFETY: a null handle subscribes the calling task.
+        if let Err(e) = sys::esp!(unsafe { sys::esp_task_wdt_add(std::ptr::null_mut()) }) {
+            log::warn!("The task watchdog does not watch the MIDI thread: {e}");
+        }
+        let mut clock = Clock::default();
+        let mut mapper = Mapper::default();
+        let mut smoother = Smoother::default();
+        let mut smoothed_bpm = 0.0;
+        let mut last_master = 0u8;
+        let mut next_pulse: Option<u64> = None;
+        let mut next_cc = Instant::now();
+
+        loop {
+            // SAFETY: the task subscribed above. A reset of an unsubscribed task only gives an
+            // error code.
+            unsafe { sys::esp_task_wdt_reset() };
+            // Wait for a beat, the next pulse or the next CC update, whichever comes first.
+            // The thread spins only when the pulse is the next event and 2 ms or less away.
+            let now_us = state.now_us();
+            let until_pulse = next_pulse.map(|t| Duration::from_micros(t.saturating_sub(now_us)));
+            let until_cc = next_cc.saturating_duration_since(Instant::now());
+            let pulse_first = until_pulse.filter(|p| *p <= until_cc);
+            let wait = match (pulse_first, next_pulse) {
+                (Some(p), Some(t)) if p <= Duration::from_millis(2) => {
+                    while state.now_us() < t {
+                        std::hint::spin_loop();
+                    }
+                    None
+                }
+                (Some(p), _) => Some(p - Duration::from_millis(1)),
+                (None, _) => Some(until_cc),
+            };
+            let mut beat = None;
+            if let Some(wait) = wait {
+                match beat_rx.recv_timeout(wait) {
+                    Ok(b) => beat = Some(b),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => {
+                        // SAFETY: the task subscribed above.
+                        unsafe { sys::esp_task_wdt_delete(std::ptr::null_mut()) };
+                        return;
+                    }
+                }
             }
-            let mut clock = Clock::default();
-            let mut mapper = Mapper::default();
-            let mut smoother = Smoother::default();
-            let mut smoothed_bpm = 0.0;
-            let mut last_master = 0u8;
-            let mut next_pulse: Option<u64> = None;
-            let mut next_cc = Instant::now();
-
-            loop {
-                // SAFETY: the task subscribed above. A reset of an unsubscribed task only gives an
-                // error code.
-                unsafe { sys::esp_task_wdt_reset() };
-                // Wait for a beat, the next pulse or the next CC update, whichever comes first.
-                // The thread spins only when the pulse is the next event and 2 ms or less away.
-                let now_us = state.now_us();
-                let until_pulse = next_pulse.map(|t| Duration::from_micros(t.saturating_sub(now_us)));
-                let until_cc = next_cc.saturating_duration_since(Instant::now());
-                let pulse_first = until_pulse.filter(|p| *p <= until_cc);
-                let wait = match (pulse_first, next_pulse) {
-                    (Some(p), Some(t)) if p <= Duration::from_millis(2) => {
-                        while state.now_us() < t {
-                            std::hint::spin_loop();
-                        }
-                        None
-                    }
-                    (Some(p), _) => Some(p - Duration::from_millis(1)),
-                    (None, _) => Some(until_cc),
-                };
-                let mut beat = None;
-                if let Some(wait) = wait {
-                    match beat_rx.recv_timeout(wait) {
-                        Ok(b) => beat = Some(b),
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => {
-                            // SAFETY: the task subscribed above.
-                            unsafe { sys::esp_task_wdt_delete(std::ptr::null_mut()) };
-                            return;
-                        }
-                    }
-                }
-                if beat.is_none() {
-                    beat = beat_rx.try_recv().ok();
-                }
-
-                let cfg = cfg.lock().unwrap().clone();
-                let mut status = MidiStatus::default();
-                let mut send = |o: Out| {
-                    let mut buf = [0u8; 6];
-                    let n = o.encode(&mut buf);
-                    if let Err(e) = uart.write(&buf[..n]) {
-                        log::warn!("MIDI message not sent: {e}");
-                    }
-                    match o {
-                        Out::Realtime(CLOCK) => status.pulses += 1,
-                        Out::Note { note, .. } => {
-                            status.notes += 1;
-                            status.last_note = Some((note, Instant::now()));
-                        }
-                        Out::Cc { num, val, .. } => {
-                            status.ccs += 1;
-                            status.last_cc = Some((num, val, Instant::now()));
-                        }
-                        _ => {}
-                    }
-                };
-
-                if let Some(b) = beat {
-                    if b.device != last_master {
-                        smoother.clear();
-                        last_master = b.device;
-                    }
-                    smoothed_bpm = smoother.push(b.bpm, cfg.smoothing_ms);
-                    clock.beat(&cfg, b.at_us, b.device, b.beat_in_bar, smoothed_bpm, &mut send);
-                    mapper.beat(&cfg, b.beat_in_bar, &mut send);
-                }
-
-                let now_ms = state.now_ms();
-                let (mut snap, track) = {
-                    let tracker = state.tracker.lock().unwrap();
-                    tracker.master().map_or((Snapshot::default(), None), |m| {
-                        let snap = Snapshot {
-                            device: m.num,
-                            bpm: if m.num == last_master && smoothed_bpm > 0.0 { smoothed_bpm } else { m.bpm },
-                            pitch: m.pitch,
-                            phrase16: m.phrase16,
-                            beat_phase: m.beat_phase(now_ms),
-                            playing: m.is_playing(now_ms),
-                            phrase: None,
-                        };
-                        (snap, m.beat_count.map(|bc| (m.track.rekordbox_id, bc)))
-                    })
-                };
-                // Lock the tracks only after the tracker is free.
-                if let Some((rbid, beat_count)) = track {
-                    let tracks = state.tracks.0.lock().unwrap();
-                    snap.phrase = tracks
-                        .get(&snap.device)
-                        .filter(|t| t.rekordbox_id == rbid)
-                        .and_then(|t| t.structure.as_ref()?.as_ref().ok())
-                        .and_then(|ss| {
-                            let idx = current_phrase_idx(ss, beat_count)?;
-                            let info = phrase_info(ss, idx, beat_count)?;
-                            Some(Phrase {
-                                rekordbox_id: rbid,
-                                idx,
-                                code: info.kind.code(),
-                                progress: info.progress,
-                                beats_left: info.beats_left,
-                            })
-                        });
-                }
-                let master = (snap.device != 0).then_some(Master {
-                    device: snap.device,
-                    playing: snap.playing,
-                    bpm: snap.bpm,
-                });
-                next_pulse = clock.poll(&cfg, state.now_us(), master, &mut send);
-                if Instant::now() >= next_cc {
-                    mapper.update(&cfg, &snap, &mut send);
-                    next_cc = Instant::now() + CC_INTERVAL;
-                }
-
-                let mut s = state.midi.lock().unwrap();
-                s.pulses += status.pulses;
-                s.notes += status.notes;
-                s.ccs += status.ccs;
-                s.last_note = status.last_note.or(s.last_note);
-                s.last_cc = status.last_cc.or(s.last_cc);
-                s.clock_state = clock.state_label();
-                s.out16 = clock.out16();
-                s.delta_ms = clock.last_error_ms().map(f64::abs);
+            if beat.is_none() {
+                beat = beat_rx.try_recv().ok();
             }
-        })?;
+
+            let cfg = cfg.lock().unwrap().clone();
+            let mut status = MidiStatus::default();
+            let mut send = |o: Out| {
+                let mut buf = [0u8; 6];
+                let n = o.encode(&mut buf);
+                if let Err(e) = uart.write(&buf[..n]) {
+                    log::warn!("MIDI message not sent: {e}");
+                }
+                match o {
+                    Out::Realtime(CLOCK) => status.pulses += 1,
+                    Out::Note { note, .. } => {
+                        status.notes += 1;
+                        status.last_note = Some((note, Instant::now()));
+                    }
+                    Out::Cc { num, val, .. } => {
+                        status.ccs += 1;
+                        status.last_cc = Some((num, val, Instant::now()));
+                    }
+                    _ => {}
+                }
+            };
+
+            if let Some(b) = beat {
+                if b.device != last_master {
+                    smoother.clear();
+                    last_master = b.device;
+                }
+                smoothed_bpm = smoother.push(b.bpm, cfg.smoothing_ms);
+                clock.beat(&cfg, b.at_us, b.device, b.beat_in_bar, smoothed_bpm, &mut send);
+                mapper.beat(&cfg, b.beat_in_bar, &mut send);
+            }
+
+            let now_ms = state.now_ms();
+            let (mut snap, track) = {
+                let tracker = state.tracker.lock().unwrap();
+                tracker.master().map_or((Snapshot::default(), None), |m| {
+                    let snap = Snapshot {
+                        device: m.num,
+                        bpm: if m.num == last_master && smoothed_bpm > 0.0 { smoothed_bpm } else { m.bpm },
+                        pitch: m.pitch,
+                        phrase16: m.phrase16,
+                        beat_phase: m.beat_phase(now_ms),
+                        playing: m.is_playing(now_ms),
+                        phrase: None,
+                    };
+                    (snap, m.beat_count.map(|bc| (m.track.rekordbox_id, bc)))
+                })
+            };
+            // Lock the tracks only after the tracker is free.
+            if let Some((rbid, beat_count)) = track {
+                let tracks = state.tracks.0.lock().unwrap();
+                snap.phrase = tracks
+                    .get(&snap.device)
+                    .filter(|t| t.rekordbox_id == rbid)
+                    .and_then(|t| t.structure.as_ref()?.as_ref().ok())
+                    .and_then(|ss| {
+                        let idx = current_phrase_idx(ss, beat_count)?;
+                        let info = phrase_info(ss, idx, beat_count)?;
+                        Some(Phrase {
+                            rekordbox_id: rbid,
+                            idx,
+                            code: info.kind.code(),
+                            progress: info.progress,
+                            beats_left: info.beats_left,
+                        })
+                    });
+            }
+            let master = (snap.device != 0).then_some(Master {
+                device: snap.device,
+                playing: snap.playing,
+                bpm: snap.bpm,
+            });
+            next_pulse = clock.poll(&cfg, state.now_us(), master, &mut send);
+            if Instant::now() >= next_cc {
+                mapper.update(&cfg, &snap, &mut send);
+                next_cc = Instant::now() + CC_INTERVAL;
+            }
+
+            let mut s = state.midi.lock().unwrap();
+            s.pulses += status.pulses;
+            s.notes += status.notes;
+            s.ccs += status.ccs;
+            s.last_note = status.last_note.or(s.last_note);
+            s.last_cc = status.last_cc.or(s.last_cc);
+            s.clock_state = clock.state_label();
+            s.out16 = clock.out16();
+            s.delta_ms = clock.last_error_ms().map(f64::abs);
+        }
+    })?;
     log::info!("MIDI output is on IO17");
     Ok(beat_tx)
 }

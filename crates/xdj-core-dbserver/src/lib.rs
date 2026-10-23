@@ -15,7 +15,7 @@ mod parse;
 mod protocol;
 mod types;
 
-pub use client::{discover_db_port, fetch, fetch_at, FetchError, Fetched};
+pub use client::{discover_db_port, fetch, fetch_at, fetch_with, Connect, FetchError, Fetched};
 pub use parse::{
     asking_player, cue_list_args, extract_menu_count, parse_cue_list, parse_menu_item, parse_pqtz,
     parse_pssi_tag, parse_pwv4, phrase_spans, tag_start,

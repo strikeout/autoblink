@@ -40,26 +40,23 @@ impl Dmx {
         let uart = UartDriver::new(uart, tx, rx, None::<Gpio36>, None::<Gpio4>, &cfg)?;
         let dmx = Self::default();
         let last_beat = dmx.last_beat.clone();
-        thread::Builder::new()
-            .name("dmx".into())
-            .stack_size(4 * 1024)
-            .spawn(move || {
-                // Byte 0 is the start code (0 for dimmer data). Bytes 1 to 512 are the channels.
-                let mut frame = [0u8; 513];
-                loop {
-                    let level = last_beat.lock().unwrap().map_or(0.0, |t| {
-                        1.0 - t.elapsed().as_secs_f32() * 1000.0 / FLASH_MS
-                    });
-                    frame[1] = (level.clamp(0.0, 1.0) * 255.0) as u8;
-                    // The UART sends the frame, then the break. The break before the next frame
-                    // and the idle time after it make the reset sequence of DMX512.
-                    if let Err(e) = uart.write_with_break(&frame, BREAK_BITS) {
-                        log::warn!("DMX frame not sent: {e}");
-                    }
-                    let _ = uart.wait_tx_done(100);
-                    thread::sleep(FRAME_GAP);
+        crate::spawn(c"dmx", 4 * 1024, move || {
+            // Byte 0 is the start code (0 for dimmer data). Bytes 1 to 512 are the channels.
+            let mut frame = [0u8; 513];
+            loop {
+                let level = last_beat.lock().unwrap().map_or(0.0, |t| {
+                    1.0 - t.elapsed().as_secs_f32() * 1000.0 / FLASH_MS
+                });
+                frame[1] = (level.clamp(0.0, 1.0) * 255.0) as u8;
+                // The UART sends the frame, then the break. The break before the next frame
+                // and the idle time after it make the reset sequence of DMX512.
+                if let Err(e) = uart.write_with_break(&frame, BREAK_BITS) {
+                    log::warn!("DMX frame not sent: {e}");
                 }
-            })?;
+                let _ = uart.wait_tx_done(100);
+                thread::sleep(FRAME_GAP);
+            }
+        })?;
         log::info!("DMX output is on IO4");
         Ok(dmx)
     }
