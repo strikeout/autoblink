@@ -5,7 +5,10 @@
 //! keepalive (port 50000), beat and absolute position (port 50001) packets are broadcasts.
 //!
 //! The virtual CDJ uses the Ethernet port while it has an address. Without an Ethernet address,
-//! it uses the joined WiFi network. The sockets receive and send only on that interface (lwIP
+//! it uses the joined WiFi network. When the two interfaces have an address and the virtual CDJ
+//! gets no packet from a player for 5 s, it changes to the other interface (see `main.rs`). The
+//! XDJ-AZ sends Pro DJ Link on one interface only, and it can leave the cable for its WiFi
+//! network. The sockets receive and send only on that interface (lwIP
 //! `SO_BINDTODEVICE`). Without this binding, a joined WiFi network in the subnet of the Ethernet
 //! port gives a second, later copy of each broadcast. Also, a joined WiFi network in the subnet
 //! of the own WiFi network (192.168.1.x) gets no packets: lwIP can send them on the own network.

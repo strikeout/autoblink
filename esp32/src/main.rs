@@ -52,7 +52,7 @@ pub struct State {
     pub midi: Mutex<MidiStatus>,
     pub tracks: Tracks,
     /// The interface of Pro DJ Link: the Ethernet port, or the joined WiFi network when the port
-    /// has no address. `None` while the two interfaces have no address.
+    /// has no address or has no player. `None` while the two interfaces have no address.
     pub link: Mutex<Option<LinkInfo>>,
     /// The device number of the last conflict packet. The virtual CDJ reads it while it claims.
     pub conflict: AtomicU8,
@@ -216,6 +216,10 @@ fn run() -> anyhow::Result<()> {
     let mut next_heap_log = Instant::now();
     let mut heap_low = u32::MAX;
     let mut next_join = Instant::now() + JOIN_RETRY;
+    // The interface choice while Ethernet and the joined WiFi network both have an address.
+    let mut use_sta = false;
+    let mut quiet_since: Option<Instant> = None;
+    let mut dwell = SWITCH_AFTER;
     loop {
         state.tracker.lock().unwrap().expire(state.now_ms());
         // Free the track data of a deck that left the network.
@@ -261,7 +265,30 @@ fn run() -> anyhow::Result<()> {
             .and_then(|_| wifi.sta_netif().get_ip_info().ok())
             .filter(|i| !i.ip.is_unspecified());
         let sta_ip = sta_info.map(|i| i.ip);
+        // The XDJ-AZ sends Pro DJ Link on one interface only. When it is also on the joined WiFi
+        // network (for example with rekordbox), it can stop the packets on the cable. The virtual
+        // CDJ then changes to the other interface after `dwell` without a player.
+        // ponytail: the virtual CDJ tries the two interfaces in turn. If it changes too often,
+        // read the interface of the players from an unbound keepalive socket.
+        if info.is_some() && sta_info.is_some() {
+            if !state.tracker.lock().unwrap().decks().is_empty() {
+                quiet_since = None;
+                dwell = SWITCH_AFTER;
+            } else if quiet_since.get_or_insert_with(Instant::now).elapsed() >= dwell {
+                let (from, to) = if use_sta { (sta_name, eth_name) } else { (eth_name, sta_name) };
+                log::info!("No player on \"{from}\" for {} s. Pro DJ Link tries \"{to}\".", dwell.as_secs());
+                use_sta = !use_sta;
+                quiet_since = None;
+                // Without a player on the two interfaces, the changes and their log lines become rare.
+                dwell = (dwell * 2).min(SWITCH_AFTER_MAX);
+            }
+        } else {
+            use_sta = false;
+            quiet_since = None;
+            dwell = SWITCH_AFTER;
+        }
         let link = match (info, sta_info) {
+            (Some(_), Some(i)) if use_sta => Some((sta_name, i, sta_mac)),
             (Some(i), _) => Some((eth_name, i, eth_mac)),
             (None, Some(i)) => Some((sta_name, i, sta_mac)),
             (None, None) => None,
@@ -355,6 +382,12 @@ where
 
 /// The time between two tries to join the WiFi network.
 const JOIN_RETRY: Duration = Duration::from_secs(30);
+
+/// The time without a player after which Pro DJ Link tries the other interface.
+const SWITCH_AFTER: Duration = Duration::from_secs(5);
+
+/// The longest time between two interface changes while no interface has a player.
+const SWITCH_AFTER_MAX: Duration = Duration::from_secs(60);
 
 /// Starts mDNS with the name `MDNS_NAME` and an HTTP service on port 80.
 fn start_mdns() -> anyhow::Result<EspMdns> {
