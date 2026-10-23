@@ -152,13 +152,7 @@ fn request_install(state: &State) -> Result<(), String> {
         ota.error = None;
     }
     // The page gets the status "restarting" before the restart.
-    crate::spawn(c"ota-restart", 2 * 1024, || {
-        thread::sleep(Duration::from_secs(1));
-        // SAFETY: esp_restart has no preconditions.
-        unsafe { sys::esp_restart() }
-    })
-    .map(|_| ())
-    .map_err(|e| format!("The firmware cannot restart: {e}"))
+    crate::restart_soon().map_err(|e| format!("The firmware cannot restart: {e}"))
 }
 
 /// Downloads and writes the new firmware, then restarts. `main` calls it in the maintenance

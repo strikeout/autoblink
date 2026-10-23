@@ -324,6 +324,16 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
+/// Restarts the firmware after 1 s. In that time, the page gets the reply and the last status.
+pub fn restart_soon() -> std::io::Result<()> {
+    spawn(c"restart", 2 * 1024, || {
+        thread::sleep(Duration::from_secs(1));
+        // SAFETY: esp_restart has no preconditions.
+        unsafe { sys::esp_restart() }
+    })
+    .map(|_| ())
+}
+
 /// Starts a thread. `name` is also the FreeRTOS task name, which `GET /mem` shows.
 ///
 /// Without the spawn configuration, each Rust thread has the task name "pthread".

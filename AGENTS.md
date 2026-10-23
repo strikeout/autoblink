@@ -139,7 +139,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 
 - The flash has two app slots, `ota_0` and `ota_1` (`esp32/partitions.csv`). The NVS partition keeps its old offset and size, so the settings stay.
 - Firmware 1.17 and older use a single-app table. Flash the first firmware with OTA over USB. After that, the box can update itself.
-- The Firmware panel of the page sends `ota_check` and `ota_install`. TLS to GitHub takes about 50 KB of heap. Version 1.19.0 has about 100 KB free with 1 track loaded and the page open.
+- The System panel of the page sends `ota_check` and `ota_install`. Its Restart button sends `reboot`, and the firmware restarts after 1 s (`restart_soon`). The panel also has the WiFi rows of the settings (section `WiFi`, indices 100 to 103). The header shows the uptime from `system.uptime_s`. The host sends no uptime, so the header hides it. TLS to GitHub takes about 50 KB of heap. Version 1.19.0 has about 100 KB free with 1 track loaded and the page open.
 - `ota_check` starts an `ota` thread, which stops after the check. It reads `esp32-version.txt` from the prerelease `esp32-latest` on GitHub. The check refuses to start below 60 KB free heap or a 24 KB largest block. While it runs, the page gets no status.
 - `ota_install` stores a request in NVS (namespace `ota`) and restarts. In this maintenance start, `main` starts only WiFi and Ethernet, and `ota::install_and_restart` downloads the image into the free slot. Then the box restarts. An error goes into NVS, and the page shows it after the next normal start.
 - The maintenance start removes the request first. Thus a crash during the download does not repeat the download at each start.

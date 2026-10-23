@@ -79,7 +79,7 @@ impl Settings {
         let row = |idx, label, kind, value: String, raw: Option<String>| SettingItem {
             idx,
             label,
-            section: Some("Device"),
+            section: Some("WiFi"),
             kind,
             value,
             raw,

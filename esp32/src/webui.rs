@@ -2,6 +2,8 @@
 //!
 //! The firmware sends the capabilities `beat`, `decks`, `output`, `settings`, `waveform` and
 //! `ota`. The page hides the sections of the other capabilities: `mixer`, `ports` and `logs`.
+//! With `ota`, the page shows the System panel: the firmware update, the restart button and the
+//! WiFi settings. The page sends `reboot` for the restart button.
 
 use std::ffi::CString;
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
@@ -259,6 +261,13 @@ fn command(buf: &[u8], settings: &Mutex<Settings>, state: &Arc<State>) -> String
                 Err(text) => error(&text),
             }
         }
+        Some("reboot") => match crate::restart_soon() {
+            Ok(()) => {
+                log::info!("The page asked for a restart");
+                r#"{"type":"reboot"}"#.into()
+            }
+            Err(e) => error(&format!("The firmware cannot restart: {e}")),
+        },
         Some(other) => error(&format!("This device does not support the command {other}")),
         None => error("The command has no type"),
     }

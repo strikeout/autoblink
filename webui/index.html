@@ -139,6 +139,7 @@ input.num.text{width:150px;text-align:left}
   <span class="kv">source <b id="source">—</b></span>
   <span class="kv">mode <b id="mode">—</b></span>
   <span class="kv">iface <b id="iface">—</b></span>
+  <span class="kv" id="uptimekv" hidden>uptime <b id="uptime" class="num">—</b></span>
   <b id="state" class="stop">■ STOP</b>
   <span id="toast"></span>
 </header>
@@ -204,11 +205,18 @@ input.num.text{width:150px;text-align:left}
   </details>
 
   <section class="panel wide" data-cap="ota">
-    <h2>Firmware</h2>
-    <div class="row">installed <b id="fwcur">—</b> <span id="fwstate" class="num"></span></div>
-    <div class="row"><button id="fwcheck" title="Read the version of the latest release on GitHub. The box needs a network with internet.">Check for update</button> <button id="fwinstall" hidden></button></div>
-    <progress id="fwbar" max="100" hidden></progress>
-    <div class="row" id="fwerr"></div>
+    <h2>System</h2>
+    <div class="sgrid">
+      <div class="group">
+        <div class="section">Firmware</div>
+        <div class="row">installed <b id="fwcur">—</b> <span id="fwstate" class="num"></span></div>
+        <div class="row"><button id="fwcheck" title="Read the version of the latest release on GitHub. The box needs a network with internet.">Check for update</button> <button id="fwinstall" hidden></button></div>
+        <progress id="fwbar" max="100" hidden></progress>
+        <div class="row" id="fwerr"></div>
+        <div class="row"><button id="reboot" title="Restart the box. The settings stay. A WiFi change applies after the restart.">Restart</button></div>
+      </div>
+      <div id="set-wifi" class="group"><div class="section">WiFi</div></div>
+    </div>
   </section>
 </main>
 <footer id="version"></footer>
@@ -277,6 +285,15 @@ function onStatus(s) {
   if (s.output) renderOutput(s.output);
   if (s.decks) renderDecks(s);
   if (s.ota) renderOta(s.ota);
+  const up = s.system && s.system.uptime_s;
+  $('uptimekv').hidden = up == null;
+  if (up != null) set('uptime', uptime(up));
+}
+
+/** Formats seconds as "3d 04:05:06", or "04:05:06" below one day. */
+function uptime(t) {
+  const d = Math.floor(t / 86400), hms = [Math.floor(t / 3600) % 24, Math.floor(t / 60) % 60, t % 60].map(pad2).join(':');
+  return d ? d + 'd ' + hms : hms;
 }
 
 const OTA_TEXT = { idle: '', checking: 'checking…', available: 'update available', 'up-to-date': 'up to date',
@@ -295,6 +312,11 @@ function renderOta(o) {
 }
 
 $('fwcheck').onclick = () => send({ type: 'ota_check' });
+$('reboot').onclick = () => {
+  const playing = status && (status.decks || []).some((d) => d.playing);
+  const warn = playing ? 'A deck plays. The MIDI clock stops until the box is back, about 15 s.\n\n' : '';
+  if (confirm(warn + 'Restart the box?')) send({ type: 'reboot' });
+};
 $('fwinstall').onclick = () => {
   const playing = status && (status.decks || []).some((d) => d.playing);
   const warn = playing ? 'A deck plays. The MIDI clock can stutter during the download of about 30 s.\n\n' : '';
@@ -605,7 +627,9 @@ function onSettings(m) {
     let row = setRows.get(it.idx);
     if (!row) {
       let parent = $('set-input');
-      if (it.idx >= MIDI_SETTINGS_START) {
+      // The firmware sends its WiFi rows in the section "WiFi". They go to the System panel.
+      if (it.section === 'WiFi') parent = $('set-wifi');
+      else if (it.idx >= MIDI_SETTINGS_START) {
         if (!group || (it.section && it.section !== groupName)) {
           groupName = it.section || 'MIDI';
           const head = h('div', 'section', groupName);
