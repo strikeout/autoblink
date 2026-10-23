@@ -4,7 +4,7 @@
 //! It shows the state of the box. While the master deck plays, IO33 pulses for 120 ms on beat 1
 //! and for 25 ms on the other beats. When no beat arrives for 2 s, IO33 shows a blink code:
 //!
-//! - 1 blink: Ethernet has no address.
+//! - 1 blink: the Ethernet port and the joined WiFi network have no address.
 //! - 2 blinks: the virtual CDJ is not on the Pro DJ Link network.
 //! - 3 blinks: the firmware finds no player.
 //! - 4 blinks: the firmware cannot join the WiFi network of the settings.
@@ -92,7 +92,7 @@ pub fn start(
 /// Returns the number of blinks for the first check that fails. Returns `None` when the box is
 /// ready.
 fn blinks(state: &State) -> Option<u64> {
-    if state.eth.lock().unwrap().is_none() {
+    if state.link.lock().unwrap().is_none() {
         return Some(1);
     }
     if state.own_device.load(Ordering::Relaxed) == 0 {

@@ -26,7 +26,6 @@ use esp_idf_svc::http::Method;
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use esp_idf_svc::ota::EspOta;
 use esp_idf_svc::sys;
-use serde_json::{json, Value};
 
 use crate::net::AP_IP;
 use crate::State;
@@ -56,7 +55,7 @@ pub enum OtaCmd {
 }
 
 /// The update state that the page shows.
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize)]
 pub struct OtaStatus {
     /// "idle", "checking", "available", "up-to-date", "downloading", "restarting" or "error".
     pub state: &'static str,
@@ -67,16 +66,6 @@ pub struct OtaStatus {
     pub error: Option<String>,
 }
 
-impl OtaStatus {
-    pub fn json(&self) -> Value {
-        json!({
-            "state": if self.state.is_empty() { "idle" } else { self.state },
-            "latest": self.latest,
-            "progress": self.progress,
-            "error": self.error,
-        })
-    }
-}
 
 /// `true` while an update thread runs.
 static BUSY: AtomicBool = AtomicBool::new(false);

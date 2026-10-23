@@ -13,7 +13,7 @@ members = [
 exclude = ["esp32"]
 
 [workspace.package]
-version = "1.18.6"
+version = "1.19.0"
 edition = "2021"
 license = "Proprietary"
 authors = ["xdj-midi team"]

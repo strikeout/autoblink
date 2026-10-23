@@ -9,8 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
-use serde_json::{json, Value};
-use xdj_core_midi::{settings as midi_settings, MidiConfig};
+use xdj_core_midi::{settings as midi_settings, MidiConfig, SettingItem};
 
 /// The host index of "Device Number": the number that the virtual CDJ asks for.
 const IDX_DEVICE: usize = 2;
@@ -69,28 +68,40 @@ impl Settings {
         Some((ssid, self.get("jpass").unwrap_or_default()))
     }
 
-    /// Builds the protocol v1 settings message.
-    pub fn message(&self) -> Value {
-        let ssid = self.ssid();
-        let mut items = serde_json::to_value(midi_settings::items(&self.midi.lock().unwrap()))
-            .unwrap_or_default();
-        if let Value::Array(rows) = &mut items {
-            let device = self.device_number.load(Ordering::Relaxed).to_string();
-            rows.insert(0, json!({"idx": IDX_DEVICE, "label": "Device Number", "section": null,
-                "kind": "number", "value": device, "raw": device, "step": false}));
-            rows.push(json!({"idx": IDX_SSID, "label": "WiFi name (applies after restart)",
-                "section": "Device", "kind": "text", "value": ssid, "raw": ssid, "step": false}));
-            // The page does not show the password. A new value replaces it.
-            rows.push(json!({"idx": IDX_PASSWORD, "label": "WiFi password (applies after restart)",
-                "section": "Device", "kind": "text", "value": "••••••••", "raw": null, "step": false}));
-            let join = self.join().map(|(s, _)| s).unwrap_or_default();
-            rows.push(json!({"idx": IDX_JOIN_SSID, "label": "Join WiFi name (applies after restart)",
-                "section": "Device", "kind": "text", "value": if join.is_empty() { "off" } else { join.as_str() },
-                "raw": join, "step": false}));
-            rows.push(json!({"idx": IDX_JOIN_PASSWORD, "label": "Join WiFi password (applies after restart)",
-                "section": "Device", "kind": "text", "value": "••••••••", "raw": null, "step": false}));
+    /// Builds the protocol v1 settings message as JSON text.
+    pub fn message(&self) -> String {
+        #[derive(serde::Serialize)]
+        struct Message {
+            #[serde(rename = "type")]
+            kind: &'static str,
+            items: Vec<SettingItem>,
         }
-        json!({"type": "settings", "items": items})
+        let row = |idx, label, kind, value: String, raw: Option<String>| SettingItem {
+            idx,
+            label,
+            section: Some("Device"),
+            kind,
+            value,
+            raw,
+            step: false,
+            on: None,
+        };
+        // The page does not show the passwords. A new value replaces a password.
+        let hidden = || "••••••••".to_string();
+        let device = self.device_number.load(Ordering::Relaxed).to_string();
+        let ssid = self.ssid();
+        let join = self.join().map(|(s, _)| s).unwrap_or_default();
+        let mut items = vec![SettingItem {
+            section: None,
+            ..row(IDX_DEVICE, "Device Number", "number", device.clone(), Some(device))
+        }];
+        items.extend(midi_settings::items(&self.midi.lock().unwrap()));
+        items.push(row(IDX_SSID, "WiFi name (applies after restart)", "text", ssid.clone(), Some(ssid)));
+        items.push(row(IDX_PASSWORD, "WiFi password (applies after restart)", "text", hidden(), None));
+        let shown = if join.is_empty() { "off".to_string() } else { join.clone() };
+        items.push(row(IDX_JOIN_SSID, "Join WiFi name (applies after restart)", "text", shown, Some(join)));
+        items.push(row(IDX_JOIN_PASSWORD, "Join WiFi password (applies after restart)", "text", hidden(), None));
+        serde_json::to_string(&Message { kind: "settings", items }).unwrap_or_default()
     }
 
     /// Stores a typed value. Returns the error text for the page when the value is not valid.

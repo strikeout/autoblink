@@ -40,7 +40,7 @@ use xdj_core_prolink::Tracker;
 use crate::midi::MidiStatus;
 use crate::net::{EthPins, AP_IP};
 use crate::ota::OtaStatus;
-use crate::prolink::EthInfo;
+use crate::prolink::LinkInfo;
 use crate::settings::Settings;
 use crate::tracks::Tracks;
 
@@ -51,8 +51,9 @@ pub struct State {
     pub iface: Mutex<String>,
     pub midi: Mutex<MidiStatus>,
     pub tracks: Tracks,
-    /// The address of the Ethernet port. `None` while the port has no address.
-    pub eth: Mutex<Option<EthInfo>>,
+    /// The interface of Pro DJ Link: the Ethernet port, or the joined WiFi network when the port
+    /// has no address. `None` while the two interfaces have no address.
+    pub link: Mutex<Option<LinkInfo>>,
     /// The device number of the last conflict packet. The virtual CDJ reads it while it claims.
     pub conflict: AtomicU8,
     /// The device number of the virtual CDJ. 0 while it is not on the network.
@@ -147,7 +148,10 @@ fn run() -> anyhow::Result<()> {
             }
             thread::sleep(Duration::from_millis(500));
         }
-        ota::install_and_restart();
+        // TLS needs more stack than the main task has, so a thread with 12 KB does the download.
+        let _ = crate::spawn(c"ota", 12 * 1024, || -> () { ota::install_and_restart() })?.join();
+        // SAFETY: esp_restart has no preconditions. The join returns only after a panic of the thread.
+        unsafe { sys::esp_restart() };
     }
 
     let state = Arc::new(State {
@@ -155,7 +159,7 @@ fn run() -> anyhow::Result<()> {
         iface: Mutex::new("Ethernet: no address".into()),
         midi: Mutex::new(MidiStatus::default()),
         tracks: Tracks::default(),
-        eth: Mutex::new(None),
+        link: Mutex::new(None),
         conflict: AtomicU8::new(0),
         own_device: AtomicU8::new(0),
         wifi_join_down: AtomicBool::new(false),
@@ -181,7 +185,6 @@ fn run() -> anyhow::Result<()> {
     prolink::spawn(
         state.clone(),
         device_number,
-        eth.netif().get_name().to_string(),
         move |beat| {
             let _ = beat_tx.send(beat.beat_in_bar);
             #[cfg(feature = "dmx")]
@@ -204,12 +207,20 @@ fn run() -> anyhow::Result<()> {
     // gives a 169.254.x.x address after some seconds.
     log::info!("Ethernet is waiting for a cable and an address");
     let eth_mac = eth.netif().get_mac()?;
+    let sta_mac = wifi.sta_netif().get_mac()?;
+    // The link info is `Copy`, so it keeps the interface names as static text. The two leaks
+    // happen once.
+    let eth_name: &'static str = String::leak(eth.netif().get_name().to_string());
+    let sta_name: &'static str = String::leak(wifi.sta_netif().get_name().to_string());
     let mut last = (None, None);
     let mut next_heap_log = Instant::now();
     let mut heap_low = u32::MAX;
     let mut next_join = Instant::now() + JOIN_RETRY;
     loop {
         state.tracker.lock().unwrap().expire(state.now_ms());
+        // Free the track data of a deck that left the network.
+        let decks: Vec<u8> = state.tracker.lock().unwrap().decks().iter().map(|d| d.num).collect();
+        state.tracks.0.lock().unwrap().retain(|n, _| decks.contains(n));
         settings.lock().unwrap().save_midi();
         // SAFETY: the heap calls only read counters.
         let (free, min, block) = unsafe {
@@ -245,16 +256,22 @@ fn run() -> anyhow::Result<()> {
 
         let info = eth.netif().get_ip_info().ok().filter(|i| !i.ip.is_unspecified());
         let eth_ip = info.map(|i| (i.ip, i.subnet.mask.0));
-        *state.eth.lock().unwrap() = info.map(|i| EthInfo {
-            ip: i.ip,
-            broadcast: broadcast(i.ip, i.subnet.mask.0),
-            mac: eth_mac,
-        });
-        let sta_ip = join_ssid
+        let sta_info = join_ssid
             .as_ref()
             .and_then(|_| wifi.sta_netif().get_ip_info().ok())
-            .map(|i| i.ip)
-            .filter(|ip| !ip.is_unspecified());
+            .filter(|i| !i.ip.is_unspecified());
+        let sta_ip = sta_info.map(|i| i.ip);
+        let link = match (info, sta_info) {
+            (Some(i), _) => Some((eth_name, i, eth_mac)),
+            (None, Some(i)) => Some((sta_name, i, sta_mac)),
+            (None, None) => None,
+        };
+        *state.link.lock().unwrap() = link.map(|(netif, i, mac)| LinkInfo {
+            netif,
+            ip: i.ip,
+            broadcast: broadcast(i.ip, i.subnet.mask.0),
+            mac,
+        });
         state.wifi_join_down.store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);
         let now = (eth_ip.map(|(ip, _)| ip), sta_ip);
         if now != last {

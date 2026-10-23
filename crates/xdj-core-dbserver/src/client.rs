@@ -61,17 +61,25 @@ pub struct Fetched {
     pub warnings: Vec<String>,
 }
 
+/// Opens a TCP connection to an address, with a timeout. [`fetch`] uses
+/// `TcpStream::connect_timeout`.
+pub type Connect<'a> = &'a dyn Fn(&SocketAddr, Duration) -> std::io::Result<TcpStream>;
+
 /// Returns the dbserver port of a player. Falls back to 1051 when the query fails or returns 0.
 pub fn discover_db_port(ip: Ipv4Addr, timeout: Duration) -> u16 {
-    try_discover_db_port(ip, timeout)
+    discover_db_port_with(&TcpStream::connect_timeout, ip, timeout)
+}
+
+fn discover_db_port_with(connect: Connect, ip: Ipv4Addr, timeout: Duration) -> u16 {
+    try_discover_db_port(connect, ip, timeout)
         .ok()
         .filter(|port| *port != 0)
         .unwrap_or(FALLBACK_DB_PORT)
 }
 
-fn try_discover_db_port(ip: Ipv4Addr, timeout: Duration) -> std::io::Result<u16> {
+fn try_discover_db_port(connect: Connect, ip: Ipv4Addr, timeout: Duration) -> std::io::Result<u16> {
     let addr = SocketAddr::V4(SocketAddrV4::new(ip, DB_SERVER_QUERY_PORT));
-    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
+    let mut stream = connect(&addr, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     // The query is the length-prefixed name "RemoteDBServer\0".
@@ -97,9 +105,23 @@ pub fn fetch(
     track_type: u8,
     rekordbox_id: u32,
 ) -> Result<Fetched, FetchError> {
+    fetch_with(&TcpStream::connect_timeout, ip, asking, track_slot, track_type, rekordbox_id)
+}
+
+/// Like [`fetch`], but opens the two TCP connections with `connect`. Use it to select the
+/// network interface.
+pub fn fetch_with(
+    connect: Connect,
+    ip: Ipv4Addr,
+    asking: u8,
+    track_slot: u8,
+    track_type: u8,
+    rekordbox_id: u32,
+) -> Result<Fetched, FetchError> {
     let start = Instant::now();
-    let port = discover_db_port(ip, IO_TIMEOUT);
+    let port = discover_db_port_with(connect, ip, IO_TIMEOUT);
     run(
+        connect,
         SocketAddr::V4(SocketAddrV4::new(ip, port)),
         asking,
         track_slot,
@@ -118,6 +140,7 @@ pub fn fetch_at(
     rekordbox_id: u32,
 ) -> Result<Fetched, FetchError> {
     run(
+        &TcpStream::connect_timeout,
         addr,
         asking,
         track_slot,
@@ -232,6 +255,7 @@ impl Session {
 }
 
 fn run(
+    connect: Connect,
     addr: SocketAddr,
     asking: u8,
     track_slot: u8,
@@ -240,7 +264,7 @@ fn run(
     start: Instant,
 ) -> Result<Fetched, FetchError> {
     // Connect to the dbserver.
-    let stream = TcpStream::connect_timeout(&addr, IO_TIMEOUT)
+    let stream = connect(&addr, IO_TIMEOUT)
         .map_err(|e| FetchError::Other(format!("dbserver connect failed: {e}")))?;
     let io = |e: std::io::Error| FetchError::Other(format!("dbserver socket setup failed: {e}"));
     stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(io)?;

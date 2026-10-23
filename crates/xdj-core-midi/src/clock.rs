@@ -5,9 +5,11 @@
 //!   starts to play, and Stop when the master stops.
 //! - With Clock Loop Sync off, the clock starts on the first master beat and does not stop when
 //!   the master pauses. A later start sends Song Position and Continue.
-//! - Every "Phrase Lock Stable" bars, the clock measures the phase error on the downbeat. It
-//!   moves the pulse grid by the error over `max(smoothing, 1 ms, 10 × |error|)`, so the tempo
-//!   changes by 10 % or less.
+//! - The clock measures the phase error of each master beat. Every "Phrase Lock Stable" bars,
+//!   on the downbeat, it takes the earliest beat of these bars. On WiFi, a packet arrives late
+//!   by a random time and never early. Thus the earliest beat is the nearest to the true phase.
+//! - When that error is 5 ms or more, the clock moves the pulse grid by the error over
+//!   `max(smoothing, 1 s, 10 × |error|)`, so the tempo changes by 10 % or less.
 //! - When more than one beat of pulses was late, the clock sends Stop, Start and a pulse on the
 //!   next downbeat (a hard resync).
 //! - Latency Comp moves the send time of each pulse. The grid stays on the beats.
@@ -16,6 +18,8 @@ use crate::config::MidiConfig;
 use crate::{Out, CLOCK, CONTINUE, START, STOP};
 
 const PPQ: u64 = 24;
+/// The clock does not correct a smaller phase error, in µs.
+const DEADBAND: f64 = 5_000.0;
 
 /// The master deck as the clock sees it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,6 +60,8 @@ pub struct Clock {
     dropped: bool,
     slew: Option<Slew>,
     last_error_ms: Option<f64>,
+    /// The smallest phase error since the last correction, in µs.
+    earliest: Option<f64>,
 }
 
 impl Default for Clock {
@@ -72,6 +78,7 @@ impl Default for Clock {
             dropped: false,
             slew: None,
             last_error_ms: None,
+            earliest: None,
         }
     }
 }
@@ -198,13 +205,11 @@ impl Clock {
             self.bars = 0;
             self.dropped = false;
             self.slew = None;
+            self.earliest = None;
             return;
         }
 
-        if beat_in_bar != 1 {
-            return;
-        }
-        if self.dropped {
+        if beat_in_bar == 1 && self.dropped {
             out(Out::Realtime(STOP));
             out(Out::Realtime(START));
             out(Out::Realtime(CLOCK));
@@ -213,6 +218,14 @@ impl Clock {
             self.dropped = false;
             self.slew = None;
             self.bars = 0;
+            self.earliest = None;
+            return;
+        }
+        if !self.dropped {
+            let error = self.phase_error(now_f);
+            self.earliest = Some(self.earliest.map_or(error, |e| e.min(error)));
+        }
+        if beat_in_bar != 1 {
             return;
         }
         self.bars += 1;
@@ -220,18 +233,29 @@ impl Clock {
             return;
         }
         self.bars = 0;
+        let Some(error) = self.earliest.take() else { return };
+        self.last_error_ms = Some(error / 1000.0);
+        if error.abs() < DEADBAND {
+            return;
+        }
+        let duration = (cfg.smoothing_ms as f64 * 1000.0).max(1000.0).max(10.0 * error.abs());
+        self.slew = Some(Slew { start: now_f, duration, total: error, applied: 0.0 });
+    }
+
+    /// The time from the nearest beat of the grid to `now`, in µs. The part of the slew that the
+    /// grid has not moved yet counts as moved.
+    fn phase_error(&self, now: f64) -> f64 {
         let beat_len = self.interval * PPQ as f64;
         let beat_start = self.grid - (self.pulse_index % PPQ) as f64 * self.interval;
-        let mut error = now_f - beat_start;
+        let pending = self.slew.map_or(0.0, |s| s.total - s.applied);
+        let mut error = now - beat_start - pending;
         while error > beat_len / 2.0 {
             error -= beat_len;
         }
         while error <= -beat_len / 2.0 {
             error += beat_len;
         }
-        self.last_error_ms = Some(error / 1000.0);
-        let duration = (cfg.smoothing_ms as f64 * 1000.0).max(1000.0).max(10.0 * error.abs());
-        self.slew = Some(Slew { start: now_f, duration, total: error, applied: 0.0 });
+        error
     }
 
     fn stop(&mut self, out: &mut impl FnMut(Out)) {
@@ -365,6 +389,37 @@ mod tests {
         let moved = c.grid - before;
         let pulses_in_between = (moved - 10_000.0) / c.interval;
         assert!((pulses_in_between - pulses_in_between.round()).abs() < 1e-6);
+    }
+
+    /// Sends beats 2, 3, 4 and the next downbeat to the clock. `late` is the delay of each beat
+    /// in µs.
+    fn bar(c: &mut Clock, cfg: &MidiConfig, start: u64, late: [u64; 4]) {
+        for (i, d) in late.iter().enumerate() {
+            let at = start + i as u64 * BEAT + d;
+            for t in ((at - BEAT)..=at).step_by(1000) {
+                c.poll(cfg, t, master(true), &mut |_| {});
+            }
+            c.beat(cfg, at, 1, [2, 3, 4, 1][i], 120.0, &mut |_| {});
+        }
+    }
+
+    #[test]
+    fn the_correction_uses_the_earliest_beat() {
+        let cfg = MidiConfig { phrase_lock_bars: 2, ..MidiConfig::default() };
+        let mut c = started(&cfg);
+        bar(&mut c, &cfg, BEAT, [150_000, 40_000, 180_000, 90_000]);
+        bar(&mut c, &cfg, 5 * BEAT, [120_000, 30_000, 200_000, 160_000]);
+        // The downbeat at 8 beats is 160 ms late. The earliest beat of the two bars is 30 ms late.
+        assert!((c.last_error_ms().unwrap() - 30.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn a_small_error_does_not_move_the_grid() {
+        let cfg = MidiConfig { phrase_lock_bars: 1, ..MidiConfig::default() };
+        let mut c = started(&cfg);
+        bar(&mut c, &cfg, BEAT, [4_000, 3_000, 4_000, 4_000]);
+        assert!((c.last_error_ms().unwrap() - 3.0).abs() < 0.1);
+        assert!(c.slew.is_none());
     }
 
     #[test]

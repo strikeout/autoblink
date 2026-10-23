@@ -1,12 +1,15 @@
-//! Pro DJ Link on the Ethernet port.
+//! Pro DJ Link on the Ethernet port, or on the joined WiFi network.
 //!
 //! The firmware joins the network as a virtual CDJ, like the host (`host/src/prolink/
 //! virtual_cdj.rs`). The players then send it their CDJ status packets on port 50002. The
 //! keepalive (port 50000), beat and absolute position (port 50001) packets are broadcasts.
 //!
-//! The sockets receive and send only on the Ethernet port while it has an address. Without this
-//! binding, a joined WiFi network in the same subnet gives a second, later copy of each broadcast.
-//! Without an Ethernet address, the sockets use all interfaces.
+//! The virtual CDJ uses the Ethernet port while it has an address. Without an Ethernet address,
+//! it uses the joined WiFi network. The sockets receive and send only on that interface (lwIP
+//! `SO_BINDTODEVICE`). Without this binding, a joined WiFi network in the subnet of the Ethernet
+//! port gives a second, later copy of each broadcast. Also, a joined WiFi network in the subnet
+//! of the own WiFi network (192.168.1.x) gets no packets: lwIP can send them on the own network.
+//! Without an address on the two interfaces, the sockets use all interfaces.
 //!
 //! The XDJ-AZ sends the track ID in its status packets only to a virtual CDJ with device number
 //! 7 or higher. The default is 7, the same as the host. Do not run the host and the firmware on
@@ -20,7 +23,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use esp_idf_svc::sys;
 use xdj_core_prolink::{
     build_announce, build_claim1, build_claim2, build_claim_final, build_keepalive,
     build_status_packet, has_magic, pad_name, parse_abs_position, parse_beat, parse_cdj_status,
@@ -35,9 +37,11 @@ const CLAIM_INTERVAL: Duration = Duration::from_millis(300);
 const CLAIM_ROUNDS: u8 = 3;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(1500);
 
-/// The address of the Ethernet port, for the packets of the virtual CDJ.
+/// The interface of the virtual CDJ and its address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EthInfo {
+pub struct LinkInfo {
+    /// The lwIP name of the interface.
+    pub netif: &'static str,
     pub ip: Ipv4Addr,
     pub broadcast: Ipv4Addr,
     pub mac: [u8; 6],
@@ -46,12 +50,10 @@ pub struct EthInfo {
 /// Starts the receive threads and the virtual CDJ.
 ///
 /// `on_master_beat` gets each beat of the master deck. `on_track` gets each change of a loaded
-/// track. `device_number` is the number that the virtual CDJ asks for. `eth_netif` is the lwIP
-/// name of the Ethernet interface.
+/// track. `device_number` is the number that the virtual CDJ asks for.
 pub fn spawn(
     state: Arc<State>,
     device_number: Arc<AtomicU8>,
-    eth_netif: String,
     on_master_beat: impl Fn(Beat) + Send + 'static,
     on_track: impl Fn(TrackRef) + Send + 'static,
 ) -> anyhow::Result<()> {
@@ -116,12 +118,12 @@ pub fn spawn(
         }
     })?;
 
-    crate::spawn(c"virtual-cdj", 6 * 1024, move || virtual_cdj(&sender, &state, &device_number, &fds, &eth_netif))?;
+    crate::spawn(c"virtual-cdj", 4608, move || virtual_cdj(&sender, &state, &device_number, &fds))?;
     Ok(())
 }
 
 fn spawn_loop(name: &'static CStr, mut f: impl FnMut(&mut [u8]) + Send + 'static) -> anyhow::Result<()> {
-    crate::spawn(name, 6 * 1024, move || {
+    crate::spawn(name, 5 * 1024, move || {
         // A CDJ-3000 class status packet has more than 0x1c0 bytes.
         let mut buf = [0u8; 1500];
         loop {
@@ -132,23 +134,23 @@ fn spawn_loop(name: &'static CStr, mut f: impl FnMut(&mut [u8]) + Send + 'static
 }
 
 /// Joins the network, then sends the keepalive and the status packet every 1.5 s. It joins again
-/// when the Ethernet address or the wanted device number changes.
+/// when the interface, its address or the wanted device number changes.
 ///
-/// It binds the sockets `fds` to `eth_netif` while the Ethernet port has an address.
-fn virtual_cdj(sock: &UdpSocket, state: &State, wanted: &AtomicU8, fds: &[RawFd], eth_netif: &str) {
+/// It binds the sockets `fds` to the interface of the link.
+fn virtual_cdj(sock: &UdpSocket, state: &State, wanted: &AtomicU8, fds: &[RawFd]) {
     let name = pad_name(NAME);
-    let mut bound = false;
+    // The interface of the binding. An empty name is for all interfaces.
+    let mut bound = "";
     loop {
-        let Some(eth) = *state.eth.lock().unwrap() else {
-            if bound {
-                bound = !bind_netif(fds, "");
-            }
+        let link = *state.link.lock().unwrap();
+        let netif = link.map_or("", |l| l.netif);
+        if netif != bound && bind_netif(fds, netif) {
+            bound = netif;
+        }
+        let Some(eth) = link else {
             thread::sleep(Duration::from_secs(1));
             continue;
         };
-        if !bound {
-            bound = bind_netif(fds, eth_netif);
-        }
         let want = wanted.load(Ordering::Relaxed);
         let claimed = match join(sock, state, &name, &eth, want) {
             Ok(n) => n,
@@ -166,7 +168,7 @@ fn virtual_cdj(sock: &UdpSocket, state: &State, wanted: &AtomicU8, fds: &[RawFd]
         let keepalive = build_keepalive(&name, claimed, &eth.mac, &eth.ip.octets(), 1);
         let status = build_status_packet(&name, claimed);
         let mut errors = 0;
-        while *state.eth.lock().unwrap() == Some(eth) && wanted.load(Ordering::Relaxed) == want {
+        while *state.link.lock().unwrap() == Some(eth) && wanted.load(Ordering::Relaxed) == want {
             if sock.send_to(&keepalive, bcast).is_err() {
                 errors += 1;
                 if errors >= 5 {
@@ -190,38 +192,24 @@ fn virtual_cdj(sock: &UdpSocket, state: &State, wanted: &AtomicU8, fds: &[RawFd]
 /// Binds each socket in `fds` to the network interface `netif`. An empty `netif` removes the
 /// binding. Returns true when all calls succeed.
 fn bind_netif(fds: &[RawFd], netif: &str) -> bool {
-    let mut req = sys::ifreq::default();
-    for (dst, src) in req.ifr_name.iter_mut().zip(netif.bytes().take(sys::IFNAMSIZ as usize - 1)) {
-        *dst = src as _;
-    }
     let mut ok = true;
     for &fd in fds {
-        // SAFETY: `req` is a valid `ifreq`, and the length is its size.
-        let r = unsafe {
-            sys::lwip_setsockopt(
-                fd,
-                sys::SOL_SOCKET as _,
-                sys::SO_BINDTODEVICE as _,
-                (&req as *const sys::ifreq).cast(),
-                std::mem::size_of::<sys::ifreq>() as _,
-            )
-        };
-        if r != 0 {
-            log::warn!("Socket {fd}: the binding to \"{netif}\" failed: {}", std::io::Error::last_os_error());
+        if let Err(e) = crate::net::bind_device(fd, netif) {
+            log::warn!("Socket {fd}: the binding to \"{netif}\" failed: {e}");
             ok = false;
         }
     }
     if ok && netif.is_empty() {
         log::info!("Pro DJ Link uses all interfaces");
     } else if ok {
-        log::info!("Pro DJ Link uses only the Ethernet interface \"{netif}\"");
+        log::info!("Pro DJ Link uses only the interface \"{netif}\"");
     }
     ok
 }
 
 /// Sends the announce and claim packets. Returns the claimed device number. When another device
 /// reports a conflict, the next number is tried.
-fn join(sock: &UdpSocket, state: &State, name: &[u8; 20], eth: &EthInfo, want: u8) -> anyhow::Result<u8> {
+fn join(sock: &UdpSocket, state: &State, name: &[u8; 20], eth: &LinkInfo, want: u8) -> anyhow::Result<u8> {
     let bcast = SocketAddrV4::new(eth.broadcast, PORT_DISCOVERY);
     let ip = eth.ip.octets();
     let send = |pkt: &[u8]| -> anyhow::Result<()> {

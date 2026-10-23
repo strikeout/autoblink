@@ -64,7 +64,7 @@ pub fn start(
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio35>, None::<Gpio17>, &uart_cfg)?;
     let (beat_tx, beat_rx) = mpsc::channel::<Beat>();
 
-    crate::spawn(c"midi", 8 * 1024, move || {
+    crate::spawn(c"midi", 5 * 1024, move || {
         // SAFETY: a null handle subscribes the calling task.
         if let Err(e) = sys::esp!(unsafe { sys::esp_task_wdt_add(std::ptr::null_mut()) }) {
             log::warn!("The task watchdog does not watch the MIDI thread: {e}");
