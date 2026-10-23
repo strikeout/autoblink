@@ -11,6 +11,8 @@
 //! - `ports`: `{ports, active, connected}`, after each change.
 //! - `log`: `{lines}`, the new log lines.
 //! - `error`: `{text}`, when a command fails.
+//! - `busy`: `{}`, only from the ESP32. The ESP32 sends the status to one page at a time, and
+//!   another page has it. The page then shows a button that sends `take_over`.
 //!
 //! Client to server:
 //! - `{type: "cycle", idx, dir}` steps a toggle, a cycle or a fixed-step setting. On a setting
@@ -18,6 +20,8 @@
 //! - `{type: "set", idx, value}` stores a numeric or text setting.
 //! - `{type: "port", name}` switches the MIDI output port.
 //! - `{type: "rescan"}` lists the MIDI ports and network interfaces again.
+//! - `{type: "take_over"}`, only to the ESP32: this page gets the status. The ESP32 closes the
+//!   connection of the page that had it, and replies with `settings`.
 //!
 //! HTTP, for the `waveform` capability:
 //! - `GET /waveform/{deck}` gives `{rekordbox_id, preview, cues, phrases}` of the loaded track,

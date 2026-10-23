@@ -12,8 +12,10 @@ use alloc::vec::Vec;
 
 use crate::{AbsPositionPacket, BeatPacket, CdjStatus, KeepAlive, PlayState, DEV_CDJ};
 
-/// The tracker removes a deck when it sends no packet for this time.
-pub const DECK_TIMEOUT_MS: u64 = 5_000;
+/// The tracker removes a deck when it sends no packet for this time. The host uses 15 s too. A
+/// shorter time drops the track data of all decks after a short network fault, and the firmware
+/// then fetches each track again.
+pub const DECK_TIMEOUT_MS: u64 = 15_000;
 
 /// The status of a deck is current for this time. After it, the tracker uses the beats.
 const STATUS_TIMEOUT_MS: u64 = 2_000;

@@ -193,8 +193,14 @@ impl Session {
     }
 
     /// Fetches one tag of the analysis file (`file_ext` is .EXT or .DAT) with the
-    /// ANLZ_TAG_REQ (0x2c04) request. Returns the blob with the length prefix and the tag header.
-    fn anlz_tag(&mut self, tag_type: u32, file_ext: u32) -> Result<Vec<u8>, String> {
+    /// ANLZ_TAG_REQ (0x2c04) request. `read` gets the length of the tag blob and a reader for it
+    /// (see [`read_message_with`]). The blob includes the length prefix and the tag header.
+    fn anlz_tag<T>(
+        &mut self,
+        tag_type: u32,
+        file_ext: u32,
+        read: impl FnOnce(usize, &mut dyn Read) -> Result<T, String>,
+    ) -> Result<T, String> {
         let tx = self.next_tx();
         let tag_name = String::from_utf8_lossy(&tag_type.to_le_bytes()).into_owned();
         let args = [
@@ -204,7 +210,7 @@ impl Session {
             Field::Number(file_ext),
         ];
         self.send(tx, MSG_ANLZ_TAG_REQ, &args)?;
-        let resp = read_message(&mut self.stream)?;
+        let (resp, value) = read_message_with(&mut self.stream, read)?;
         if resp.msg_type != MSG_ANLZ_TAG_RESP {
             return Err(format!(
                 "Expected {tag_name} response 0x{:04x}, got 0x{:04x} [{}]",
@@ -213,14 +219,7 @@ impl Session {
                 describe_args(&resp.args)
             ));
         }
-        // The response holds a blob with the tag. Find the blob argument.
-        resp.args
-            .into_iter()
-            .find_map(|a| match a {
-                Field::Blob(data) if data.len() > 20 => Some(data),
-                _ => None,
-            })
-            .ok_or_else(|| format!("No {tag_name} blob in the response"))
+        value.unwrap_or_else(|| Err(format!("No {tag_name} blob in the response")))
     }
 
     /// Fetches the memory cues, hot cues and saved loops with the CUE_LIST_EXT_REQ (0x2b04)
@@ -350,19 +349,31 @@ fn run(
     }
 
     // Analysis data. A failure keeps the metadata. The caller shows the reason.
+    // The client reads the beat grid and the preview as a stream. It keeps only the beats of the
+    // phrase starts, the fill-ins and the end, and at most PREVIEW_COLUMNS preview columns.
     let song_structure = s
-        .anlz_tag(TAG_PSSI, EXT_EXT)
+        .anlz_tag(TAG_PSSI, EXT_EXT, |len, r| read_sized(r, len))
         .and_then(|blob| parse_pssi_tag(&blob));
-    let preview = s
-        .anlz_tag(TAG_PWV4, EXT_EXT)
-        .and_then(|blob| parse_pwv4(&blob));
+    // Without phrases, the beat grid has no use. The client then does not request it.
+    let beat_grid = song_structure.as_ref().ok().map(|ss| {
+        let mut wanted: Vec<u16> = ss
+            .phrases
+            .iter()
+            .flat_map(|p| [Some(p.beat), p.has_fill.then_some(p.fill_beat)])
+            .flatten()
+            .chain([ss.end_beat])
+            .collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        s.anlz_tag(TAG_PQTZ, EXT_DAT, |len, r| read_pqtz(r, len, Some(&wanted)))
+    });
+    let preview = s.anlz_tag(TAG_PWV4, EXT_EXT, |len, r| {
+        read_pwv4(r, len, PREVIEW_COLUMNS)
+    });
     let cues = s.cue_list();
-    let beat_grid = s
-        .anlz_tag(TAG_PQTZ, EXT_DAT)
-        .and_then(|blob| parse_pqtz(&blob));
 
     let mut warnings = Vec::new();
-    if let Err(e) = &beat_grid {
+    if let Some(Err(e)) = &beat_grid {
         warnings.push(format!(
             "Beat grid is not available; the phrase times use the track BPM: {e}"
         ));
@@ -375,7 +386,10 @@ fn run(
     }
     let phrases = song_structure
         .as_ref()
-        .map(|ss| phrase_spans(ss, beat_grid.as_deref().ok(), metadata.bpm))
+        .map(|ss| {
+            let grid = beat_grid.as_ref().and_then(|g| g.as_deref().ok());
+            phrase_spans(ss, grid, metadata.bpm)
+        })
         .unwrap_or_default();
     let overview =
         (preview.is_ok() || cues.is_ok() || !phrases.is_empty()).then(|| TrackOverview {
@@ -469,8 +483,8 @@ mod tests {
                 &[Field::Number(0), Field::Number(0)],
             );
 
-            // PSSI, PWV4, cue list, PQTZ.
-            for i in 0..4 {
+            // PSSI, PWV4, cue list. The PSSI refusal skips the PQTZ request.
+            for i in 0..3 {
                 let req = read_message(&mut s).unwrap();
                 if i == 2 {
                     assert_eq!(req.msg_type, MSG_CUE_LIST_EXT_REQ);
@@ -506,7 +520,7 @@ mod tests {
         assert!(overview.preview.is_empty());
         assert_eq!(overview.cues.len(), 1);
         assert_eq!(overview.cues[0].start_ms, 30_000);
-        assert_eq!(got.warnings.len(), 2);
+        assert_eq!(got.warnings.len(), 1);
     }
 
     #[test]

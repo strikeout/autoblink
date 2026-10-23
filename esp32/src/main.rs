@@ -29,6 +29,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::gpio::PinDriver;
 use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::hal::peripherals::Peripherals;
@@ -107,11 +108,11 @@ fn run() -> anyhow::Result<()> {
     // SAFETY: the buffer has the 6 bytes that a MAC address needs.
     sys::esp!(unsafe { sys::esp_read_mac(mac.as_mut_ptr(), sys::esp_mac_type_t_ESP_MAC_WIFI_SOFTAP) })?;
     let default_ssid = format!("xdj-clock-{:02X}{:02X}", mac[4], mac[5]);
-    let settings = Settings::new(nvs.clone(), default_ssid)?;
+    let settings = Settings::new(nvs, default_ssid)?;
     let ssid = settings.ssid();
     let join = settings.join();
     let join_ssid = join.as_ref().map(|(s, _)| s.clone());
-    let mut wifi = net::start_wifi(p.modem, sysloop.clone(), nvs, &ssid, &settings.password(), join)?;
+    let mut wifi = net::start_wifi(p.modem, sysloop.clone(), &ssid, &settings.password(), join)?;
     log::info!("WiFi \"{ssid}\" is on. The web page is at http://{AP_IP}");
     if let Some(join) = &join_ssid {
         log::info!("WiFi \"{join}\": the firmware joins this network");
@@ -186,7 +187,8 @@ fn run() -> anyhow::Result<()> {
         state.clone(),
         device_number,
         move |beat| {
-            let _ = beat_tx.send(beat.beat_in_bar);
+            // A full queue drops the LED pulse. The receive thread does not wait for the LEDs.
+            let _ = beat_tx.try_send(beat.beat_in_bar);
             #[cfg(feature = "dmx")]
             dmx.beat();
             let page_beat = (beat.device, beat.beat_in_bar);
@@ -215,7 +217,8 @@ fn run() -> anyhow::Result<()> {
     let mut last = (None, None);
     let mut next_heap_log = Instant::now();
     let mut heap_low = u32::MAX;
-    let mut next_join = Instant::now() + JOIN_RETRY;
+    let mut join_retry = JOIN_RETRY;
+    let mut next_join = Instant::now() + join_retry;
     // The interface choice while Ethernet and the joined WiFi network both have an address.
     let mut use_sta = false;
     let mut quiet_since: Option<Instant> = None;
@@ -246,16 +249,20 @@ fn run() -> anyhow::Result<()> {
                 state.now_ms() / 1000
             );
         }
-        // ponytail: a fixed retry interval. Each try scans all channels, and the phones on the
-        // access point can lose the page during a scan. Use an exponential back-off if 30 s is
-        // too often.
-        if join_ssid.is_some() && Instant::now() >= next_join {
-            next_join = Instant::now() + JOIN_RETRY;
-            if !wifi.is_connected().unwrap_or(false) {
+        // Each try scans all channels. During a scan, the access point and the Pro DJ Link beats
+        // on WiFi lose packets. Thus the time between two tries doubles after each try, up to
+        // JOIN_RETRY_MAX. While the firmware has the connection, the time is JOIN_RETRY again.
+        if let Some(name) = join_ssid.as_deref().filter(|_| Instant::now() >= next_join) {
+            if wifi.is_connected().unwrap_or(false) {
+                join_retry = JOIN_RETRY;
+            } else {
+                join_retry = (join_retry * 2).min(JOIN_RETRY_MAX);
+                log::info!("WiFi \"{name}\": the firmware tries to join. The next try is in {} s", join_retry.as_secs());
                 if let Err(e) = wifi.connect() {
                     log::warn!("WiFi: the connection did not start: {e}");
                 }
             }
+            next_join = Instant::now() + join_retry;
         }
 
         let info = eth.netif().get_ip_info().ok().filter(|i| !i.ip.is_unspecified());
@@ -265,6 +272,11 @@ fn run() -> anyhow::Result<()> {
             .and_then(|_| wifi.sta_netif().get_ip_info().ok())
             .filter(|i| !i.ip.is_unspecified());
         let sta_ip = sta_info.map(|i| i.ip);
+        // After a reconnect, the next lost connection starts the back-off at JOIN_RETRY again.
+        if sta_info.is_some() {
+            join_retry = JOIN_RETRY;
+            next_join = next_join.min(Instant::now() + JOIN_RETRY);
+        }
         // The XDJ-AZ sends Pro DJ Link on one interface only. When it is also on the joined WiFi
         // network (for example with rekordbox), it can stop the packets on the cable. The virtual
         // CDJ then changes to the other interface after `dwell` without a player.
@@ -363,15 +375,35 @@ pub fn restart_soon() -> std::io::Result<()> {
 
 /// Starts a thread. `name` is also the FreeRTOS task name, which `GET /mem` shows.
 ///
-/// Without the spawn configuration, each Rust thread has the task name "pthread".
+/// Without the spawn configuration, each Rust thread has the task name "pthread". The thread has
+/// priority 5 (CONFIG_PTHREAD_TASK_PRIO_DEFAULT), the priority of the HTTP server task. It runs on
+/// the two cores.
 pub fn spawn<F, T>(name: &'static CStr, stack_size: usize, f: F) -> std::io::Result<thread::JoinHandle<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    spawn_rt(name, stack_size, 5, None, f)
+}
+
+/// Starts a thread like `spawn`, with the FreeRTOS priority `priority`. With `core`, the thread
+/// runs only on that core.
+///
+/// The WiFi task runs on core 0. A time-critical thread uses core 1 and a priority above 5.
+pub fn spawn_rt<F, T>(
+    name: &'static CStr,
+    stack_size: usize,
+    priority: u8,
+    core: Option<Core>,
+    f: F,
+) -> std::io::Result<thread::JoinHandle<T>>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     // The configuration applies to the threads that the calling thread starts. Reset it after
     // the start, so that no other thread gets this name.
-    let _ = ThreadSpawnConfiguration { name: Some(name), ..Default::default() }.set();
+    let _ = ThreadSpawnConfiguration { name: Some(name), priority, pin_to_core: core, ..Default::default() }.set();
     let handle = thread::Builder::new()
         .name(name.to_string_lossy().into_owned())
         .stack_size(stack_size)
@@ -380,8 +412,10 @@ where
     handle
 }
 
-/// The time between two tries to join the WiFi network.
+/// The time between two tries to join the WiFi network, after a lost connection.
 const JOIN_RETRY: Duration = Duration::from_secs(30);
+/// The longest time between two tries to join the WiFi network.
+const JOIN_RETRY_MAX: Duration = Duration::from_secs(600);
 
 /// The time without a player after which Pro DJ Link tries the other interface.
 const SWITCH_AFTER: Duration = Duration::from_secs(5);

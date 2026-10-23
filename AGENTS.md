@@ -150,20 +150,26 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.19.0 uses 83 % of the slot.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller. Version 1.20.0 used 83 %.
+- The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
 ### Debug logs
 
 - Run `curl http://xdj-clock.local/log` to read the log over WiFi. The page shows no log.
 - Run `curl http://xdj-clock.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
-- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread.
+- `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
+- `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
+- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Measure these two.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
-- The firmware keeps 600 columns of the waveform preview (`tracks::PREVIEW_COLUMNS`). The players send 1200.
+- The firmware keeps 600 columns of the waveform preview (`xdj_core_dbserver::PREVIEW_COLUMNS`). The players send 1200.
+- The dbserver client reads the PWV4 preview and the PQTZ beat grid as a stream (`read_message_with`). It keeps only 600 preview columns and the beats of the phrase starts, the fill-ins and the end. A buffered grid and its parsed copy needed up to 72 KB for one fetch. Without phrases, the client does not request the beat grid.
+- The fetch does not start below 24 KB free heap or an 8 KB largest block. The page then shows "not enough memory for the track data", and the fetch starts again after 3 s.
+- Do not use `std::io::copy` in a firmware thread. It puts an 8 KB buffer on the stack.
 - The log ring is in RTC slow memory (4 KB). A panic, a watchdog or a software restart keeps it. A power-on clears it.
 - The text has three parts: the last crash, the lines of the previous start and the lines of this start.
 - The firmware keeps the crash report outside the ring. Thus a flood of log lines cannot push it out.
-- The ESP-IDF C components (WiFi driver, HTTP server) log only to UART0. The ring has only the Rust log lines.
+- The ESP-IDF C components (WiFi driver, HTTP server) log only to UART0. The ring has only the Rust log lines. The C components log only warnings and errors (`CONFIG_LOG_DEFAULT_LEVEL_WARN`), because each UART write blocks the task.
 - After a crash, the panic handler writes a core dump to the `coredump` partition (0x3E0000). At the next start, the firmware logs the task, the exception and the backtrace. Then it erases the dump.
 - A box with an older partition table has no `coredump` partition. Flash it over USB to add the partition. OTA does not change the partition table.
 - Decode the backtrace with the ELF of the same build:
@@ -208,10 +214,11 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 ### Network
 
 - The firmware starts its own WiFi network `xdj-clock-XXXX` (the last 2 bytes of the MAC address). The default password is `xdjclock123`. The web page is at http://192.168.1.1.
-- The page settings "Join WiFi name" and "Join WiFi password" (indices 102 and 103) set an existing WiFi network. After a restart, the firmware joins it, and the own network stays on. The page is then also at the DHCP address of that network and at http://xdj-clock.local (mDNS). The firmware tries to join again every 30 s. The iface field of the status shows the two addresses.
+- The page settings "Join WiFi name" and "Join WiFi password" (indices 102 and 103) set an existing WiFi network. After a restart, the firmware joins it, and the own network stays on. The page is then also at the DHCP address of that network and at http://xdj-clock.local (mDNS). The iface field of the status shows the two addresses.
+- When the firmware loses the joined network, it tries to join again after 30 s. After each failed try, the time doubles, up to 10 minutes, because each try scans all channels. The log shows each try.
 - Do not join a 192.168.1.x WiFi network. The page can fail on one of the two networks. The firmware logs a warning for this case.
 - The virtual CDJ uses the Ethernet port while it has an address. Without an Ethernet address, it uses the joined WiFi network. The Pro DJ Link sockets receive and send only on that interface (lwIP `SO_BINDTODEVICE`). Thus a joined WiFi network in the subnet of the Ethernet port gives no second copy of each beat. The firmware logs a warning when the two networks use one subnet.
-- The XDJ-AZ sends Pro DJ Link on one interface only. It can also be on the joined WiFi network, for example with rekordbox. Then it can stop the packets on the cable after about 1 minute. When the two interfaces of the box have an address, the box examines the players. After 5 s without a player packet, the virtual CDJ changes to the other interface.
+- The XDJ-AZ sends Pro DJ Link on one interface only. It can also be on the joined WiFi network, for example with rekordbox. Then it can stop the packets on the cable after about 1 minute. When the two interfaces of the box have an address, the box examines the players. A deck leaves the tracker 15 s after its last packet. After 5 s more without a player, the virtual CDJ changes to the other interface.
 - Without a player on the two interfaces, the time between two changes doubles up to 60 s. The log shows each change.
 - A joined 192.168.1.x WiFi network has the subnet of the own WiFi network. Without the binding, lwIP can send the packets of the virtual CDJ on the own network. The players then send no CDJ status, and the page shows no track and no waveform. The dbserver connection also uses the interface of the virtual CDJ (`net::connect_on`). Without it, the connect times out.
 - On WiFi, the access point sends a broadcast only after a DTIM beacon. Thus a beat packet arrives late by up to about 300 ms. The firmware switches off the WiFi power save. The MIDI clock corrects its phase with the earliest beat of the last "Phrase Lock Stable" bars, because a late packet is never early.
@@ -224,6 +231,12 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - When a deck loads a track, the firmware connects to the dbserver of the source player. It gets the title, the artist, the phrases, the waveform preview, the cues and the beat grid. It fetches one track at a time.
 - The `espressif/mdns` component comes from `[package.metadata.esp-idf-sys.extra_components]` in `esp32/Cargo.toml`. After a change to that table, run `cargo clean --release -p esp-idf-sys`. If you do not, the build uses the old ESP-IDF build and `esp_idf_svc::mdns` does not exist.
 - The WebSocket handshake completes before the firmware can read the `Origin` header. When the Origin check fails, the firmware closes the connection and sends no data. It cannot reply with 403.
+- The firmware sends the status and the beats to one page at a time. Another page gets `busy` and shows the button "Use this screen". The button sends `take_over`, and the firmware closes the connection of the old page with `httpd_sess_trigger_close`. The old page then connects again and gets `busy`.
+- TCP keepalive (5 s idle, 3 probes at 5 s) closes the connection of a page that left the network in about 20 s. Without it, lwIP keeps the connection for minutes, and each status send to it waits up to 5 s.
+- The web server has 6 sockets. When all are open, a new connection closes the socket that received data least recently. That socket is the live WebSocket. The page loads the waveforms of all decks at the same time. Do not set fewer sockets.
+- The firmware serves the page with gzip, also to a client that does not ask for it. `esp32/build.rs` compresses `webui/index.html` at build time. Use `curl --compressed` to read the page.
+- The firmware uses only IPv4 (`CONFIG_LWIP_IPV6=n`). The WiFi driver does not write its configuration to NVS (`CONFIG_ESP_WIFI_NVS_ENABLED=n`), because the firmware sets it at each start.
+- A deck that sends no packet for 15 s leaves the tracker (`DECK_TIMEOUT_MS`), as on the host. A shorter time drops all track data after a short network fault.
 - An error from the `ws_handler` closure does not close the socket. esp-idf-svc 0.53 logs it and returns `ESP_OK`. The handler wrapper in `webui.rs` closes the session with `httpd_sess_trigger_close`.
 
 ## Refactor Context (for future sessions)

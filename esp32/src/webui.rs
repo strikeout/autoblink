@@ -4,29 +4,36 @@
 //! `ota`. The page hides the sections of the other capabilities: `mixer`, `ports` and `logs`.
 //! With `ota`, the page shows the System panel: the firmware update, the restart button and the
 //! WiFi settings. The page sends `reboot` for the restart button.
+//!
+//! The firmware sends the status and the beats to one page at a time, the active page. Another
+//! page gets `busy` and shows a button. The button sends `take_over`, and the firmware closes the
+//! connection of the active page. That page then connects again and gets `busy`.
 
+use std::borrow::Cow;
 use std::ffi::CString;
+use std::fmt::{Display, Write as _};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use esp_idf_svc::http::server::ws::{EspHttpWsConnection, EspHttpWsDetachedSender};
-use esp_idf_svc::http::server::{Configuration, EspHttpServer};
+use esp_idf_svc::http::server::{Configuration, EspHttpServer, KeepAlive};
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
 use esp_idf_svc::sys::{self, EspError, ESP_ERR_INVALID_SIZE, ESP_FAIL};
 use esp_idf_svc::ws::FrameType;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 
 use crate::ota::{self, OtaCmd, OtaStatus};
 use crate::settings::Settings;
 use crate::tracks::TrackData;
 use crate::State;
-use xdj_core_dbserver::{phrase_status, TrackOverview};
-use xdj_core_prolink::Deck;
+use xdj_core_dbserver::{phrase_status, PhraseKind, TrackOverview};
+use xdj_core_prolink::{Deck, PlayState};
 
-const INDEX_HTML: &str = include_str!("../../webui/index.html");
+/// The page, compressed with gzip by `build.rs`.
+const INDEX_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
 
 /// The firmware ignores a command that is longer than this.
 const MAX_COMMAND_LEN: usize = 512;
@@ -34,26 +41,46 @@ const MAX_COMMAND_LEN: usize = 512;
 /// The page gets the status this often.
 const STATUS_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The open WebSocket connections. A send that fails removes the connection.
+/// The WebSocket connection of the active page. The status and the beats go only to it. A send
+/// that fails removes the connection.
+///
+/// lwIP gives a new connection the lowest free socket number. Thus a socket number can name a
+/// new page soon after the old page closes. The number of each change of the active page lets a
+/// failed send remove only the page that it sent to.
 #[derive(Default)]
-struct Clients(Mutex<Vec<EspHttpWsDetachedSender>>);
+struct Active(Mutex<(u32, Option<EspHttpWsDetachedSender>)>);
 
-impl Clients {
-    fn broadcast(&self, text: &[u8]) {
+impl Active {
+    fn send(&self, text: &[u8]) {
         // A send waits for the HTTP server task, and that task takes this lock when a connection
         // closes. Send without the lock, so that the two tasks cannot block each other.
-        let clients = self.0.lock().unwrap().clone();
-        let failed: Vec<i32> = clients
-            .into_iter()
-            .filter_map(|mut c| c.send(FrameType::Text(false), text).err().map(|_| c.session()))
-            .collect();
-        if !failed.is_empty() {
-            self.0.lock().unwrap().retain(|c| !failed.contains(&c.session()));
+        let (generation, Some(mut sender)) = self.0.lock().unwrap().clone() else { return };
+        if sender.send(FrameType::Text(false), text).is_err() {
+            let mut active = self.0.lock().unwrap();
+            if active.0 == generation {
+                active.1 = None;
+            }
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.0.lock().unwrap().is_empty()
+    /// Makes `sender` the active connection. Returns the old active connection.
+    fn set(&self, sender: EspHttpWsDetachedSender) -> Option<EspHttpWsDetachedSender> {
+        let mut active = self.0.lock().unwrap();
+        active.0 = active.0.wrapping_add(1);
+        active.1.replace(sender)
+    }
+
+    /// Removes the connection `session` if it is the active connection. Call it only on the HTTP
+    /// server task, where the socket number of a closed connection is not yet free.
+    fn remove(&self, session: i32) {
+        let mut active = self.0.lock().unwrap();
+        if active.1.as_ref().is_some_and(|a| a.session() == session) {
+            active.1 = None;
+        }
+    }
+
+    fn is_some(&self) -> bool {
+        self.0.lock().unwrap().1.is_some()
     }
 }
 
@@ -66,17 +93,23 @@ pub fn start(
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
 ) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<(u8, u8)>)> {
-    // With the default of 3 sockets, a fourth connection closes the oldest one, which is often a
-    // live WebSocket. Each open socket takes heap, so 6 is the limit: 2 pages with a WebSocket
-    // and some requests. CONFIG_LWIP_MAX_SOCKETS must have space for these sockets. The HTTP
+    // When all sockets are open, a new connection closes the socket that received data least
+    // recently. The active WebSocket receives no data, so it is that socket. The page loads the
+    // waveforms of all decks at the same time: 1 WebSocket and up to 4 requests. A waiting page
+    // adds 1 WebSocket. Thus the limit is 6. CONFIG_LWIP_MAX_SOCKETS must have space for these sockets. The HTTP
     // server task used 5.9 KB of stack (GET /mem, 2026-10-23).
+    //
+    // TCP keepalive finds a page that left the network in about 20 s (5 s idle, then 3 probes
+    // at 5 s). Without it, lwIP keeps the dead connection for minutes, and each send to it waits
+    // up to 5 s.
     let mut server = EspHttpServer::new(&Configuration {
         stack_size: 8 * 1024,
         uri_match_wildcard: true,
         max_open_sockets: 6,
+        keep_alive: Some(KeepAlive { idle_secs: 5, interval_secs: 5, probe_count: 3 }),
         ..Default::default()
     })?;
-    let clients = Arc::new(Clients::default());
+    let active = Arc::new(Active::default());
 
     let wave_state = state.clone();
     server.fn_handler("/waveform/*", Method::Get, move |req| {
@@ -106,13 +139,17 @@ pub fn start(
 
     for path in ["/", "/index.html"] {
         server.fn_handler(path, Method::Get, |req| {
-            req.into_response(200, None, &[("Content-Type", "text/html; charset=utf-8")])?
-                .write_all(INDEX_HTML.as_bytes())
+            req.into_response(
+                200,
+                None,
+                &[("Content-Type", "text/html; charset=utf-8"), ("Content-Encoding", "gzip")],
+            )?
+            .write_all(INDEX_HTML_GZ)
         })?;
     }
 
     let midi_cfg = settings.lock().unwrap().midi.clone();
-    let ws_clients = clients.clone();
+    let ws_active = active.clone();
     let ws_state = state.clone();
     let handle = move |ws: &mut EspHttpWsConnection| -> Result<(), EspError> {
         if let EspHttpWsConnection::New(_, req) = ws {
@@ -132,14 +169,16 @@ pub fn start(
                 "caps": ["beat", "decks", "output", "settings", "waveform", "ota"],
             });
             ws.send(FrameType::Text(false), hello.to_string().as_bytes())?;
+            // Only the HTTP server task sets the active page, so the check and the set cannot race.
+            if ws_active.is_some() {
+                return ws.send(FrameType::Text(false), br#"{"type":"busy"}"#);
+            }
+            ws_active.set(ws.create_detached_sender()?);
             let msg = settings.lock().unwrap().message();
-            ws.send(FrameType::Text(false), msg.as_bytes())?;
-            ws_clients.0.lock().unwrap().push(ws.create_detached_sender()?);
-            return Ok(());
+            return ws.send(FrameType::Text(false), msg.as_bytes());
         }
         if ws.is_closed() {
-            let session = ws.session();
-            ws_clients.0.lock().unwrap().retain(|c| c.session() != session);
+            ws_active.remove(ws.session());
             return Ok(());
         }
 
@@ -155,7 +194,15 @@ pub fn start(
         // For a text frame, esp-idf-svc adds 1 to the length and puts a NUL byte at the end.
         // serde_json refuses that byte, so remove it.
         let text = buf.strip_suffix(&[0]).unwrap_or(&buf);
-        let reply = command(text, &settings, &ws_state);
+        let Ok(cmd) = serde_json::from_slice::<Value>(text) else {
+            return ws.send(FrameType::Text(false), error("The command is not valid JSON").as_bytes());
+        };
+        if cmd["type"] == "take_over" {
+            take_over(ws, &ws_active)?;
+            let msg = settings.lock().unwrap().message();
+            return ws.send(FrameType::Text(false), msg.as_bytes());
+        }
+        let reply = command(&cmd, &settings, &ws_state);
         ws.send(FrameType::Text(false), reply.as_bytes())
     };
     server.ws_handler("/ws", None, move |ws| -> Result<(), EspError> {
@@ -169,13 +216,17 @@ pub fn start(
     let (beat_tx, beat_rx) = mpsc::sync_channel::<(u8, u8)>(8);
     crate::spawn(c"web-status", 6 * 1024, move || {
         let mut next_status = Instant::now();
-        // The thread keeps one buffer for the status, so that each status does not allocate it again.
+        // The thread keeps one buffer for the status and one for the beat. Thus a message does
+        // not allocate a new buffer.
         let mut status = Vec::with_capacity(4096);
+        let mut beat_msg = String::with_capacity(48);
         loop {
             match beat_rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
-                Ok((device, beat)) => clients.broadcast(
-                    format!(r#"{{"type":"beat","device":{device},"beat":{beat}}}"#).as_bytes(),
-                ),
+                Ok((device, beat)) => {
+                    beat_msg.clear();
+                    let _ = write!(beat_msg, r#"{{"type":"beat","device":{device},"beat":{beat}}}"#);
+                    active.send(beat_msg.as_bytes());
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -183,10 +234,10 @@ pub fn start(
                 next_status = Instant::now() + STATUS_INTERVAL;
                 // The OTA check takes about 50 KB of heap for TLS. The status message can then
                 // fail to allocate, so the page gets no status until the check ends.
-                if !clients.is_empty() && !ota::busy() {
+                if active.is_some() && !ota::busy() {
                     let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
                     status_message(&state, clock_enabled, &mut status);
-                    clients.broadcast(&status);
+                    active.send(&status);
                 }
             }
         }
@@ -197,41 +248,75 @@ pub fn start(
 
 /// Writes the waveform route body in the host format (`host/src/web/mod.rs`).
 ///
-/// The preview has about 7200 bytes. As a `serde_json::Value`, it needs a block of more than
-/// 115 KB, which the heap of the ESP32 often does not have. The function therefore writes the
-/// preview as text in small chunks.
+/// The preview has about 3600 bytes. As a `serde_json::Value`, it needs a large heap block. The
+/// heap of the ESP32 often does not have that block. Thus the function writes the preview as text
+/// in small chunks, with one buffer for all chunks.
 fn write_waveform<W: Write>(w: &mut W, o: &TrackOverview) -> Result<(), W::Error> {
-    w.write_all(format!("{{\"rekordbox_id\":{},\"preview\":[", o.rekordbox_id).as_bytes())?;
+    #[derive(Serialize)]
+    struct CueJson {
+        hot: u8,
+        start: u32,
+        end: Option<u32>,
+    }
+    #[derive(Serialize)]
+    struct SpanJson {
+        kind: Disp<PhraseKind>,
+        start: u32,
+        end: u32,
+        fill: Option<u32>,
+    }
+
+    let mut text = String::with_capacity(256 * 4);
+    let _ = write!(text, "{{\"rekordbox_id\":{},\"preview\":[", o.rekordbox_id);
     for (i, chunk) in o.preview.chunks(256).enumerate() {
-        let mut text = String::with_capacity(chunk.len() * 4);
         for (k, b) in chunk.iter().enumerate() {
-            if i > 0 || k > 0 {
-                text.push(',');
-            }
-            text.push_str(&b.to_string());
+            let sep = if i > 0 || k > 0 { "," } else { "" };
+            let _ = write!(text, "{sep}{b}");
         }
         w.write_all(text.as_bytes())?;
+        text.clear();
     }
-    let cues: Vec<Value> = o
-        .cues
-        .iter()
-        .map(|c| json!({"hot": c.hot_cue, "start": c.start_ms, "end": c.end_ms}))
-        .collect();
-    let phrases: Vec<Value> = o
+    // The response is not a `std::io::Write`, so serde_json writes the tail into a buffer first.
+    let cues: Vec<CueJson> =
+        o.cues.iter().map(|c| CueJson { hot: c.hot_cue, start: c.start_ms, end: c.end_ms }).collect();
+    let phrases: Vec<SpanJson> = o
         .phrases
         .iter()
-        .map(|p| json!({"kind": p.kind.to_string(), "start": p.start_ms, "end": p.end_ms, "fill": p.fill_ms}))
+        .map(|p| SpanJson { kind: Disp(p.kind), start: p.start_ms, end: p.end_ms, fill: p.fill_ms })
         .collect();
-    let tail = format!("],\"cues\":{},\"phrases\":{}}}", Value::from(cues), Value::from(phrases));
-    w.write_all(tail.as_bytes())
+    let mut tail = br#"],"cues":"#.to_vec();
+    let _ = serde_json::to_writer(&mut tail, &cues);
+    tail.extend_from_slice(br#","phrases":"#);
+    let _ = serde_json::to_writer(&mut tail, &phrases);
+    tail.push(b'}');
+    w.write_all(&tail)
+}
+
+/// Makes the page that sends this command the active page. Closes the connection of the old
+/// active page.
+fn take_over(ws: &mut EspHttpWsConnection, active: &Active) -> Result<(), EspError> {
+    let EspHttpWsConnection::Receiving(sd, _, _) = ws else {
+        return Ok(());
+    };
+    let sd = *sd;
+    let session = ws.session();
+    let old = active.set(ws.create_detached_sender()?);
+    if let Some(old) = old.map(|o| o.session()).filter(|&o| o != session) {
+        log::info!("WebSocket {session} takes over the status from WebSocket {old}");
+        // SAFETY: `sd` is the live server handle of this handler call. A closed `old` socket
+        // gives only an error code.
+        unsafe { sys::httpd_sess_trigger_close(sd, old) };
+    }
+    Ok(())
+}
+
+/// The JSON text of an error reply.
+fn error(text: &str) -> String {
+    json!({"type": "error", "text": text}).to_string()
 }
 
 /// Runs one command from the page. Returns the reply as JSON text: the new settings, or an error.
-fn command(buf: &[u8], settings: &Mutex<Settings>, state: &Arc<State>) -> String {
-    let error = |text: &str| json!({"type": "error", "text": text}).to_string();
-    let Ok(cmd) = serde_json::from_slice::<Value>(buf) else {
-        return error("The command is not valid JSON");
-    };
+fn command(cmd: &Value, settings: &Mutex<Settings>, state: &Arc<State>) -> String {
     match cmd["type"].as_str() {
         Some(kind @ ("set" | "cycle")) => {
             let Some(idx) = cmd["idx"].as_u64().map(|i| i as usize) else {
@@ -282,9 +367,31 @@ struct TrackFields {
     phrase_note: Option<String>,
 }
 
+/// Serializes a value as the text of its `Display`, without a `String` on the heap.
+struct Disp<T>(T);
+
+impl<T: Display> Serialize for Disp<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&self.0)
+    }
+}
+
+/// The source of the track on a deck, for example "deck#2 USB (rb#207)".
+struct Src {
+    player: u8,
+    slot: &'static str,
+    id: u32,
+}
+
+impl Serialize for Src {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("deck#{} {} (rb#{})", self.player, self.slot, self.id))
+    }
+}
+
 #[derive(Serialize)]
 struct PhraseJson {
-    kind: String,
+    kind: Disp<PhraseKind>,
     progress: f64,
     fill: bool,
     beats_left: u32,
@@ -312,7 +419,7 @@ fn track_fields(d: &Deck, t: Option<&TrackData>) -> TrackFields {
     match &t.structure {
         Some(Ok(ss)) => {
             f.phrase = d.beat_count.and_then(|bc| phrase_status(ss, bc)).map(|p| PhraseJson {
-                kind: p.kind.to_string(),
+                kind: Disp(p.kind),
                 progress: p.progress,
                 fill: p.fill,
                 beats_left: p.beats_left,
@@ -330,7 +437,7 @@ fn track_fields(d: &Deck, t: Option<&TrackData>) -> TrackFields {
 /// The firmware serializes these structs in one pass. A `serde_json::Value` tree has a heap block
 /// for each field and each text, and the many small blocks fragment the heap.
 #[derive(Serialize)]
-struct Status {
+struct Status<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
     source: Option<&'static str>,
@@ -338,7 +445,7 @@ struct Status {
     iface: String,
     master: MasterJson,
     no_devices: bool,
-    decks: Vec<DeckJson>,
+    decks: Vec<DeckJson<'a>>,
     link_peers: u8,
     link_active: bool,
     clock: ClockJson,
@@ -360,9 +467,9 @@ struct MasterJson {
 }
 
 #[derive(Serialize)]
-struct DeckJson {
+struct DeckJson<'a> {
     num: u8,
-    name: String,
+    name: Cow<'a, str>,
     playing: bool,
     master: bool,
     virtual_master: bool,
@@ -370,7 +477,7 @@ struct DeckJson {
     sync: bool,
     bpm: Option<f64>,
     pitch: f64,
-    play_state: Option<String>,
+    play_state: Option<Disp<PlayState>>,
     beat: Option<u8>,
     beat_count: Option<u32>,
     playhead_ms: Option<u32>,
@@ -378,7 +485,7 @@ struct DeckJson {
     loop_ms: Option<[u32; 2]>,
     #[serde(flatten)]
     fields: TrackFields,
-    src: Option<String>,
+    src: Option<Src>,
 }
 
 #[derive(Serialize)]
@@ -439,7 +546,7 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
             };
             DeckJson {
                 num: d.num,
-                name: if d.name.is_empty() { format!("Deck {}", d.num) } else { d.name.clone() },
+                name: if d.name.is_empty() { Cow::Owned(format!("Deck {}", d.num)) } else { Cow::Borrowed(&d.name) },
                 playing: d.is_playing(now),
                 master: is_master,
                 virtual_master: is_master && master_virtual,
@@ -447,15 +554,17 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
                 sync: d.sync,
                 bpm: (d.bpm > 0.0).then_some(d.bpm),
                 pitch: d.pitch,
-                play_state: d.play_state.map(|p| p.to_string()),
+                play_state: d.play_state.map(Disp),
                 beat: (1..=4).contains(&d.beat).then_some(d.beat),
                 beat_count: d.beat_count,
                 playhead_ms: d.playhead_ms,
                 track_len_ms: d.track_len_ms,
                 loop_ms: d.loop_ms.map(|(a, b)| [a, b]),
                 fields,
-                src: (d.track.rekordbox_id != 0).then(|| {
-                    format!("deck#{} {} (rb#{})", d.track.source_player, slot, d.track.rekordbox_id)
+                src: (d.track.rekordbox_id != 0).then_some(Src {
+                    player: d.track.source_player,
+                    slot,
+                    id: d.track.rekordbox_id,
                 }),
             }
         })

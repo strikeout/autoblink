@@ -2,7 +2,9 @@
 //!
 //! Each function takes bytes or messages and returns a value. None of them touches the network.
 
-use crate::protocol::{DbMessage, Field, MENU_DATA};
+use std::io::Read;
+
+use crate::protocol::{skip, DbMessage, Field, MENU_DATA};
 use crate::types::{
     Cue, PhraseEntry, PhraseKind, PhraseSpan, SongStructure, TrackMetadata, TrackMood,
 };
@@ -123,27 +125,120 @@ pub fn parse_menu_item(item_index: u32, msg: &DbMessage, meta: &mut TrackMetadat
 /// [len_entries u32][unknown u32][entries]`. The entries start `len_header` bytes after `PWV4`.
 /// Beat Link `WaveformPreview` skips the same 28 bytes.
 pub fn parse_pwv4(data: &[u8]) -> Result<Vec<u8>, String> {
-    let start = tag_start(data, b"PWV4")?;
-    let u32_at = |off: usize| {
-        data.get(start + off..start + off + 4)
-            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
-            .ok_or_else(|| format!("PWV4 header too short: {} bytes", data.len()))
-    };
-    let (len_header, entry_bytes, entries) = (u32_at(4)?, u32_at(12)?, u32_at(16)?);
+    read_pwv4(&mut &data[..], data.len(), usize::MAX)
+}
+
+/// Reads a PWV4 tag blob of `len` bytes from `r`, like [`parse_pwv4`], and keeps at most
+/// `max_columns` columns.
+///
+/// The function reads one column at a time. When the blob has more columns, the function folds
+/// them. Each kept column has the largest value of each byte of the columns that it replaces. Thus the heap holds only the
+/// kept columns, not the blob.
+pub fn read_pwv4<R: Read + ?Sized>(
+    r: &mut R,
+    len: usize,
+    max_columns: usize,
+) -> Result<Vec<u8>, String> {
+    let (head, start) = read_head(r, len, b"PWV4", 20)?;
+    let (len_header, entry_bytes, entries) = (
+        head.u32_at(start + 4),
+        head.u32_at(start + 12),
+        head.u32_at(start + 16),
+    );
     if entry_bytes != 6 {
         return Err(format!("PWV4 entry size is {entry_bytes}, not 6"));
     }
-    let body = start.saturating_add(len_header);
-    let end = entries
-        .checked_mul(6)
-        .and_then(|n| body.checked_add(n))
-        .ok_or_else(|| "PWV4 size is too large".to_string())?;
-    data.get(body..end).map(<[u8]>::to_vec).ok_or_else(|| {
-        format!(
-            "PWV4 blob {} bytes is too short for {entries} columns",
-            data.len()
-        )
-    })
+    let body = skip_to_body(r, start, len_header, 20, "PWV4")?;
+    if entries > len.saturating_sub(body) / 6 {
+        return Err(format!(
+            "PWV4 blob {len} bytes is too short for {entries} columns"
+        ));
+    }
+    let group = entries.div_ceil(max_columns).max(1);
+    let mut out = Vec::new();
+    out.try_reserve_exact(entries.div_ceil(group) * 6)
+        .map_err(|_| format!("PWV4 preview of {entries} columns does not fit in memory"))?;
+    let mut col = [0u8; 6];
+    let mut acc = [0u8; 6];
+    for i in 0..entries {
+        read_exact(r, &mut col)?;
+        for (a, c) in acc.iter_mut().zip(col) {
+            *a = (*a).max(c);
+        }
+        if (i + 1) % group == 0 || i + 1 == entries {
+            out.extend_from_slice(&acc);
+            acc = [0; 6];
+        }
+    }
+    Ok(out)
+}
+
+/// The first bytes of an analysis tag blob.
+struct Head([u8; 28]);
+
+impl Head {
+    fn u32_at(&self, off: usize) -> usize {
+        u32::from_be_bytes([
+            self.0[off],
+            self.0[off + 1],
+            self.0[off + 2],
+            self.0[off + 3],
+        ]) as usize
+    }
+}
+
+/// Reads the start of a tag blob of `len` bytes. The start is the length prefix (if present), the
+/// code `fourcc` and `need` bytes after the code. Returns the bytes and the position of the code.
+fn read_head<R: Read + ?Sized>(
+    r: &mut R,
+    len: usize,
+    fourcc: &[u8; 4],
+    need: usize,
+) -> Result<(Head, usize), String> {
+    let name = String::from_utf8_lossy(fourcc);
+    let short = || format!("{name} blob {len} bytes is too short");
+    let mut head = Head([0; 28]);
+    if len < 8 {
+        return Err(short());
+    }
+    read_exact(r, &mut head.0[..8])?;
+    let start = if head.0[4..8] == fourcc[..] {
+        4
+    } else if head.0[0..4] == fourcc[..] {
+        0
+    } else {
+        let hex: String = head.0[..8].iter().map(|b| format!("{b:02x}")).collect();
+        return Err(format!(
+            "{name} blob {len} bytes has no {name} code, head {hex}"
+        ));
+    };
+    let end = start + need;
+    if len < end {
+        return Err(short());
+    }
+    read_exact(r, &mut head.0[8..end])?;
+    Ok((head, start))
+}
+
+/// Discards the rest of the tag header. The header has `len_header` bytes from the code at
+/// `start`, and `read_head` already read `need` of them. Returns the position of the entries.
+fn skip_to_body<R: Read + ?Sized>(
+    r: &mut R,
+    start: usize,
+    len_header: usize,
+    need: usize,
+    name: &str,
+) -> Result<usize, String> {
+    if len_header < need {
+        return Err(format!("{name} header length {len_header} is too short"));
+    }
+    skip(r, len_header - need)?;
+    Ok(start.saturating_add(len_header))
+}
+
+fn read_exact<R: Read + ?Sized>(r: &mut R, buf: &mut [u8]) -> Result<(), String> {
+    r.read_exact(buf)
+        .map_err(|e| format!("dbserver read failed: {e}"))
 }
 
 /// Returns the start of a tag in a dbserver blob: byte 4 after the length prefix, or byte 0.
@@ -168,42 +263,80 @@ pub fn tag_start(data: &[u8], fourcc: &[u8; 4]) -> Result<usize, String> {
 /// The entries start `len_header` bytes after `PQTZ`. Each entry is 8 bytes:
 /// `[beat_number u16][tempo u16][time u32]`, with the time in ms.
 pub fn parse_pqtz(data: &[u8]) -> Result<Vec<u32>, String> {
-    let start = tag_start(data, b"PQTZ")?;
-    let u32_at = |off: usize| {
-        off.checked_add(4)
-            .and_then(|end| data.get(off..end))
-            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-            .ok_or_else(|| format!("PQTZ blob {} bytes is too short", data.len()))
-    };
-    let len_header = u32_at(start + 4)? as usize;
-    let beats = u32_at(start + 20)? as usize;
-    let body = start.saturating_add(len_header);
+    read_pqtz(&mut &data[..], data.len(), None)
+        .map(|grid| grid.into_iter().map(|(_, t)| t).collect())
+}
+
+/// Reads a PQTZ tag blob of `len` bytes from `r`, like [`parse_pqtz`]. Returns the beat number
+/// and the time of each beat in `wanted`, or of all beats for `None`. Beat 1 is the first beat.
+///
+/// Sort `wanted` before the call. The function reads one entry at a time and stops after the last
+/// wanted beat. Thus the heap holds only the wanted beats, not the blob.
+pub fn read_pqtz<R: Read + ?Sized>(
+    r: &mut R,
+    len: usize,
+    wanted: Option<&[u16]>,
+) -> Result<Vec<(u16, u32)>, String> {
+    let (head, start) = read_head(r, len, b"PQTZ", 24)?;
+    let (len_header, beats) = (head.u32_at(start + 4), head.u32_at(start + 20));
+    let body = skip_to_body(r, start, len_header, 24, "PQTZ")?;
     // The blob holds at most one entry for each 8 bytes. This check stops a huge count early.
-    if beats > data.len() / 8 {
-        return Err(format!("PQTZ blob {} bytes is too short", data.len()));
+    if beats > len.saturating_sub(body) / 8 {
+        return Err(format!("PQTZ blob {len} bytes is too short"));
     }
+    if beats == 0 {
+        return Err("PQTZ blob has no beats".into());
+    }
+    let keep = wanted.map_or(beats, <[u16]>::len).min(beats);
     // On the ESP32, a long track can need more than the free heap. A failed reservation gives
     // an error, not an abort.
     let mut grid = Vec::new();
-    grid.try_reserve_exact(beats)
-        .map_err(|_| format!("PQTZ beat grid of {beats} beats does not fit in memory"))?;
-    for i in 0..beats {
-        grid.push(u32_at(body.saturating_add(i * 8 + 4))?);
-    }
-    if grid.is_empty() {
-        return Err("PQTZ blob has no beats".into());
+    grid.try_reserve_exact(keep)
+        .map_err(|_| format!("PQTZ beat grid of {keep} beats does not fit in memory"))?;
+    let mut next = wanted.map(|w| w.iter().copied().peekable());
+    let mut entry = [0u8; 8];
+    for i in 0..beats.min(usize::from(u16::MAX)) {
+        let beat = (i + 1) as u16;
+        let take = match &mut next {
+            None => true,
+            Some(w) => {
+                while w.next_if(|&b| b < beat).is_some() {}
+                match w.peek() {
+                    None => break,
+                    Some(&b) => b == beat,
+                }
+            }
+        };
+        read_exact(r, &mut entry)?;
+        if take {
+            grid.push((
+                beat,
+                u32::from_be_bytes([entry[4], entry[5], entry[6], entry[7]]),
+            ));
+        }
     }
     Ok(grid)
 }
 
 /// Puts the phrases of a song structure on the time axis.
 ///
-/// A phrase beat N is at `grid[N - 1]`. Without a grid, or past its end, the beat time comes
-/// from the track BPM, with beat 1 at 0 ms. Returns no phrases when no beat time is known.
-pub fn phrase_spans(ss: &SongStructure, grid: Option<&[u32]>, bpm: Option<f64>) -> Vec<PhraseSpan> {
+/// `grid` holds the (beat, time) pairs of the beat grid, sorted by beat. For a beat without a
+/// time in the grid, the function uses the track BPM, with beat 1 at 0 ms. Returns no phrases
+/// when the function has no beat time.
+pub fn phrase_spans(
+    ss: &SongStructure,
+    grid: Option<&[(u16, u32)]>,
+    bpm: Option<f64>,
+) -> Vec<PhraseSpan> {
     let beat_ms = |beat: u16| -> Option<u32> {
-        let i = usize::from(beat.max(1) - 1);
-        grid.and_then(|g| g.get(i).copied()).or_else(|| {
+        let beat = beat.max(1);
+        let i = usize::from(beat - 1);
+        let from_grid = grid.and_then(|g| {
+            g.binary_search_by_key(&beat, |&(b, _)| b)
+                .ok()
+                .map(|k| g[k].1)
+        });
+        from_grid.or_else(|| {
             bpm.filter(|b| *b > 0.0)
                 .map(|b| (i as f64 * 60_000.0 / b).round() as u32)
         })
@@ -630,6 +763,13 @@ mod tests {
     }
 
     #[test]
+    fn pwv4_stream_keeps_the_largest_value_of_each_group() {
+        let blob = pwv4_blob(&[[1, 9, 0, 0, 0, 1], [5, 2, 0, 0, 0, 2], [3, 3, 3, 3, 3, 3]]);
+        let got = read_pwv4(&mut &blob[..], blob.len(), 2).unwrap();
+        assert_eq!(got, vec![5, 9, 0, 0, 0, 2, 3, 3, 3, 3, 3, 3]);
+    }
+
+    #[test]
     fn pwv4_refuses_a_short_or_foreign_blob() {
         let blob = pwv4_blob(&[[1; 6], [2; 6]]);
         assert!(parse_pwv4(&blob[..blob.len() - 1]).is_err());
@@ -707,6 +847,13 @@ mod tests {
     }
 
     #[test]
+    fn pqtz_stream_keeps_only_the_wanted_beats() {
+        let blob = pqtz_blob(&[120, 589, 1058, 1527, 1996]);
+        let got = read_pqtz(&mut &blob[..], blob.len(), Some(&[2, 4, 9])).unwrap();
+        assert_eq!(got, vec![(2, 589), (4, 1527)]);
+    }
+
+    #[test]
     fn phrases_use_the_grid_and_fall_back_to_the_bpm() {
         let entry = |index, beat, kind, fill_beat| PhraseEntry {
             index,
@@ -723,7 +870,7 @@ mod tests {
                 entry(2, 3, PhraseKind::Chorus, 4),
             ],
         };
-        let grid = [100, 600, 1100, 1600, 2100];
+        let grid = [(1, 100), (2, 600), (3, 1100), (4, 1600), (5, 2100)];
         let spans = phrase_spans(&ss, Some(&grid), Some(120.0));
         let times: Vec<_> = spans
             .iter()

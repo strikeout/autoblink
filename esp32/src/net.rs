@@ -13,7 +13,6 @@ use esp_idf_svc::hal::mac::MAC;
 use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::ipv4::{self, Mask, RouterConfiguration, Subnet};
 use esp_idf_svc::netif::{EspNetif, NetifConfiguration, NetifStack};
-use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys;
 use esp_idf_svc::wifi::{
     AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiDriver,
@@ -156,12 +155,13 @@ pub fn start_ethernet(
 pub fn start_wifi(
     modem: Modem<'static>,
     sysloop: EspSystemEventLoop,
-    nvs: EspDefaultNvsPartition,
     ssid: &str,
     password: &str,
     join: Option<(String, String)>,
 ) -> anyhow::Result<EspWifi<'static>> {
-    let driver = WifiDriver::new(modem, sysloop, Some(nvs))?;
+    // The firmware sets the WiFi configuration at each start. Without NVS, the driver does not
+    // write it to the flash, and the tasks do not stop for a flash write.
+    let driver = WifiDriver::new(modem, sysloop, None)?;
     let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
         ip_configuration: Some(ipv4::Configuration::Router(RouterConfiguration {
             subnet: Subnet { gateway: AP_IP, mask: Mask(24) },

@@ -36,6 +36,8 @@ details.panel>summary h2::before{content:'▸';color:var(--dim);font-size:14px;l
 details.panel[open]>summary h2::before{content:'▾'}
 details.panel:not([open])>summary h2{margin-bottom:0}
 [hidden]{display:none!important}
+#takeover{max-width:520px;margin:24px auto}
+#takeover p{color:var(--muted);margin-bottom:10px}
 /* master */
 #bpm{font-size:58px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;transition:color .05s}
 #bpm.flash{color:var(--flash)}
@@ -143,6 +145,11 @@ input.num.text{width:150px;text-align:left}
   <b id="state" class="stop">■ STOP</b>
   <span id="toast"></span>
 </header>
+<section id="takeover" class="panel" hidden>
+  <h2>Another screen is connected</h2>
+  <p>The box sends its status to one screen at a time.</p>
+  <div class="row"><button id="takeoverbtn">Use this screen</button></div>
+</section>
 <main>
   <section class="panel">
     <h2>Master <span class="kv">deck <b id="mdeck">—</b></span></h2>
@@ -744,7 +751,14 @@ function onBeat(m) {
   if (m.device === master || (m.device === 0 && status.link_active)) flash();
 }
 
-const handlers = { hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, error: (m) => toast(m.text) };
+// Only the ESP32 sends "busy": another page has the status. The host never sends it.
+function onBusy() {
+  document.querySelector('main').hidden = true;
+  $('takeover').hidden = false;
+  set('conn', 'waiting');
+}
+
+const handlers = { hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => toast(m.text) };
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
@@ -759,6 +773,11 @@ function connect() {
   ws.onmessage = (e) => {
     let m;
     try { m = JSON.parse(e.data); } catch { return; }
+    if ((m.type === 'status' || m.type === 'settings') && !$('takeover').hidden) {
+      $('takeover').hidden = true;
+      document.querySelector('main').hidden = false;
+      set('conn', 'live');
+    }
     const f = handlers[m.type];
     if (f) f(m);
   };
@@ -771,6 +790,7 @@ function connect() {
 }
 
 $('rescan').addEventListener('click', () => send({ type: 'rescan' }));
+$('takeoverbtn').addEventListener('click', () => send({ type: 'take_over' }));
 
 // The 16-beat phrase strip: four bars of four beats.
 for (let bar = 0; bar < 4; bar++) $('s16').append(h('div', null, h('span'), h('span'), h('span'), h('span')));

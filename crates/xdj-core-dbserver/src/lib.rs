@@ -18,15 +18,15 @@ mod types;
 pub use client::{discover_db_port, fetch, fetch_at, fetch_with, Connect, FetchError, Fetched};
 pub use parse::{
     asking_player, cue_list_args, extract_menu_count, parse_cue_list, parse_menu_item, parse_pqtz,
-    parse_pssi_tag, parse_pwv4, phrase_spans, tag_start,
+    parse_pssi_tag, parse_pwv4, phrase_spans, read_pqtz, read_pwv4, tag_start,
 };
 pub use protocol::{
     decode_utf16be, describe_args, encode_message, encode_number_field, encode_utf16be, read_field,
-    read_message, DbMessage, Field, ARG_TAG_BLOB, ARG_TAG_NUMBER, ARG_TAG_STRING, DB_MAGIC,
+    read_message, read_message_with, DbMessage, Field, ARG_TAG_BLOB, ARG_TAG_NUMBER, ARG_TAG_STRING, DB_MAGIC,
     DB_SERVER_QUERY_PORT, EXT_DAT, EXT_EXT, FIELD_BLOB, FIELD_STRING, FIELD_U16, FIELD_U32,
-    FIELD_U8, MAX_ARG_COUNT, MAX_FIELD_LEN, MENU_DATA, MSG_ANLZ_TAG_REQ, MSG_ANLZ_TAG_RESP,
+    FIELD_U8, MAX_ARG_COUNT, MAX_FIELD_LEN, MAX_STREAM_LEN, MENU_DATA, MSG_ANLZ_TAG_REQ, MSG_ANLZ_TAG_RESP,
     MSG_CUE_LIST_EXT_REQ, MSG_CUE_LIST_EXT_RESP, MSG_MENU_FOOTER, MSG_MENU_HEADER, MSG_MENU_ITEM,
-    MSG_METADATA_REQ, MSG_RENDER_MENU, MSG_SETUP_REQ, TAG_PQTZ, TAG_PSSI, TAG_PWV4,
+    MSG_METADATA_REQ, MSG_RENDER_MENU, MSG_SETUP_REQ, PREVIEW_COLUMNS, TAG_PQTZ, TAG_PSSI, TAG_PWV4,
 };
 pub use types::{
     current_phrase_idx, phrase_info, phrase_status, Cue, PhraseEntry, PhraseInfo, PhraseKind,
