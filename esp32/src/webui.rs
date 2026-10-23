@@ -504,8 +504,8 @@ struct OutputJson {
     pulses: u64,
     notes: u64,
     ccs: u64,
-    last_note: Option<u8>,
-    last_cc: Option<[u8; 2]>,
+    notes_recent: Vec<(u8, u32)>,
+    ccs_recent: Vec<(u8, u8, u32)>,
     mtc: Option<()>,
     mtc_qf: u8,
     mtc_full: u8,
@@ -521,6 +521,15 @@ struct SystemJson {
 
 /// Writes the status message into `out`. It takes each lock alone, never two at once, like the
 /// host.
+/// The output history keeps an entry in the status for this time after it was sent.
+const HISTORY_MS: u32 = 3000;
+
+/// Gives the age of an entry in ms, or `None` when it is older than `HISTORY_MS`.
+fn age_ms(t: Instant) -> Option<u32> {
+    let ms = u32::try_from(t.elapsed().as_millis()).ok()?;
+    (ms < HISTORY_MS).then_some(ms)
+}
+
 fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
     let now = state.now_ms();
     let (decks, master_num, master_virtual) = {
@@ -580,9 +589,9 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
             pulses: midi.pulses,
             notes: midi.notes,
             ccs: midi.ccs,
-            // Like the host: a note shows for 200 ms, a CC for 300 ms.
-            last_note: midi.last_note.filter(|(_, t)| t.elapsed().as_millis() < 200).map(|(n, _)| n),
-            last_cc: midi.last_cc.filter(|(_, _, t)| t.elapsed().as_millis() < 300).map(|(n, v, _)| [n, v]),
+            // Like the host: the history keeps an entry for 3 s, newest first.
+            notes_recent: midi.recent_notes.iter().filter_map(|&(n, t)| Some((n, age_ms(t)?))).collect(),
+            ccs_recent: midi.recent_ccs.iter().filter_map(|&(n, v, t)| Some((n, v, age_ms(t)?))).collect(),
             mtc: None,
             mtc_qf: 0,
             mtc_full: 0,

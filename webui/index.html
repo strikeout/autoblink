@@ -101,8 +101,13 @@ details.panel:not([open])>summary h2{margin-bottom:0}
 .fdr .track i{position:absolute;left:0;right:0;bottom:0;background:var(--play)}
 .fdr.unk{opacity:.35}
 /* output */
-.act{display:flex;gap:10px;min-height:20px;margin-top:6px}
-.act .note{color:var(--flash);font-weight:700}.act .cc{color:var(--accent)}.act .osc{color:var(--play);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row span:empty{display:none}
+.hist{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:0 24px;margin-top:10px}
+.hist h3{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin-bottom:2px}
+.hist ol{list-style:none}
+.hist li{height:1.4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hist .note li{color:var(--flash);font-weight:700}.hist .cc li{color:var(--accent)}.hist .osc li{color:var(--play)}
+.hist li.idle{color:var(--dim);font-weight:400}
 #ooerr{color:var(--danger)}
 /* firmware */
 #fwerr{color:var(--danger)}
@@ -181,13 +186,14 @@ input.num.text{width:150px;text-align:left}
 
   <section class="panel" data-cap="output">
     <h2>Output Status</h2>
-    <div class="row">port <b id="oport">—</b> <span id="oconn"></span></div>
-    <div class="row">clock <b id="oclock">—</b> <span class="num">pulses <b id="opulses">0</b></span></div>
-    <div class="row num">notes <b id="onotes">0</b> CCs <b id="occs">0</b> <span id="odropped"></span></div>
-    <div class="row">MTC <b id="omtc">—</b></div>
-    <div class="row">OSC <b id="oosc">—</b> <span id="oosctg" class="num"></span></div>
-    <div class="row num" id="ooscn" hidden>sent <b id="oosent">0</b> <span id="ooerr"></span></div>
-    <div class="act num"><span id="anote" class="note"></span><span id="acc" class="cc"></span><span id="aosc" class="osc"></span><span id="aidle" class="empty">idle</span></div>
+    <div class="row"><span>port <b id="oport">—</b> <span id="oconn"></span></span><span>clock <b id="oclock">—</b></span><span class="num">pulses <b id="opulses">0</b></span></div>
+    <div class="row num"><span>notes <b id="onotes">0</b></span><span>CCs <b id="occs">0</b></span><span id="odropped"></span><span>MTC <b id="omtc">—</b></span></div>
+    <div class="row" id="oscrow" hidden><span>OSC <b id="oosc">—</b> <span id="oosctg" class="num"></span></span><span class="num" id="ooscn">sent <b id="oosent">0</b> <span id="ooerr"></span></span></div>
+    <div class="hist num">
+      <div><h3>Notes</h3><ol id="hnote" class="note"></ol></div>
+      <div><h3>CC</h3><ol id="hcc" class="cc"></ol></div>
+      <div id="hoscc" hidden><h3>OSC</h3><ol id="hosc" class="osc"></ol></div>
+    </div>
   </section>
 
   <section class="panel wide" data-cap="decks">
@@ -357,18 +363,35 @@ function renderOutput(o) {
   set('occs', String(o.ccs));
   set('odropped', o.dropped ? 'dropped ' + o.dropped : '');
   set('omtc', o.mtc ? '✓ ' + o.mtc + ' (qf ' + o.mtc_qf + ', full ' + o.mtc_full + ')' : '✗ disabled');
-  set('anote', o.last_note == null ? '' : '♪ note ' + o.last_note);
-  set('acc', o.last_cc == null ? '' : '↗ CC' + o.last_cc[0] + '=' + o.last_cc[1]);
+  fillHist('hnote', o.notes_recent, (e) => e[0] + ' ' + NOTE_NAMES[e[0] % 12] + (Math.floor(e[0] / 12) - 2));
+  fillHist('hcc', o.ccs_recent, (e) => 'CC' + e[0] + ' = ' + e[1]);
   const osc = o.osc;
+  $('oscrow').hidden = $('hoscc').hidden = !osc;
   if (osc) {
     set('oosc', osc.enabled ? '✓ ' + osc.prefix : '✗ disabled');
     set('oosctg', osc.enabled ? (osc.targets.length ? '→ ' + osc.targets.join(', ') : 'no targets') : '');
     $('ooscn').hidden = !osc.enabled;
     set('oosent', String(osc.sent));
     set('ooerr', osc.errors ? 'errors ' + osc.errors : '');
+    fillHist('hosc', osc.recent, (e) => e[0]);
   }
-  set('aosc', osc && osc.last ? '⇢ ' + osc.last : '');
-  $('aidle').hidden = o.last_note != null || o.last_cc != null || !!(osc && osc.last);
+}
+
+// Note 60 is C3, as in Ableton Live.
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const HISTORY_MS = 3000; // the status keeps an output entry for this time
+
+/** Shows the history entries, newest first. The last item of an entry is its age in ms. */
+function fillHist(id, items = [], text) {
+  const ol = $(id);
+  if (!ol.children.length) for (let i = 0; i < 5; i++) ol.append(h('li'));
+  [...ol.children].forEach((li, i) => {
+    const e = items[i];
+    const t = e ? text(e) : i === 0 && !items.length ? 'idle' : '';
+    if (li.textContent !== t) li.textContent = t;
+    li.classList.toggle('idle', !e);
+    li.style.opacity = e ? String(Math.max(0.1, 1 - e[e.length - 1] / HISTORY_MS)) : '';
+  });
 }
 
 function fmtTime(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + pad2(s % 60); }

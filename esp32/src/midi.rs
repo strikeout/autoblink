@@ -17,6 +17,7 @@
 //! The host sends realtime bytes on a priority lane. To do the same, insert the 0xF8 bytes
 //! between the bytes of the other messages.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,8 +43,8 @@ pub struct MidiStatus {
     pub pulses: u64,
     pub notes: u64,
     pub ccs: u64,
-    pub last_note: Option<(u8, Instant)>,
-    pub last_cc: Option<(u8, u8, Instant)>,
+    pub recent_notes: VecDeque<(u8, Instant)>,
+    pub recent_ccs: VecDeque<(u8, u8, Instant)>,
     pub clock_state: &'static str,
     pub out16: u8,
     pub delta_ms: Option<f64>,
@@ -123,11 +124,11 @@ pub fn start(
                     Out::Realtime(CLOCK) => status.pulses += 1,
                     Out::Note { note, .. } => {
                         status.notes += 1;
-                        status.last_note = Some((note, Instant::now()));
+                        status.recent_notes.push_front((note, Instant::now()));
                     }
                     Out::Cc { num, val, .. } => {
                         status.ccs += 1;
-                        status.last_cc = Some((num, val, Instant::now()));
+                        status.recent_ccs.push_front((num, val, Instant::now()));
                     }
                     _ => {}
                 }
@@ -193,8 +194,14 @@ pub fn start(
             s.pulses += status.pulses;
             s.notes += status.notes;
             s.ccs += status.ccs;
-            s.last_note = status.last_note.or(s.last_note);
-            s.last_cc = status.last_cc.or(s.last_cc);
+            for n in status.recent_notes.into_iter().rev() {
+                s.recent_notes.push_front(n);
+            }
+            s.recent_notes.truncate(5);
+            for c in status.recent_ccs.into_iter().rev() {
+                s.recent_ccs.push_front(c);
+            }
+            s.recent_ccs.truncate(5);
             s.clock_state = clock.state_label();
             s.out16 = clock.out16();
             s.delta_ms = clock.last_error_ms().map(f64::abs);

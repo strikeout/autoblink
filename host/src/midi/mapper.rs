@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
 use crate::config::{CcConfig, NoteConfig, SharedConfig};
-use crate::midi::activity::MidiActivity;
+use crate::midi::activity::{remember, MidiActivity};
 use crate::midi::MidiTransport;
 use crate::osc::{Arg, OscOut};
 use crate::prolink::beat_listener::BeatEvent;
@@ -607,7 +607,7 @@ fn pulse_note(
     // The UI counters are optional. Do not wait for the lock.
     if let Some(mut act) = activity.try_lock() {
         act.notes_sent += 1;
-        act.last_note = Some((note, Instant::now()));
+        remember(&mut act.recent_notes, (note, Instant::now()));
     }
 }
 
@@ -801,7 +801,7 @@ async fn run_with_midi(
                     // The UI counters are optional. Do not wait for the lock.
                     if let Some(mut act) = activity.try_lock() {
                         act.cc_sent += 1;
-                        act.last_cc = Some(($num, $new, Instant::now()));
+                        remember(&mut act.recent_ccs, ($num, $new, Instant::now()));
                     }
                 }
             };
@@ -866,7 +866,7 @@ async fn run_with_midi(
                 // The UI counters are optional. Do not wait for the lock.
                 if let Some(mut act) = activity.try_lock() {
                     act.cc_sent += 1;
-                    act.last_cc = Some((cc_cfg.phrase_16, new_phrase_16, Instant::now()));
+                    remember(&mut act.recent_ccs, (cc_cfg.phrase_16, new_phrase_16, Instant::now()));
                 }
             }
         }
@@ -922,7 +922,7 @@ async fn run_with_midi(
                         // The UI counters are optional. Do not wait for the lock.
                         if let Some(mut act) = activity.try_lock() {
                             act.cc_sent += 1;
-                            act.last_cc = Some((c.phrase_kind, kind_val, Instant::now()));
+                            remember(&mut act.recent_ccs, (c.phrase_kind, kind_val, Instant::now()));
                         }
                     }
                     let n = cfg_now.notes;

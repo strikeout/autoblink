@@ -4,6 +4,8 @@
 //! anything. It never holds two locks at the same time. The MIDI clock writes the activity
 //! counters with `try_lock`, so a long hold here would make the clock skip an update.
 
+use std::time::Instant;
+
 use parking_lot::Mutex;
 use serde::Serialize;
 
@@ -111,10 +113,10 @@ pub struct Output {
     pub pulses: u64,
     pub notes: u64,
     pub ccs: u64,
-    /// The last note, during 200 ms after it was sent.
-    pub last_note: Option<u8>,
-    /// The last CC number and value, during 300 ms after it was sent.
-    pub last_cc: Option<(u8, u8)>,
+    /// The last notes, newest first, as (note, age in ms). Each stays for `HISTORY_MS`.
+    pub notes_recent: Vec<(u8, u32)>,
+    /// The last CCs, newest first, as (number, value, age in ms). Each stays for `HISTORY_MS`.
+    pub ccs_recent: Vec<(u8, u8, u32)>,
     /// The MTC frame rate label, or `None` when MTC is off.
     pub mtc: Option<&'static str>,
     pub mtc_qf: u64,
@@ -129,8 +131,8 @@ pub struct Osc {
     pub prefix: String,
     pub sent: u64,
     pub errors: u64,
-    /// The last message, "address args", during 300 ms after it was sent.
-    pub last: Option<String>,
+    /// The last messages, newest first, as ("address args", age in ms). Each stays for `HISTORY_MS`.
+    pub recent: Vec<(String, u32)>,
 }
 
 /// The MIDI output state that only the output worker knows.
@@ -322,14 +324,16 @@ pub fn snapshot(
             pulses: act.clock_pulses,
             notes: act.notes_sent,
             ccs: act.cc_sent,
-            last_note: act
-                .last_note
-                .filter(|(_, t)| t.elapsed().as_millis() < 200)
-                .map(|(n, _)| n),
-            last_cc: act
-                .last_cc
-                .filter(|(_, _, t)| t.elapsed().as_millis() < 300)
-                .map(|(n, v, _)| (n, v)),
+            notes_recent: act
+                .recent_notes
+                .iter()
+                .filter_map(|&(n, t)| Some((n, age_ms(t)?)))
+                .collect(),
+            ccs_recent: act
+                .recent_ccs
+                .iter()
+                .filter_map(|&(n, v, t)| Some((n, v, age_ms(t)?)))
+                .collect(),
             mtc: cfg
                 .midi
                 .mtc
@@ -343,14 +347,23 @@ pub fn snapshot(
                 prefix: cfg.osc.prefix.clone(),
                 sent: act.osc_sent,
                 errors: act.osc_errors,
-                last: act
-                    .last_osc
-                    .as_ref()
-                    .filter(|(_, t)| t.elapsed().as_millis() < 300)
-                    .map(|(m, _)| m.clone()),
+                recent: act
+                    .recent_osc
+                    .iter()
+                    .filter_map(|(m, t)| Some((m.clone(), age_ms(*t)?)))
+                    .collect(),
             },
         },
     }
+}
+
+/// The output history keeps an entry in the status for this time after it was sent.
+const HISTORY_MS: u32 = 3000;
+
+/// Gives the age of an entry in ms, or `None` when it is older than `HISTORY_MS`.
+fn age_ms(t: Instant) -> Option<u32> {
+    let ms = u32::try_from(t.elapsed().as_millis()).ok()?;
+    (ms < HISTORY_MS).then_some(ms)
 }
 
 #[cfg(test)]
