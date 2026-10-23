@@ -192,7 +192,8 @@ fn run() -> anyhow::Result<()> {
             #[cfg(feature = "dmx")]
             dmx.beat();
             let page_beat = (beat.device, beat.beat_in_bar);
-            let _ = midi_beats.send(beat);
+            // A full queue drops the beat. The receive thread does not wait for the MIDI thread.
+            let _ = midi_beats.send_back(beat, 0);
             // The web thread sends the beat to the page. This thread does not wait for it.
             let _ = web_beats.try_send(page_beat);
         },
