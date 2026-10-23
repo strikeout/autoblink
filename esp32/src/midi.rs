@@ -1,8 +1,14 @@
 //! MIDI output on UART2, TX on IO17, at 31250 baud.
 //!
 //! One thread runs the clock and the note and CC mapper of `xdj-core-midi`. The receive thread
-//! sends it each master beat through a channel. The thread sleeps until 1 ms before the next
-//! clock pulse, then waits in a loop, so the pulse goes out on time.
+//! sends it each master beat through a FreeRTOS queue. The thread sleeps until 1 ms before the
+//! next clock pulse, then waits in a loop, so the pulse goes out on time.
+//!
+//! Do not use `std::sync::mpsc` for the beats. Its receiver spins with `sched_yield` while a
+//! sender writes a slot. On FreeRTOS, that yield does not let a task with a lower priority run.
+//! This thread has priority 10 and the receive thread has priority 8, on the same core. Thus a
+//! beat that arrived during a send stopped the two threads until the task watchdog restarted the
+//! box.
 //!
 //! The task watchdog watches the thread. When a loop pass does not end in 5 s, the firmware
 //! restarts (CONFIG_ESP_TASK_WDT_PANIC).
@@ -11,12 +17,14 @@
 //! The host sends realtime bytes on a priority lane. To do the same, insert the 0xF8 bytes
 //! between the bytes of the other messages.
 
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use esp_idf_svc::hal::cpu::Core;
+use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::{Gpio17, Gpio35};
+use esp_idf_svc::hal::task::queue::Queue;
 use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::sys;
@@ -35,14 +43,15 @@ pub struct MidiStatus {
     pub pulses: u64,
     pub notes: u64,
     pub ccs: u64,
-    pub last_note: Option<(u8, Instant)>,
-    pub last_cc: Option<(u8, u8, Instant)>,
+    pub recent_notes: VecDeque<(u8, Instant)>,
+    pub recent_ccs: VecDeque<(u8, u8, Instant)>,
     pub clock_state: &'static str,
     pub out16: u8,
     pub delta_ms: Option<f64>,
 }
 
 /// A master beat, as the receive thread saw it.
+#[derive(Clone, Copy)]
 pub struct Beat {
     pub device: u8,
     pub beat_in_bar: u8,
@@ -50,7 +59,7 @@ pub struct Beat {
     pub at_us: u64,
 }
 
-/// Starts the MIDI thread. Returns the sender for the master beats.
+/// Starts the MIDI thread. Returns the queue for the master beats.
 ///
 /// `rx` is not used yet. The UART driver of ESP-IDF 5.5 does not install without a receive
 /// buffer, and `UartTxDriver` asks for none. IO35 is input-only, so it can be a MIDI input later.
@@ -60,10 +69,11 @@ pub fn start(
     rx: Gpio35<'static>,
     state: Arc<State>,
     cfg: Arc<Mutex<MidiConfig>>,
-) -> anyhow::Result<Sender<Beat>> {
+) -> anyhow::Result<Arc<Queue<Beat>>> {
     let uart_cfg = config::Config::new().baudrate(Hertz(31_250));
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio35>, None::<Gpio17>, &uart_cfg)?;
-    let (beat_tx, beat_rx) = mpsc::channel::<Beat>();
+    let beats = Arc::new(Queue::<Beat>::new(16));
+    let beat_rx = beats.clone();
 
     // Priority 10 is above the HTTP server task (5). Core 1 does not run the WiFi task.
     crate::spawn_rt(c"midi", 5 * 1024, 10, Some(Core::Core1), move || {
@@ -99,21 +109,8 @@ pub fn start(
                 (Some(p), _) => Some(p - Duration::from_millis(1)),
                 (None, _) => Some(until_cc),
             };
-            let mut beat = None;
-            if let Some(wait) = wait {
-                match beat_rx.recv_timeout(wait) {
-                    Ok(b) => beat = Some(b),
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => {
-                        // SAFETY: the task subscribed above.
-                        unsafe { sys::esp_task_wdt_delete(std::ptr::null_mut()) };
-                        return;
-                    }
-                }
-            }
-            if beat.is_none() {
-                beat = beat_rx.try_recv().ok();
-            }
+            let ticks = wait.map_or(0, |w| TickType::from(w).ticks());
+            let beat = beat_rx.recv_front(ticks).map(|(b, _)| b);
 
             let cfg = cfg.lock().unwrap().clone();
             let mut status = MidiStatus::default();
@@ -127,11 +124,11 @@ pub fn start(
                     Out::Realtime(CLOCK) => status.pulses += 1,
                     Out::Note { note, .. } => {
                         status.notes += 1;
-                        status.last_note = Some((note, Instant::now()));
+                        status.recent_notes.push_front((note, Instant::now()));
                     }
                     Out::Cc { num, val, .. } => {
                         status.ccs += 1;
-                        status.last_cc = Some((num, val, Instant::now()));
+                        status.recent_ccs.push_front((num, val, Instant::now()));
                     }
                     _ => {}
                 }
@@ -197,13 +194,19 @@ pub fn start(
             s.pulses += status.pulses;
             s.notes += status.notes;
             s.ccs += status.ccs;
-            s.last_note = status.last_note.or(s.last_note);
-            s.last_cc = status.last_cc.or(s.last_cc);
+            for n in status.recent_notes.into_iter().rev() {
+                s.recent_notes.push_front(n);
+            }
+            s.recent_notes.truncate(5);
+            for c in status.recent_ccs.into_iter().rev() {
+                s.recent_ccs.push_front(c);
+            }
+            s.recent_ccs.truncate(5);
             s.clock_state = clock.state_label();
             s.out16 = clock.out16();
             s.delta_ms = clock.last_error_ms().map(f64::abs);
         }
     })?;
     log::info!("MIDI output is on IO17");
-    Ok(beat_tx)
+    Ok(beats)
 }

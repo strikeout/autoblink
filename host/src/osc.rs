@@ -14,7 +14,7 @@ use std::time::Instant;
 use parking_lot::Mutex;
 
 use crate::config::SharedConfig;
-use crate::midi::activity::MidiActivity;
+use crate::midi::activity::{remember, MidiActivity};
 
 /// One OSC argument.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -137,7 +137,7 @@ impl OscOut {
             act.osc_errors += errors;
             if sent > 0 {
                 let text = args.iter().fold(addr, |t, a| format!("{t} {a}"));
-                act.last_osc = Some((text, Instant::now()));
+                remember(&mut act.recent_osc, (text, Instant::now()));
             }
         }
     }
@@ -212,7 +212,7 @@ mod tests {
 
         let act = activity.lock();
         assert_eq!((act.osc_sent, act.osc_errors), (1, 1));
-        let (text, _) = act.last_osc.as_ref().unwrap();
+        let (text, _) = act.recent_osc.front().unwrap();
         assert_eq!(text, "/xdj/phrase \"INTRO\" 0.50");
     }
 }

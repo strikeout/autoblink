@@ -166,6 +166,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 - The dbserver client reads the PWV4 preview and the PQTZ beat grid as a stream (`read_message_with`). It keeps only 600 preview columns and the beats of the phrase starts, the fill-ins and the end. A buffered grid and its parsed copy needed up to 72 KB for one fetch. Without phrases, the client does not request the beat grid.
 - The fetch does not start below 24 KB free heap or an 8 KB largest block. The page then shows "not enough memory for the track data", and the fetch starts again after 3 s.
 - Do not use `std::io::copy` in a firmware thread. It puts an 8 KB buffer on the stack.
+- Do not use `std::sync::mpsc` when the receiver has a higher priority than the sender on the same core. The receiver can spin on a half-written slot, and the sender cannot run. Use `esp_idf_svc::hal::task::queue::Queue` (see `midi.rs`). Firmware 1.21.0 restarted from the task watchdog on the `midi` thread because of this.
 - The log ring is in RTC slow memory (4 KB). A panic, a watchdog or a software restart keeps it. A power-on clears it.
 - The text has three parts: the last crash, the lines of the previous start and the lines of this start.
 - The firmware keeps the crash report outside the ring. Thus a flood of log lines cannot push it out.
