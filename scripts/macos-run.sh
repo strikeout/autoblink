@@ -4,7 +4,7 @@
 # macOS blocks local network access for a command-line binary that has no
 # permission. A TCP connection or a UDP unicast to a player then fails with
 # "No route to host". System Settings shows no Local Network switch for a bare
-# binary. This script copies xdj-clock into an app bundle, signs the bundle and
+# binary. This script copies the autoblink binary into an app bundle, signs the bundle and
 # runs the copy. The bundle then gets its own switch.
 #
 # The script signs with the identity in XDJ_CODESIGN_IDENTITY. If that variable
@@ -16,26 +16,26 @@ set -eu
 
 bin=$1
 shift
-[ "$(basename "$bin")" = xdj-clock ] || exec "$bin" "$@"
+[ "$(basename "$bin")" = autoblink ] || exec "$bin" "$@"
 
-app="$(dirname "$bin")/xdj-clock.app"
+app="$(dirname "$bin")/autoblink.app"
 mkdir -p "$app/Contents/MacOS"
-cp "$bin" "$app/Contents/MacOS/xdj-clock"
+cp "$bin" "$app/Contents/MacOS/autoblink"
 cat > "$app/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.strikeout.xdj-clock</string>
+	<string>com.strikeout.autoblink</string>
 	<key>CFBundleName</key>
-	<string>xdj-clock</string>
+	<string>AUTOBLINK</string>
 	<key>CFBundleExecutable</key>
-	<string>xdj-clock</string>
+	<string>autoblink</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>xdj-clock reads the beat, the track and the phrase data from the Pro DJ Link players.</string>
+	<string>AUTOBLINK reads the beat, the track and the phrase data from the Pro DJ Link players.</string>
 </dict>
 </plist>
 EOF
@@ -49,4 +49,4 @@ fi
 codesign --force --sign "$identity" "$app" 2>/dev/null ||
 	echo "macos-run.sh: codesign failed. The app runs with the old signature." >&2
 
-exec "$app/Contents/MacOS/xdj-clock" "$@"
+exec "$app/Contents/MacOS/autoblink" "$@"

@@ -166,8 +166,8 @@ impl EmulatorState {
             last_cc_at: None,
         };
 
-        state.add_log(0, "INFO", "xdj-clock ESP32 v1.1.7 starting");
-        state.add_log(0, "INFO", "WiFi AP: xdj-midi-setup (pass: xdjclock123)");
+        state.add_log(0, "INFO", "AUTOBLINK ESP32 v1.1.7 starting");
+        state.add_log(0, "INFO", "WiFi AP: autoblink-setup (pass: autoblink123)");
         state.add_log(0, "INFO", "Ethernet: 10.10.10.50/24");
         state.add_log(0, "INFO", "MIDI: GPIO1(IN) GPIO3(OUT) @ 31250");
         state.add_log(0, "INFO", "Pro DJ Link virtual CDJ #5");
@@ -232,16 +232,16 @@ impl EmulatorState {
             return;
         }
 
-        if &data[..10] != xdj_core_prolink::MAGIC {
+        if &data[..10] != autoblink_core_prolink::MAGIC {
             return;
         }
 
         let pkt_type = data[10];
 
         match port {
-            xdj_core_prolink::PORT_DISCOVERY => self.handle_discovery_packet(addr, pkt_type, data),
-            xdj_core_prolink::PORT_BEAT => self.handle_beat_packet(addr, pkt_type, data),
-            xdj_core_prolink::PORT_STATUS => self.handle_status_packet(addr, pkt_type, data),
+            autoblink_core_prolink::PORT_DISCOVERY => self.handle_discovery_packet(addr, pkt_type, data),
+            autoblink_core_prolink::PORT_BEAT => self.handle_beat_packet(addr, pkt_type, data),
+            autoblink_core_prolink::PORT_STATUS => self.handle_status_packet(addr, pkt_type, data),
             _ => {}
         }
 
@@ -249,9 +249,9 @@ impl EmulatorState {
     }
 
     fn handle_discovery_packet(&mut self, addr: SocketAddr, pkt_type: u8, data: &[u8]) {
-        use xdj_core_prolink::parse as packets;
+        use autoblink_core_prolink::parse as packets;
         match pkt_type {
-            xdj_core_prolink::PKT_KEEPALIVE => {
+            autoblink_core_prolink::PKT_KEEPALIVE => {
                 if let Some(ka) = packets::parse_keepalive(data) {
                     let type_name = if ka.device_number == 33 {
                         "Mixer"
@@ -284,7 +284,7 @@ impl EmulatorState {
                     }
                 }
             }
-            xdj_core_prolink::PKT_ANNOUNCE => {
+            autoblink_core_prolink::PKT_ANNOUNCE => {
                 if data.len() >= 12 {
                     let device_num = data[11];
                     self.add_log(2, "DEBUG", format!("Announce #{}", device_num));
@@ -304,9 +304,9 @@ impl EmulatorState {
     }
 
     fn handle_beat_packet(&mut self, _addr: SocketAddr, pkt_type: u8, data: &[u8]) {
-        use xdj_core_prolink::parse as packets;
+        use autoblink_core_prolink::parse as packets;
         match pkt_type {
-            xdj_core_prolink::PKT_BEAT => {
+            autoblink_core_prolink::PKT_BEAT => {
                 if let Some(beat) = packets::parse_beat(data) {
                     if let Some(idx) = self.find_deck(beat.device_number) {
                         self.decks[idx].bpm = beat.effective_bpm;
@@ -338,7 +338,7 @@ impl EmulatorState {
                     self.add_log(2, "DEBUG", format!("Beat #{} bpm={:.2} beat={}/4", beat.device_number, beat.effective_bpm, beat.beat_in_bar));
                 }
             }
-            xdj_core_prolink::PKT_ABS_POSITION => {
+            autoblink_core_prolink::PKT_ABS_POSITION => {
                 if let Some(abs) = packets::parse_abs_position(data) {
                     if let Some(idx) = self.find_deck(abs.device_number) {
                         self.decks[idx].bpm = abs.effective_bpm;
@@ -360,9 +360,9 @@ impl EmulatorState {
     }
 
     fn handle_status_packet(&mut self, _addr: SocketAddr, pkt_type: u8, data: &[u8]) {
-        use xdj_core_prolink::parse as packets;
+        use autoblink_core_prolink::parse as packets;
         match pkt_type {
-            xdj_core_prolink::PKT_CDJ_STATUS => {
+            autoblink_core_prolink::PKT_CDJ_STATUS => {
                 if let Some(s) = packets::parse_cdj_status(data) {
                     if let Some(idx) = self.find_deck(s.device_number) {
                         self.decks[idx].is_playing = s.play_state.is_playing() || s.is_playing_flag;
@@ -390,7 +390,7 @@ impl EmulatorState {
                     self.add_log(0, "INFO", format!("Status #{} {} bpm={:.2}{} (beat={})", s.device_number, playing_str, s.effective_bpm, master_str, s.beat_in_bar));
                 }
             }
-            xdj_core_prolink::PKT_MIXER_STATUS => {
+            autoblink_core_prolink::PKT_MIXER_STATUS => {
                 if let Some(s) = packets::parse_mixer_status(data) {
                     if let Some(idx) = self.find_deck(s.device_number) {
                         self.decks[idx].last_seen = std::time::Instant::now();
@@ -635,7 +635,7 @@ impl EmulatorState {
 
 pub async fn run_emulator() -> Result<()> {
     println!("╔══════════════════════════════════════════╗");
-    println!("║     xdj-clock ESP32 Emulator v1.1.2     ║");
+    println!("║     AUTOBLINK ESP32 Emulator v1.1.2     ║");
     println!("╚══════════════════════════════════════════╝");
 
     fn create_reuse_socket(port: u16, broadcast: bool) -> Result<tokio::net::UdpSocket> {
@@ -681,8 +681,8 @@ pub async fn run_emulator() -> Result<()> {
             if let Ok((len, addr)) = sock.recv_from(&mut buf).await {
                 let data = &buf[..len];
                 state_net2.write().await.handle_packet(addr, 50001, data);
-                if data.len() > 10 && data[10] == xdj_core_prolink::PKT_BEAT {
-                    if let Some(beat) = xdj_core_prolink::parse::parse_beat(data) {
+                if data.len() > 10 && data[10] == autoblink_core_prolink::PKT_BEAT {
+                    if let Some(beat) = autoblink_core_prolink::parse::parse_beat(data) {
                         let _ = beat_tx_net.send((beat.device_number, beat.beat_in_bar));
                     }
                 }
@@ -705,10 +705,10 @@ pub async fn run_emulator() -> Result<()> {
     let state_part = Arc::clone(&state);
     let sock_part = Arc::clone(&sock_50000);
     tokio::spawn(async move {
-        use xdj_core_prolink::build;
+        use autoblink_core_prolink::build;
         let mut interval = interval(Duration::from_millis(1500));
         let mac = [0x02, 0xAB, 0xCD, 0xEF, 0x01, 0x02];
-        let name = build::pad_name("xdj-clock-emu");
+        let name = build::pad_name("autoblink-emu");
         
         loop {
             interval.tick().await;

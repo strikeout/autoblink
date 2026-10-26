@@ -2565,7 +2565,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xdj-clock"
+name = "autoblink"
 version = "1.0.0"
 dependencies = [
  "anyhow",

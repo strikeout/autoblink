@@ -1,4 +1,4 @@
-//! xdj-clock firmware for the WT32-ETH01 (ESP32 + LAN8720 Ethernet).
+//! AUTOBLINK firmware for the WT32-ETH01 (ESP32 + LAN8720 Ethernet).
 //!
 //! The firmware joins the Pro DJ Link network on the Ethernet port as a virtual CDJ. It reads
 //! the beats, the player status and the track data from the players. The MIDI output on IO17
@@ -6,7 +6,7 @@
 //! state of the box (see `led.rs`). The firmware serves the web
 //! page on its own WiFi network at http://192.168.1.1. When the settings have a join network,
 //! the page is also on that network, at the address from its DHCP server and at
-//! http://xdj-clock.local.
+//! http://autoblink.local.
 
 #[cfg(feature = "dmx")]
 mod dmx;
@@ -36,7 +36,7 @@ use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::mdns::EspMdns;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys;
-use xdj_core_prolink::Tracker;
+use autoblink_core_prolink::Tracker;
 
 use crate::midi::MidiStatus;
 use crate::net::{EthPins, AP_IP};
@@ -94,7 +94,7 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     // SAFETY: esp_reset_reason has no preconditions.
     let reset_reason = reset_reason(unsafe { sys::esp_reset_reason() });
-    log::info!("xdj-clock {} starts. Reason for the restart: {reset_reason}", env!("CARGO_PKG_VERSION"));
+    log::info!("AUTOBLINK {} starts. Reason for the restart: {reset_reason}", env!("CARGO_PKG_VERSION"));
     logring::report_core_dump();
     let p = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
@@ -107,7 +107,7 @@ fn run() -> anyhow::Result<()> {
     let mut mac = [0u8; 6];
     // SAFETY: the buffer has the 6 bytes that a MAC address needs.
     sys::esp!(unsafe { sys::esp_read_mac(mac.as_mut_ptr(), sys::esp_mac_type_t_ESP_MAC_WIFI_SOFTAP) })?;
-    let default_ssid = format!("xdj-clock-{:02X}{:02X}", mac[4], mac[5]);
+    let default_ssid = format!("autoblink-{:02X}{:02X}", mac[4], mac[5]);
     let settings = Settings::new(nvs, default_ssid)?;
     let ssid = settings.ssid();
     let join = settings.join();

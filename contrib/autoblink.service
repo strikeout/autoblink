@@ -1,23 +1,23 @@
-# systemd unit for an unattended xdj-clock box (for example a Raspberry Pi).
+# systemd unit for an unattended AUTOBLINK box (for example a Raspberry Pi).
 #
 # Install:
-#   sudo mkdir -p /opt/xdj-clock
-#   sudo cp xdj-clock config.toml /opt/xdj-clock/
-#   sudo cp xdj-clock.service /etc/systemd/system/
+#   sudo mkdir -p /opt/autoblink
+#   sudo cp autoblink config.toml /opt/autoblink/
+#   sudo cp autoblink.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now xdj-clock
+#   sudo systemctl enable --now autoblink
 #
 # Read the log:
-#   journalctl -u xdj-clock -f
+#   journalctl -u autoblink -f
 
 [Unit]
-Description=xdj-clock (Pro DJ Link to MIDI clock bridge)
+Description=AUTOBLINK (Pro DJ Link to MIDI clock bridge)
 Wants=network-online.target
 After=network-online.target sound.target
 
 [Service]
-WorkingDirectory=/opt/xdj-clock
-ExecStart=/opt/xdj-clock/xdj-clock --config /opt/xdj-clock/config.toml
+WorkingDirectory=/opt/autoblink
+ExecStart=/opt/autoblink/autoblink --config /opt/autoblink/config.toml
 # The app recovers from a lost MIDI device or network by itself.
 # The restart is a last-resort safety net only.
 Restart=on-failure

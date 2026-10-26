@@ -1,4 +1,4 @@
-# xdj-midi
+# AUTOBLINK
 
 [![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](Cargo.toml)
 
@@ -77,7 +77,7 @@ The page gets the waveform, the cues and the phrases of a deck from `GET /wavefo
 **Warning:** The dashboard has no login. By default, it listens on all interfaces. Anyone on the same network can change the MIDI settings. To allow access from this computer only, use `--web-bind 127.0.0.1:11111`.
 
 ### Raspberry Pi and unattended use
-The `xdj-clock-linux-aarch64` release runs on a Raspberry Pi 3, 4 or 5 with a 64-bit OS.
+The `autoblink-linux-aarch64` release runs on a Raspberry Pi 3, 4 or 5 with a 64-bit OS.
 
 The app recovers from these faults without a restart:
 - When the MIDI device goes away, the app tries to open the same port again every 2 s. When the port comes back, the clock sends Stop, then Start on the next phrase. MTC sends a full frame.
@@ -86,17 +86,17 @@ The app recovers from these faults without a restart:
 - When you change the interface in the web UI, the app uses the new interface within 2 s.
 
 To run the app as a service:
-1. Copy `xdj-clock` and `config.toml` to `/opt/xdj-clock/`.
-2. Copy `xdj-clock.service` to `/etc/systemd/system/`.
+1. Copy `autoblink` and `config.toml` to `/opt/autoblink/`.
+2. Copy `autoblink.service` to `/etc/systemd/system/`.
 3. Run `sudo systemctl daemon-reload`.
-4. Run `sudo systemctl enable --now xdj-clock`.
-5. Read the log with `journalctl -u xdj-clock -f`.
+4. Run `sudo systemctl enable --now autoblink`.
+5. Read the log with `journalctl -u autoblink -f`.
 
 The service runs the app with real-time priority. Open the web UI from another computer at `http://<pi-address>:11111`. `systemctl stop` sends MIDI Stop before the app exits.
 
 Before a long night, test the MIDI path on the target machine:
 ```sh
-./xdj-clock --soak midi-clock --duration-secs 36000 --report soak.json
+./autoblink --soak midi-clock --duration-secs 36000 --report soak.json
 ```
 The test passes when the p99 jitter is 5 ms or less and no messages drop.
 
@@ -113,7 +113,7 @@ Settings are managed via `config.toml` for the host and `sdkconfig` for the ESP3
 source = "auto"       # "auto" | "link" | "prolink"
 device_number = 7      # Virtual CDJ ID
 interface = "auto"    # Network adapter selection
-device_name = "xdj-clock"
+device_name = "autoblink"
 
 [midi]
 output = "auto"       # MIDI port substring match
@@ -320,12 +320,12 @@ Core outputs:
 ### Building the ESP32 Firmware
 ```sh
 . /path/to/esp-idf/export.sh
-cargo build --release -p xdj-clock-esp32
+cargo build --release -p autoblink-esp32
 ```
 
 ### Running the Emulator
 ```sh
-cargo run -p xdj-clock-esp32-emulator
+cargo run -p autoblink-esp32-emulator
 ```
 Open `http://localhost:8080` to view the responsive WebSocket dashboard.
 

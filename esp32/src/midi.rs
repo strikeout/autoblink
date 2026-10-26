@@ -1,6 +1,6 @@
 //! MIDI output on UART2, TX on IO17, at 31250 baud.
 //!
-//! One thread runs the clock and the note and CC mapper of `xdj-core-midi`. The receive thread
+//! One thread runs the clock and the note and CC mapper of `autoblink-core-midi`. The receive thread
 //! sends it each master beat through a FreeRTOS queue. The thread sleeps until 1 ms before the
 //! next clock pulse, then waits in a loop, so the pulse goes out on time.
 //!
@@ -28,9 +28,9 @@ use esp_idf_svc::hal::task::queue::Queue;
 use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::sys;
-use xdj_core_midi::clock::Master;
-use xdj_core_dbserver::{current_phrase_idx, phrase_info};
-use xdj_core_midi::{Clock, Mapper, MidiConfig, Out, Phrase, Smoother, Snapshot, CLOCK};
+use autoblink_core_midi::clock::Master;
+use autoblink_core_dbserver::{current_phrase_idx, phrase_info};
+use autoblink_core_midi::{Clock, Mapper, MidiConfig, Out, Phrase, Smoother, Snapshot, CLOCK};
 
 use crate::State;
 

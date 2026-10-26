@@ -108,7 +108,7 @@ fn run(dj_state: SharedState) {
 }
 
 fn find_port() -> Option<(MidiInput, MidiInputPort)> {
-    let midi_in = MidiInput::new("xdj-clock-in").ok()?;
+    let midi_in = MidiInput::new("autoblink-in").ok()?;
     let port = midi_in
         .ports()
         .into_iter()
@@ -125,7 +125,7 @@ fn connect(
     midi_in
         .connect(
             port,
-            "xdj-clock-mixer",
+            "autoblink-mixer",
             move |_, msg, _| {
                 // A panic on the CoreMIDI thread aborts the process.
                 let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

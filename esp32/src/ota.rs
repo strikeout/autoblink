@@ -33,7 +33,7 @@ use crate::State;
 // ponytail: the page has no password, so each client on the networks of the box can start an
 // update. The update comes only from the GitHub release over HTTPS, and the image has no
 // signature. Add secure boot and a signed image if the box must refuse a changed release.
-const BASE_URL: &str = "https://github.com/strikeout/xdj-midi-beat/releases/download/esp32-latest";
+const BASE_URL: &str = "https://github.com/strikeout/autoblink/releases/download/esp32-latest";
 
 /// The NVS namespace for the install request and the error of the last install.
 const NVS_NAMESPACE: &str = "ota";
@@ -220,7 +220,7 @@ fn install(state: &Mutex<OtaStatus>) -> anyhow::Result<()> {
     }
     let latest = state.lock().unwrap().latest.clone();
     set(state, "downloading", latest.clone(), 0);
-    let mut conn = get(&format!("{BASE_URL}/xdj-clock-esp32-ota.bin"))?;
+    let mut conn = get(&format!("{BASE_URL}/autoblink-esp32-ota.bin"))?;
     let total: usize = conn
         .header("Content-Length")
         .and_then(|l| l.parse().ok())

@@ -1,8 +1,8 @@
-# AGENTS.md — xdj-midi
+# AGENTS.md — AUTOBLINK
 
 ## Workspace
 
-- **3 crates**: `xdj-clock-host` (desktop app), `xdj-clock-esp32` (firmware), `xdj-clock-esp32-emulator` (native emulator)
+- **3 crates**: `autoblink-host` (desktop app), `autoblink-esp32` (firmware), `autoblink-esp32-emulator` (native emulator)
 - The root workspace excludes `esp32`. The firmware has its own `Cargo.lock`, toolchain (`esp`) and target directory.
 - **Root `Cargo.toml`** defines workspace members and patches `rusty_link` from `vendor/rusty_link`
 - Package version is set once at workspace level (`[workspace.package]`)
@@ -13,11 +13,11 @@
 # Host (desktop app). A bare `cargo run` starts it (`default-run` in host/Cargo.toml).
 # The web UI is at http://127.0.0.1:11111 (next free port when in use).
 cargo run
-cargo run -p xdj-clock-host
-cargo run -p xdj-clock-host -- --web-bind 127.0.0.1:11111
-cargo run -p xdj-clock-host -- --list-midi
-cargo run -p xdj-clock-host -- --list-interfaces
-cargo build -p xdj-clock-host --release
+cargo run -p autoblink-host
+cargo run -p autoblink-host -- --web-bind 127.0.0.1:11111
+cargo run -p autoblink-host -- --list-midi
+cargo run -p autoblink-host -- --list-interfaces
+cargo build -p autoblink-host --release
 
 # ESP32 firmware for the WT32-ETH01 (see "ESP32 Build Requirements")
 . ~/export-esp.sh
@@ -25,14 +25,14 @@ cd esp32 && cargo build --release
 cd esp32 && cargo run --release   # flashes the board and opens the serial monitor
 
 # Emulator (Web dashboard at http://localhost:8080)
-cargo run -p xdj-clock-esp32-emulator
+cargo run -p autoblink-esp32-emulator
 
 # Tests (all crates)
 cargo test --locked
 
 # Single workspace member
-cargo test -p xdj-clock-host
-cargo build -p xdj-clock-esp32-emulator
+cargo test -p autoblink-host
+cargo build -p autoblink-esp32-emulator
 ```
 
 ## Vendor Setup (required before local build)
@@ -53,7 +53,7 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 
 - Windows x86-64 → `.zip` archive
 - Linux x86-64 → `.tar.gz` archive
-- Linux ARM64 (Raspberry Pi) → `.tar.gz` archive, built on the native `ubuntu-24.04-arm` runner. The Linux archives include `contrib/xdj-clock.service`.
+- Linux ARM64 (Raspberry Pi) → `.tar.gz` archive, built on the native `ubuntu-24.04-arm` runner. The Linux archives include `contrib/autoblink.service`.
 - macOS ARM64 → `.tar.gz` archive
 - ESP32 firmware → `esp32-firmware.tar.gz`. It holds the ELF file, the merged image for address 0x0 and the OTA image. The workflow also puts the OTA image and `esp32-version.txt` into the prerelease `esp32-latest`.
 
@@ -63,8 +63,8 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
 | `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
-| `crates/xdj-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
-| `crates/xdj-core-midi` | MIDI logic of the firmware, host-testable | `clock.rs`, `mapper.rs`, `settings.rs` (host setting indices) |
+| `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
+| `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable | `clock.rs`, `mapper.rs`, `settings.rs` (host setting indices) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
@@ -104,7 +104,7 @@ Plus `pub fn interface_priority()` for network interface ranking.
 
 All have `#[cfg(not(windows))]` guards around reuse_port calls.
 
-**ESP32 vs host**: The ESP32 uses `std::net::UdpSocket` and `TcpStream` on the ESP-IDF network stack. It has no `tokio` runtime; each task is a `std::thread`. It parses packets with `xdj-core-prolink`, and `xdj_core_prolink::Tracker` keeps the deck and master state. It fetches the track data with `xdj-core-dbserver`, one track after the other. The host does not use these crates yet. It has its own async copy of the dbserver client in `host/src/prolink/metadata.rs`.
+**ESP32 vs host**: The ESP32 uses `std::net::UdpSocket` and `TcpStream` on the ESP-IDF network stack. It has no `tokio` runtime; each task is a `std::thread`. It parses packets with `autoblink-core-prolink`, and `autoblink_core_prolink::Tracker` keeps the deck and master state. It fetches the track data with `autoblink-core-dbserver`, one track after the other. The host does not use these crates yet. It has its own async copy of the dbserver client in `host/src/prolink/metadata.rs`.
 
 ## Toolchain & Dependencies
 
@@ -133,7 +133,7 @@ The firmware is for the WT32-ETH01 board: a classic ESP32 (Xtensa) with a LAN872
 4. Connect the USB-C programming dock. Run `cargo run --release` in `esp32/` to flash the board. The runner writes the bootloader of the build, `partitions.csv` and the app into `ota_0`. It erases `otadata`.
 5. If espflash cannot connect, hold BOOT, push RST, then release BOOT.
 
-The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
+The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 ### OTA update
 
@@ -155,14 +155,14 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 
 ### Debug logs
 
-- Run `curl http://xdj-clock.local/log` to read the log over WiFi. The page shows no log.
-- Run `curl http://xdj-clock.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
+- Run `curl http://autoblink.local/log` to read the log over WiFi. The page shows no log.
+- Run `curl http://autoblink.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
 - Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Measure these two.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
-- The firmware keeps 600 columns of the waveform preview (`xdj_core_dbserver::PREVIEW_COLUMNS`). The players send 1200.
+- The firmware keeps 600 columns of the waveform preview (`autoblink_core_dbserver::PREVIEW_COLUMNS`). The players send 1200.
 - The dbserver client reads the PWV4 preview and the PQTZ beat grid as a stream (`read_message_with`). It keeps only 600 preview columns and the beats of the phrase starts, the fill-ins and the end. A buffered grid and its parsed copy needed up to 72 KB for one fetch. Without phrases, the client does not request the beat grid.
 - The fetch does not start below 24 KB free heap or an 8 KB largest block. The page then shows "not enough memory for the track data", and the fetch starts again after 3 s.
 - Do not use `std::io::copy` in a firmware thread. It puts an 8 KB buffer on the stack.
@@ -177,7 +177,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32`.
 
 ```sh
 ~/.rustup/toolchains/esp/xtensa-esp-elf/*/xtensa-esp-elf/bin/xtensa-esp-elf-addr2line -pfiaC \
-  -e esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32 0x400d1234 0x400d5678
+  -e esp32/target/xtensa-esp32-espidf/release/autoblink-esp32 0x400d1234 0x400d5678
 ```
 
 - The release workflow puts the ELF into `esp32-firmware.tar.gz`. Use that ELF for a box with a release firmware.
@@ -214,8 +214,8 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 
 ### Network
 
-- The firmware starts its own WiFi network `xdj-clock-XXXX` (the last 2 bytes of the MAC address). The default password is `xdjclock123`. The web page is at http://192.168.1.1.
-- The page settings "Join WiFi name" and "Join WiFi password" (indices 102 and 103) set an existing WiFi network. After a restart, the firmware joins it, and the own network stays on. The page is then also at the DHCP address of that network and at http://xdj-clock.local (mDNS). The iface field of the status shows the two addresses.
+- The firmware starts its own WiFi network `autoblink-XXXX` (the last 2 bytes of the MAC address). The default password is `autoblink123`. The web page is at http://192.168.1.1.
+- The page settings "Join WiFi name" and "Join WiFi password" (indices 102 and 103) set an existing WiFi network. After a restart, the firmware joins it, and the own network stays on. The page is then also at the DHCP address of that network and at http://autoblink.local (mDNS). The iface field of the status shows the two addresses.
 - When the firmware loses the joined network, it tries to join again after 30 s. After each failed try, the time doubles, up to 10 minutes, because each try scans all channels. The log shows each try.
 - Do not join a 192.168.1.x WiFi network. The page can fail on one of the two networks. The firmware logs a warning for this case.
 - The virtual CDJ uses the Ethernet port while it has an address. Without an Ethernet address, it uses the joined WiFi network. The Pro DJ Link sockets receive and send only on that interface (lwIP `SO_BINDTODEVICE`). Thus a joined WiFi network in the subnet of the Ethernet port gives no second copy of each beat. The firmware logs a warning when the two networks use one subnet.
@@ -242,17 +242,17 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 
 ## Refactor Context (for future sessions)
 
-- `crates/xdj-core-prolink` holds a copy of the protocol constants and the packet parsing from `host/src/prolink/`. The host does not use the shared crate yet.
-- The ESP32 MIDI output follows the host rules (`xdj-core-midi`), with the phrase notes and CCs. It has no No Bass note, no MTC and no OSC.
+- `crates/autoblink-core-prolink` holds a copy of the protocol constants and the packet parsing from `host/src/prolink/`. The host does not use the shared crate yet.
+- The ESP32 MIDI output follows the host rules (`autoblink-core-midi`), with the phrase notes and CCs. It has no No Bass note, no MTC and no OSC.
 - The ESP32 page has no mixer section. The XDJ-AZ sends the EQ and fader positions only as USB MIDI, and the classic ESP32 has no USB host.
 - The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
 - The DMX output (`--features dmx`) flashes channel 1 on each beat. It has no settings yet.
-- The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `xdj-core-midi` yet.
+- The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `autoblink-core-midi` yet.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`
 - `host/src/state.rs` and `host/src/main.rs` are the highest-coupling files in the host crate
 - Adding a new architecture target should mirror the `esp32`/`esp32-emulator` split:
   - firmware crate + native emulator crate
-  - both share protocol via a new shared crate (planned as `xdj-core-prolink`)
+  - both share protocol via a new shared crate (planned as `autoblink-core-prolink`)
 
 ## Constraints
 

@@ -57,6 +57,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "autoblink-core-dbserver"
+version = "1.22.1"
+
+[[package]]
+name = "autoblink-core-midi"
+version = "1.22.1"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "autoblink-core-prolink"
+version = "1.22.1"
+
+[[package]]
+name = "autoblink-esp32"
+version = "1.22.1"
+dependencies = [
+ "anyhow",
+ "autoblink-core-dbserver",
+ "autoblink-core-midi",
+ "autoblink-core-prolink",
+ "embuild",
+ "esp-idf-svc",
+ "flate2",
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1725,37 +1756,6 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
 ]
-
-[[package]]
-name = "xdj-clock-esp32"
-version = "1.22.0"
-dependencies = [
- "anyhow",
- "embuild",
- "esp-idf-svc",
- "flate2",
- "log",
- "serde",
- "serde_json",
- "xdj-core-dbserver",
- "xdj-core-midi",
- "xdj-core-prolink",
-]
-
-[[package]]
-name = "xdj-core-dbserver"
-version = "1.22.0"
-
-[[package]]
-name = "xdj-core-midi"
-version = "1.22.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "xdj-core-prolink"
-version = "1.22.0"
 
 [[package]]
 name = "zlib-rs"
