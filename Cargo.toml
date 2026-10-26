@@ -13,7 +13,7 @@ members = [
 exclude = ["esp32"]
 
 [workspace.package]
-version = "1.22.1"
+version = "1.22.2"
 edition = "2021"
 license = "Proprietary"
 authors = ["AUTOBLINK team"]
