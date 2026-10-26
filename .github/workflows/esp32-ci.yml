@@ -57,4 +57,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: esp32-firmware
-          path: esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32
+          path: esp32/target/xtensa-esp32-espidf/release/autoblink-esp32

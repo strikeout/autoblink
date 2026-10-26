@@ -46,7 +46,7 @@ impl Default for Config {
             source: Source::default(),
             interface: "auto".into(),
             device_number: 7,
-            device_name: "xdj-clock".into(),
+            device_name: "autoblink".into(),
             midi: MidiConfig::default(),
             link: LinkConfig::default(),
             web: WebConfig::default(),

@@ -1,14 +1,14 @@
 [package]
-name = "xdj-clock-esp32"
+name = "autoblink-esp32"
 # The firmware is not in the workspace. Keep this version the same as the workspace version.
-version = "1.22.0"
+version = "1.22.1"
 edition = "2021"
 license = "Proprietary"
-authors = ["xdj-midi team"]
+authors = ["AUTOBLINK team"]
 rust-version = "1.82"
 
 [[bin]]
-name = "xdj-clock-esp32"
+name = "autoblink-esp32"
 harness = false
 
 [profile.release]
@@ -32,15 +32,15 @@ esp-idf-svc = "0.53"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-xdj-core-dbserver = { path = "../crates/xdj-core-dbserver" }
-xdj-core-midi = { path = "../crates/xdj-core-midi" }
-xdj-core-prolink = { path = "../crates/xdj-core-prolink" }
+autoblink-core-dbserver = { path = "../crates/autoblink-core-dbserver" }
+autoblink-core-midi = { path = "../crates/autoblink-core-midi" }
+autoblink-core-prolink = { path = "../crates/autoblink-core-prolink" }
 
 [build-dependencies]
 embuild = "0.33.5"
 # build.rs compresses the web page with gzip.
 flate2 = "1"
 
-# ESP-IDF 5 has mDNS as an external component. It gives the name xdj-clock.local.
+# ESP-IDF 5 has mDNS as an external component. It gives the name autoblink.local.
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/mdns", version = "1.8.2" }

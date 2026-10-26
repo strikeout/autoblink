@@ -4,7 +4,7 @@
 ///
 /// The call blocks (CoreMIDI, ALSA). Call it from `spawn_blocking`.
 pub fn list_output_ports() -> Vec<String> {
-    let Ok(midi_out) = midir::MidiOutput::new("xdj-clock-ports") else {
+    let Ok(midi_out) = midir::MidiOutput::new("autoblink-ports") else {
         return Vec::new();
     };
     midi_out
@@ -24,12 +24,12 @@ pub fn open_output(
     index: Option<usize>,
 ) -> anyhow::Result<(midir::MidiOutputConnection, String)> {
     if let Some(i) = index {
-        let midi_out = midir::MidiOutput::new("xdj-clock")?;
+        let midi_out = midir::MidiOutput::new("autoblink")?;
         let ports = midi_out.ports();
         if let Some(port) = ports.get(i) {
             if midi_out.port_name(port).ok().as_deref() == Some(name) {
                 return midi_out
-                    .connect(port, "xdj-clock")
+                    .connect(port, "autoblink")
                     .map(|conn| (conn, name.to_string()))
                     .map_err(|e| anyhow::anyhow!("{e}"));
             }

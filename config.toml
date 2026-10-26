@@ -21,7 +21,7 @@ interface = "auto"
 device_number = 7
 
 # Name broadcast on the network (max 16 bytes, ASCII).
-device_name = "xdj-clock"
+device_name = "autoblink"
 
 # ── Ableton Link ─────────────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ device_name = "xdj-clock"
 bind = "0.0.0.0:11111"
 
 [link]
-# Enable Ableton Link session participation.  When enabled, xdj-clock will
+# Enable Ableton Link session participation.  When enabled, AUTOBLINK will
 # appear in the Link session (e.g. visible in rekordbox's Link status panel).
 enabled = true
 

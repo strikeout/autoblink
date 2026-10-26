@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use xdj_core_dbserver::{asking_player, fetch_with, SongStructure, TrackMetadata, TrackOverview};
-use xdj_core_prolink::TrackRef;
+use autoblink_core_dbserver::{asking_player, fetch_with, SongStructure, TrackMetadata, TrackOverview};
+use autoblink_core_prolink::TrackRef;
 
 use esp_idf_svc::sys;
 

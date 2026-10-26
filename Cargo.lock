@@ -107,6 +107,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "autoblink-core-dbserver"
+version = "1.22.1"
+
+[[package]]
+name = "autoblink-core-midi"
+version = "1.22.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "autoblink-core-prolink"
+version = "1.22.1"
+
+[[package]]
+name = "autoblink-esp32-emulator"
+version = "1.22.1"
+dependencies = [
+ "anyhow",
+ "autoblink-core-prolink",
+ "axum",
+ "serde",
+ "serde_json",
+ "socket2 0.5.10",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "autoblink-host"
+version = "1.22.1"
+dependencies = [
+ "anyhow",
+ "autoblink-core-prolink",
+ "axum",
+ "clap 4.6.0",
+ "futures-util",
+ "midir",
+ "network-interface",
+ "parking_lot",
+ "rusty_link",
+ "serde",
+ "serde_json",
+ "socket2 0.6.3",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1720,59 +1773,6 @@ name = "wit-bindgen"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
-
-[[package]]
-name = "xdj-clock-esp32-emulator"
-version = "1.22.0"
-dependencies = [
- "anyhow",
- "axum",
- "serde",
- "serde_json",
- "socket2 0.5.10",
- "tokio",
- "toml",
- "xdj-core-prolink",
-]
-
-[[package]]
-name = "xdj-clock-host"
-version = "1.22.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap 4.6.0",
- "futures-util",
- "midir",
- "network-interface",
- "parking_lot",
- "rusty_link",
- "serde",
- "serde_json",
- "socket2 0.6.3",
- "tokio",
- "tokio-tungstenite",
- "toml",
- "tracing",
- "tracing-subscriber",
- "xdj-core-prolink",
-]
-
-[[package]]
-name = "xdj-core-dbserver"
-version = "1.22.0"
-
-[[package]]
-name = "xdj-core-midi"
-version = "1.22.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "xdj-core-prolink"
-version = "1.22.0"
 
 [[package]]
 name = "zerocopy"

@@ -29,8 +29,8 @@ use crate::ota::{self, OtaCmd, OtaStatus};
 use crate::settings::Settings;
 use crate::tracks::TrackData;
 use crate::State;
-use xdj_core_dbserver::{phrase_status, PhraseKind, TrackOverview};
-use xdj_core_prolink::{Deck, PlayState};
+use autoblink_core_dbserver::{phrase_status, PhraseKind, TrackOverview};
+use autoblink_core_prolink::{Deck, PlayState};
 
 /// The page, compressed with gzip by `build.rs`.
 const INDEX_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));

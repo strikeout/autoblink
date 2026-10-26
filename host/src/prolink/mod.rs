@@ -1,6 +1,6 @@
 //! Pro DJ Link protocol — constants, packet types, and zero-copy parsing.
 //!
-//! Protocol constants and math helpers are shared via `xdj_core_prolink`.
+//! Protocol constants and math helpers are shared via `autoblink_core_prolink`.
 //! Listener tasks, packet builders, and metadata fetching remain host-specific.
 
 pub mod beat_listener;

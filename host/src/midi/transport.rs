@@ -43,7 +43,7 @@ pub trait MidiTransport: Send + Sync {
 ///
 /// Returns the connection and the full name of the selected port.
 pub fn open_midi_output(port_name: &str) -> anyhow::Result<(MidiOutputConnection, String)> {
-    let midi_out = MidiOutput::new("xdj-clock")?;
+    let midi_out = MidiOutput::new("autoblink")?;
     let ports = midi_out.ports();
     if ports.is_empty() {
         anyhow::bail!("No MIDI output ports available");
@@ -54,7 +54,7 @@ pub fn open_midi_output(port_name: &str) -> anyhow::Result<(MidiOutputConnection
         let name = midi_out.port_name(port)?;
         tracing::info!(%name, "Auto-selected MIDI output port");
         return midi_out
-            .connect(port, "xdj-clock")
+            .connect(port, "autoblink")
             .map(|conn| (conn, name))
             .map_err(|e| anyhow::anyhow!("{}", e));
     }
@@ -77,7 +77,7 @@ pub fn open_midi_output(port_name: &str) -> anyhow::Result<(MidiOutputConnection
         let name = names[i].clone();
         tracing::info!(%name, "Selected MIDI output port");
         return midi_out
-            .connect(&ports[i], "xdj-clock")
+            .connect(&ports[i], "autoblink")
             .map(|conn| (conn, name))
             .map_err(|e| anyhow::anyhow!("{}", e));
     }

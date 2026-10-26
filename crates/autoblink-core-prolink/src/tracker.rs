@@ -493,7 +493,7 @@ mod tests {
     fn own_packets_are_ignored() {
         let mut t = Tracker::new();
         t.set_own_device(5);
-        t.on_keepalive(&keepalive(5, "xdj-clock"), 0);
+        t.on_keepalive(&keepalive(5, "autoblink"), 0);
         assert!(!t.on_beat(&beat(5, 1, 120.0), 0));
         assert!(t.decks().is_empty());
     }

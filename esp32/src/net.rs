@@ -21,8 +21,8 @@ use esp_idf_svc::wifi::{
 /// The address of the firmware on its own WiFi network. The web page is at http://192.168.1.1.
 pub const AP_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
 
-/// The mDNS name of the firmware. The web page is at http://xdj-clock.local.
-pub const MDNS_NAME: &str = "xdj-clock";
+/// The mDNS name of the firmware. The web page is at http://autoblink.local.
+pub const MDNS_NAME: &str = "autoblink";
 
 /// Binds the socket `fd` to the network interface `netif` (lwIP `SO_BINDTODEVICE`). An empty
 /// `netif` removes the binding.

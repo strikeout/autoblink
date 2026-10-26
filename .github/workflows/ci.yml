@@ -32,7 +32,7 @@ jobs:
           mkdir -p vendor
           curl --fail --silent --show-error --location \
             --retry 3 --retry-delay 5 \
-            -H "User-Agent: xdj-clock-ci/1.0" \
+            -H "User-Agent: autoblink-ci/1.0" \
             "https://static.crates.io/crates/rusty_link/rusty_link-$RUSTY_LINK_VERSION.crate" \
             -o "$RUNNER_TEMP/rusty_link.tar.gz"
           tar xzf "$RUNNER_TEMP/rusty_link.tar.gz" -C vendor
@@ -89,7 +89,7 @@ jobs:
           mkdir -p vendor
           curl --fail --silent --show-error --location \
             --retry 3 --retry-delay 5 \
-            -H "User-Agent: xdj-clock-ci/1.0" \
+            -H "User-Agent: autoblink-ci/1.0" \
             "https://static.crates.io/crates/rusty_link/rusty_link-$RUSTY_LINK_VERSION.crate" \
             -o "$RUNNER_TEMP/rusty_link.tar.gz"
           tar xzf "$RUNNER_TEMP/rusty_link.tar.gz" -C vendor
@@ -103,7 +103,7 @@ jobs:
           New-Item -ItemType Directory -Force vendor | Out-Null
           $url = "https://static.crates.io/crates/rusty_link/rusty_link-$env:RUSTY_LINK_VERSION.crate"
           $tmp = "$env:RUNNER_TEMP\rusty_link.tar.gz"
-          curl.exe --fail --show-error --location --retry 3 --retry-delay 5 -H "User-Agent: xdj-clock-ci/1.0" "$url" -o "$tmp"
+          curl.exe --fail --show-error --location --retry 3 --retry-delay 5 -H "User-Agent: autoblink-ci/1.0" "$url" -o "$tmp"
           if ($LASTEXITCODE -ne 0) {
             Write-Error "curl.exe failed with exit code $LASTEXITCODE"
             exit 1

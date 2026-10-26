@@ -57,15 +57,15 @@ jobs:
       - name: Prepare release package
         run: |
           mkdir -p esp32-release
-          elf=esp32/target/xtensa-esp32-espidf/release/xdj-clock-esp32
+          elf=esp32/target/xtensa-esp32-espidf/release/autoblink-esp32
           cp "$elf" esp32-release/
           # One image with the bootloader and the partition table. Write it at address 0x0.
           espflash save-image --chip esp32 --merge \
             --bootloader esp32/target/xtensa-esp32-espidf/release/bootloader.bin \
             --partition-table esp32/partitions.csv \
-            "$elf" esp32-release/xdj-clock-esp32-merged.bin
+            "$elf" esp32-release/autoblink-esp32-merged.bin
           # The app image without the bootloader. The box downloads it for an OTA update.
-          espflash save-image --chip esp32 "$elf" esp32-release/xdj-clock-esp32-ota.bin
+          espflash save-image --chip esp32 "$elf" esp32-release/autoblink-esp32-ota.bin
           tag="${{ github.ref_name }}"
           echo "${tag#esp32-v}" > esp32-release/esp32-version.txt
           tar -czf esp32-firmware.tar.gz esp32-release/
@@ -101,7 +101,7 @@ jobs:
           files=$(find artifacts -type f | tr '\n' ' ')
           # The host release stays the latest release of the repository.
           gh release create "$tag" \
-            --title "xdj-clock ESP32 $tag" \
+            --title "AUTOBLINK ESP32 $tag" \
             --notes "ESP32 firmware release" \
             --latest=false \
             $files
@@ -114,8 +114,12 @@ jobs:
           tar -xzf artifacts/*/esp32-firmware.tar.gz
           if ! gh release view esp32-latest > /dev/null 2>&1; then
             gh release create esp32-latest --prerelease --latest=false \
-              --title "xdj-clock ESP32 OTA" \
+              --title "AUTOBLINK ESP32 OTA" \
               --notes "The ESP32 box downloads its firmware updates from this release."
           fi
+          # ponytail: Firmware 1.22.0 and older downloads xdj-clock-esp32-ota.bin.
+          # Remove this copy when all boxes have firmware 1.22.1 or newer.
+          cp esp32-release/autoblink-esp32-ota.bin esp32-release/xdj-clock-esp32-ota.bin
           gh release upload esp32-latest --clobber \
-            esp32-release/esp32-version.txt esp32-release/xdj-clock-esp32-ota.bin
+            esp32-release/esp32-version.txt esp32-release/autoblink-esp32-ota.bin \
+            esp32-release/xdj-clock-esp32-ota.bin

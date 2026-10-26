@@ -1,6 +1,6 @@
 //! The settings that the web page can change. NVS keeps them across a restart.
 //!
-//! The MIDI rows and "Device Number" use the host indices (`xdj_core_midi::settings`). The WiFi
+//! The MIDI rows and "Device Number" use the host indices (`autoblink_core_midi::settings`). The WiFi
 //! rows use 100 and up, so that they do not collide with the host settings. Rows 100 and 101 set
 //! the own access point. Rows 102 and 103 set an existing network that the firmware joins.
 
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
-use xdj_core_midi::{settings as midi_settings, MidiConfig, SettingItem};
+use autoblink_core_midi::{settings as midi_settings, MidiConfig, SettingItem};
 
 /// The host index of "Device Number": the number that the virtual CDJ asks for.
 const IDX_DEVICE: usize = 2;
@@ -18,7 +18,7 @@ const IDX_SSID: usize = 100;
 const IDX_PASSWORD: usize = 101;
 const IDX_JOIN_SSID: usize = 102;
 const IDX_JOIN_PASSWORD: usize = 103;
-const DEFAULT_PASSWORD: &str = "xdjclock123";
+const DEFAULT_PASSWORD: &str = "autoblink123";
 /// The MIDI configuration goes to NVS when it has not changed for this time.
 const SAVE_DELAY: Duration = Duration::from_secs(2);
 

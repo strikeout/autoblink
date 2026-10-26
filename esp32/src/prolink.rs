@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::sys;
-use xdj_core_prolink::{
+use autoblink_core_prolink::{
     build_announce, build_claim1, build_claim2, build_claim_final, build_keepalive,
     build_status_packet, has_magic, pad_name, parse_abs_position, parse_beat, parse_cdj_status,
     parse_keepalive, TrackRef, PKT_CONFLICT, PORT_BEAT, PORT_DISCOVERY, PORT_STATUS,
@@ -36,7 +36,7 @@ use xdj_core_prolink::{
 use crate::midi::Beat;
 use crate::State;
 
-const NAME: &str = "xdj-clock";
+const NAME: &str = "autoblink";
 const CLAIM_INTERVAL: Duration = Duration::from_millis(300);
 const CLAIM_ROUNDS: u8 = 3;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(1500);

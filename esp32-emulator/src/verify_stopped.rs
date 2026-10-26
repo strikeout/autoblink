@@ -1,6 +1,6 @@
 use std::net::UdpSocket;
 use std::time::Duration;
-use xdj_core_prolink::{MAGIC, PKT_ABS_POSITION, PKT_MIXER_STATUS};
+use autoblink_core_prolink::{MAGIC, PKT_ABS_POSITION, PKT_MIXER_STATUS};
 
 fn main() -> anyhow::Result<()> {
     let sock = UdpSocket::bind("0.0.0.0:0")?;

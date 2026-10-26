@@ -27,7 +27,7 @@ use crate::{midi::soak::SoakArgs, midi::soak::SoakMode};
 // ── CLI ───────────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(name = "xdj-clock", version, about = "Pioneer CDJ/XDJ → MIDI bridge")]
+#[command(name = "autoblink", version, about = "Pioneer CDJ/XDJ → MIDI bridge")]
 pub struct Cli {
     /// Path to TOML config file.
     #[arg(short, long, default_value = "config.toml")]
@@ -239,7 +239,7 @@ pub fn init() -> anyhow::Result<AppContext> {
         device_number = startup_cfg.device_number,
         device_name = %startup_cfg.device_name,
         midi_port = %startup_cfg.midi.output,
-        "xdj-clock starting"
+        "AUTOBLINK starting"
     );
 
     // The Pro DJ Link supervisor detects the network interface (runtime/prolink.rs).
@@ -571,7 +571,7 @@ pub fn interface_priority(name: &str, ip: &Ipv4Addr) -> u8 {
 }
 
 pub fn list_midi_ports() -> anyhow::Result<()> {
-    let midi_out = MidiOutput::new("xdj-clock")?;
+    let midi_out = MidiOutput::new("autoblink")?;
     let ports = midi_out.ports();
     if ports.is_empty() {
         println!("No MIDI output ports found.");

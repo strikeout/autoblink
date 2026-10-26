@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>xdj-clock</title>
+<title>AUTOBLINK</title>
 <!--
-  The shared xdj-clock dashboard. The host, the emulator and the ESP32 serve this file.
+  The shared AUTOBLINK dashboard. The host, the emulator and the ESP32 serve this file.
   It speaks protocol v1 over one WebSocket at /ws (see host/src/web/mod.rs).
   The page shows only the panels that the server names in the "caps" of its hello message.
   Network text (deck names, track titles, log lines) goes into textContent, never innerHTML.
@@ -141,7 +141,7 @@ input.num.text{width:150px;text-align:left}
 </head>
 <body>
 <header>
-  <h1>xdj-clock</h1>
+  <h1>AUTOBLINK</h1>
   <span class="kv"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   <span class="kv">source <b id="source">—</b></span>
   <span class="kv">mode <b id="mode">—</b></span>
@@ -644,7 +644,7 @@ const HELP = {
   'OSC Enabled': 'Sends OSC messages to the targets below.',
   'OSC Targets': 'The receivers as IP:port, with commas between them. A broadcast address is permitted.',
   'OSC Prefix': 'The text before each OSC address. For example, /xdj gives /xdj/beat. It must start with /.',
-  'Join WiFi name (applies after restart)': 'An existing WiFi network that the device joins. The page is then also at http://xdj-clock.local and at the address on the iface line. The own WiFi network stays on. Clear the name to stop the join.',
+  'Join WiFi name (applies after restart)': 'An existing WiFi network that the device joins. The page is then also at http://autoblink.local and at the address on the iface line. The own WiFi network stays on. Clear the name to stop the join.',
   'Join WiFi password (applies after restart)': 'The password of the network to join. For an open network, clear the name, then set it again without a password.',
 };
 
@@ -820,7 +820,7 @@ for (let bar = 0; bar < 4; bar++) $('s16').append(h('div', null, h('span'), h('s
 
 // A collapsed panel stays collapsed after a reload.
 document.querySelectorAll('details.panel').forEach((d) => {
-  const key = 'xdj-clock.open.' + d.id;
+  const key = 'autoblink.open.' + d.id;
   try {
     const saved = localStorage.getItem(key);
     if (saved !== null) d.open = saved === '1';

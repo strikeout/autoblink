@@ -33,7 +33,7 @@ jobs:
           mkdir -p vendor
           curl --fail --silent --show-error --location \
             --retry 3 --retry-delay 5 \
-            -H "User-Agent: xdj-clock-ci/1.0" \
+            -H "User-Agent: autoblink-ci/1.0" \
             "https://static.crates.io/crates/rusty_link/rusty_link-$RUSTY_LINK_VERSION.crate" \
             -o "$RUNNER_TEMP/rusty_link.tar.gz"
           tar xzf "$RUNNER_TEMP/rusty_link.tar.gz" -C vendor
@@ -69,29 +69,29 @@ jobs:
           # Windows x86-64 (MSVC)
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-            artifact: xdj-clock-windows-x86_64
-            binary: xdj-clock.exe
+            artifact: autoblink-windows-x86_64
+            binary: autoblink.exe
             archive_cmd: zip
 
           # Linux x86-64
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            artifact: xdj-clock-linux-x86_64
-            binary: xdj-clock
+            artifact: autoblink-linux-x86_64
+            binary: autoblink
             archive_cmd: tar
 
           # Linux ARM64 (Raspberry Pi 3/4/5 with a 64-bit OS)
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            artifact: xdj-clock-linux-aarch64
-            binary: xdj-clock
+            artifact: autoblink-linux-aarch64
+            binary: autoblink
             archive_cmd: tar
 
           # macOS Apple Silicon
           - target: aarch64-apple-darwin
             runner: macos-latest
-            artifact: xdj-clock-macos-aarch64
-            binary: xdj-clock
+            artifact: autoblink-macos-aarch64
+            binary: autoblink
             archive_cmd: tar
 
     steps:
@@ -120,7 +120,7 @@ jobs:
           mkdir -p vendor
           curl --fail --silent --show-error --location \
             --retry 3 --retry-delay 5 \
-            -H "User-Agent: xdj-clock-ci/1.0" \
+            -H "User-Agent: autoblink-ci/1.0" \
             "https://static.crates.io/crates/rusty_link/rusty_link-$RUSTY_LINK_VERSION.crate" \
             -o "$RUNNER_TEMP/rusty_link.tar.gz"
           tar xzf "$RUNNER_TEMP/rusty_link.tar.gz" -C vendor
@@ -134,7 +134,7 @@ jobs:
           New-Item -ItemType Directory -Force vendor | Out-Null
           $url = "https://static.crates.io/crates/rusty_link/rusty_link-$env:RUSTY_LINK_VERSION.crate"
           $tmp = "$env:RUNNER_TEMP\rusty_link.tar.gz"
-          curl.exe --fail --show-error --location --retry 3 --retry-delay 5 -H "User-Agent: xdj-clock-ci/1.0" "$url" -o "$tmp"
+          curl.exe --fail --show-error --location --retry 3 --retry-delay 5 -H "User-Agent: autoblink-ci/1.0" "$url" -o "$tmp"
           if ($LASTEXITCODE -ne 0) {
             Write-Error "curl.exe failed with exit code $LASTEXITCODE"
             exit 1
@@ -219,7 +219,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$dir/"
           cp config.toml "$dir/"
           cp README.md "$dir/"
-          if [ "${{ runner.os }}" = "Linux" ]; then cp contrib/xdj-clock.service "$dir/"; fi
+          if [ "${{ runner.os }}" = "Linux" ]; then cp contrib/autoblink.service "$dir/"; fi
           tar -czf "$dir.tar.gz" "$dir"
           echo "ASSET=$dir.tar.gz" >> $GITHUB_ENV
 
@@ -255,6 +255,6 @@ jobs:
           # Collect all archive files
           files=$(find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) | tr '\n' ' ')
           gh release create "$tag" \
-            --title "xdj-clock $tag" \
+            --title "AUTOBLINK $tag" \
             --generate-notes \
             $files
