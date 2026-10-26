@@ -17,8 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # espup reads the latest toolchain version from the GitHub API. Without a token, the API
+      # allows 60 requests in an hour for each runner address, and it then returns 403.
       - name: Install the Xtensa Rust toolchain
         uses: esp-rs/xtensa-toolchain@v1.6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           default: true
           buildtargets: esp32
