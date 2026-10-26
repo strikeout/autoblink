@@ -85,6 +85,9 @@ details.panel:not([open])>summary h2{margin-bottom:0}
 .deck canvas.wave{display:block;width:100%;height:56px;margin-top:6px;border-radius:3px;background:#08080d}
 .deck canvas.wave.lane{height:74px}
 .empty{color:var(--dim);padding:8px 0}
+#nomaster{padding:24px 0;text-align:center;font-size:14px}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--dim);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
 /* mixer: one channel strip next to its deck, with knobs */
 .ch{display:flex;flex-direction:column;align-items:center;gap:2px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;padding:6px 4px;width:62px}
 .ch .chn{font-weight:600;font-size:11px;margin-bottom:2px}
@@ -158,7 +161,8 @@ input.num.text{width:150px;text-align:left}
 <main>
   <section class="panel">
     <h2>Master <span class="kv">deck <b id="mdeck">—</b></span></h2>
-    <div class="mgrid">
+    <div id="nomaster" class="empty" hidden>No player is on the Pro DJ Link network.<br>Connect the players and this device to the same network.</div>
+    <div id="mgrid" class="mgrid">
       <div>
         <div id="bpm" class="num">---.-</div>
         <div id="beats" class="beats"><span></span><span></span><span></span><span></span></div>
@@ -223,7 +227,7 @@ input.num.text{width:150px;text-align:left}
       <div class="group">
         <div class="section">Firmware</div>
         <div class="row">installed <b id="fwcur">—</b> <span id="fwstate" class="num"></span></div>
-        <div class="row"><button id="fwcheck" title="Read the version of the latest release on GitHub. The box needs a network with internet.">Check for update</button> <button id="fwinstall" hidden></button></div>
+        <div class="row"><button id="fwcheck" title="Read the version of the latest release on GitHub. The box needs a network with internet.">Check for update</button> <i id="fwspin" class="spin" hidden></i> <button id="fwinstall" hidden></button></div>
         <progress id="fwbar" max="100" hidden></progress>
         <div class="row" id="fwerr"></div>
         <div class="row"><button id="reboot" title="Restart the box. The settings stay. A WiFi change applies after the restart.">Restart</button></div>
@@ -279,6 +283,8 @@ function onStatus(s) {
   set('mode', s.mode || '—');
   set('iface', s.iface || '—');
   set('state', m.playing ? '▶ PLAY' : '■ STOP');
+  $('nomaster').hidden = !s.no_devices;
+  $('mgrid').hidden = !!s.no_devices;
   $('state').className = m.playing ? 'play' : 'stop';
 
   set('bpm', m.bpm > 0 ? m.bpm.toFixed(2) : '---.-');
@@ -315,8 +321,11 @@ const OTA_TEXT = { idle: '', checking: 'checking…', available: 'update availab
 /** Shows the state of the firmware update. */
 function renderOta(o) {
   const busy = o.state === 'checking' || o.state === 'downloading' || o.state === 'restarting';
-  set('fwstate', (OTA_TEXT[o.state] || o.state) + (o.latest && o.state !== 'up-to-date' ? ' · v' + o.latest : ''));
-  $('fwcheck').disabled = busy;
+  // The box sends no status during the check. A status that comes 1.5 s after the click shows the result.
+  if (!busy && Date.now() - otaClick > 1500) otaClick = 0;
+  set('fwstate', otaClick ? OTA_TEXT.checking : (OTA_TEXT[o.state] || o.state) + (o.latest && o.state !== 'up-to-date' ? ' · v' + o.latest : ''));
+  $('fwcheck').disabled = busy || otaClick > 0;
+  $('fwspin').hidden = !(o.state === 'checking' || otaClick);
   $('fwinstall').hidden = o.state !== 'available';
   set('fwinstall', 'Install v' + (o.latest || '?'));
   $('fwbar').hidden = o.state !== 'downloading';
@@ -324,7 +333,21 @@ function renderOta(o) {
   set('fwerr', o.error || '');
 }
 
-$('fwcheck').onclick = () => send({ type: 'ota_check' });
+let otaClick = 0;
+$('fwcheck').onclick = () => {
+  otaClick = Date.now();
+  set('fwstate', OTA_TEXT.checking);
+  $('fwcheck').disabled = true;
+  $('fwspin').hidden = false;
+  send({ type: 'ota_check' });
+};
+/** Stops the spinner of the update check. */
+function otaDone() {
+  otaClick = 0;
+  set('fwstate', '');
+  $('fwcheck').disabled = false;
+  $('fwspin').hidden = true;
+}
 $('reboot').onclick = () => {
   const playing = status && (status.decks || []).some((d) => d.playing);
   const warn = playing ? 'A deck plays. The MIDI clock stops until the box is back, about 15 s.\n\n' : '';
@@ -781,7 +804,7 @@ function onBusy() {
   set('conn', 'waiting');
 }
 
-const handlers = { hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => toast(m.text) };
+const handlers = { hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => { otaDone(); toast(m.text); } };
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
