@@ -1,4 +1,4 @@
-//! DMX512 output on UART1, TX on IO4. Build with `--features dmx`.
+//! DMX512 output on UART1, TX on IO4. The `dmx` feature is on by default.
 //!
 //! An RS-485 module (MAX3485 or SP3485) turns the UART signal into DMX. The `dmx` thread runs
 //! the `Lights` engine of `autoblink-core-dmx` and sends one frame after the other. The `midi`

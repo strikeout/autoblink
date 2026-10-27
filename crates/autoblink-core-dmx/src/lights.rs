@@ -174,7 +174,7 @@ impl Lights {
 
         let stopped = self
             .stopped_at
-            .is_some_and(|s| now_ms >= s + IDLE_AFTER_MS && self.last_on_ms.is_none_or(|o| o <= s));
+            .is_some_and(|s| now_ms >= s + IDLE_AFTER_MS && self.last_on_ms.is_none_or(|o| o < s));
         let mut scratch = [0u8; UNIVERSE];
         // The idle look is the bottom layer. Thus a layer without a look never blacks out the rig.
         if let Some(look) = show.idle.and_then(|p| show.look(p)) {
@@ -463,8 +463,8 @@ mod tests {
         let s = show();
         let mut l = Lights::default();
         l.on(0, 0);
-        l.set_playing(false, 0);
-        assert_eq!(frame(&mut l, &s, 1999)[1], 255);
+        l.set_playing(false, 1);
+        assert_eq!(frame(&mut l, &s, 2000)[1], 255);
         assert_eq!(frame(&mut l, &s, 1999)[0], 255);
         assert_eq!(frame(&mut l, &s, 2001)[0], 50);
 
@@ -472,6 +472,15 @@ mod tests {
         l.on(0, 0);
         l.set_playing(false, 0);
         l.on(1, 500);
+        assert_eq!(frame(&mut l, &s, 2001)[3], 255);
+    }
+
+    #[test]
+    fn stop_look_in_same_ms_stays() {
+        let s = show();
+        let mut l = Lights::default();
+        l.set_playing(false, 0);
+        l.on(1, 0);
         assert_eq!(frame(&mut l, &s, 2001)[3], 255);
     }
 

@@ -161,6 +161,7 @@ input.num.text{width:150px;text-align:left}
 #p-lights .swt{width:16px;height:16px;min-width:0;padding:0;border-radius:4px}
 #p-lights .swt.on{outline:2px solid var(--text);outline-offset:1px}
 #p-lights input[type=color]{width:26px;height:20px;padding:0;border:1px solid var(--border);border-radius:4px;background:none}
+#ltstrobe.on{background:var(--danger);color:#fff}
 #p-lights .hint{color:var(--dim);font-size:11px}
 .chip.look::after{content:'';position:absolute;left:0;bottom:0;border:6px solid transparent;border-left-color:var(--lk);border-bottom-color:var(--lk);border-bottom-left-radius:6px}
 .palette{display:flex;flex-wrap:wrap;gap:6px;padding:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
@@ -1569,6 +1570,8 @@ function lookRowCtl(r, g) {
   const kind = effKind(r);
   out.push(pick(EFFECTS.map((k) => [k, k]), kind, (v) => showEdit(() => {
     r.effect = { none: 'none', strobe: { strobe: { rate: 128, beats: 1 } }, fog: { fog: { ms: 1000 } } }[v] || { [v]: { every: 'beat' } };
+    if (v === 'strobe') r.cooldown_s = 4;
+    else if (v === 'fog') r.cooldown_s = 30;
   })));
   if (['flash', 'pulse', 'chase', 'random'].includes(kind)) {
     out.push(h('label', null, 'every ', pick(EVERY, r.effect[kind].every, (v) => rd(() => { r.effect[kind].every = v; }))));
@@ -1598,11 +1601,16 @@ function renderLayers() {
   const names = dmxLast && scenes ? dmxLast.layers.map((i) => h('span', 'lay', h('b', null, String(i + 1)), scenes.labels[i] || '')) : [];
   const key = dmxLast ? JSON.stringify(dmxLast.layers) + (scenes ? scenes.labels.join() : '') : '';
   if (key !== layerKey) { layerKey = key; $('ltlayers').replaceChildren(h('span', null, names.length ? 'Playing: ' : 'No look plays'), ...names); }
-  $('ltstrobe').classList.toggle('on', !!(dmxLast && dmxLast.strobe_hold));
+  strobeClass();
+}
+
+function strobeClass() {
+  $('ltstrobe').classList.toggle('on', strobeHeld || !!(dmxLast && dmxLast.strobe_hold));
 }
 
 function liveSend(strobe) {
   strobeHeld = strobe;
+  strobeClass();
   // When the box accepts this page, the page sends the lost release again.
   if (!strobe && (!ws || ws.readyState !== 1)) releaseLost = true;
   send({ type: 'dmx_live', master: +$('ltmaster').value, strobe });

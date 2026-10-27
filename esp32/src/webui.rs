@@ -282,7 +282,7 @@ pub fn start(
             );
         };
         if cmd["type"] == "take_over" {
-            take_over(ws, &ws_active)?;
+            take_over(ws, &ws_active, &ws_state)?;
             let msg = settings.lock().unwrap().message();
             ws.send(FrameType::Text(false), msg.as_bytes())?;
             let msg = settings.lock().unwrap().scenes_message();
@@ -545,7 +545,7 @@ fn write_waveform<W: Write>(w: &mut W, o: &TrackOverview) -> Result<(), W::Error
 
 /// Makes the page that sends this command the active page. Closes the connection of the old
 /// active page.
-fn take_over(ws: &mut EspHttpWsConnection, active: &Active) -> Result<(), EspError> {
+fn take_over(ws: &mut EspHttpWsConnection, active: &Active, state: &State) -> Result<(), EspError> {
     let EspHttpWsConnection::Receiving(sd, _, _) = ws else {
         return Ok(());
     };
@@ -557,6 +557,8 @@ fn take_over(ws: &mut EspHttpWsConnection, active: &Active) -> Result<(), EspErr
         // SAFETY: `sd` is the live server handle of this handler call. A closed `old` socket
         // gives only an error code.
         unsafe { sys::httpd_sess_trigger_close(sd, old) };
+        // The page that loses control also loses its strobe hold.
+        release_strobe(state);
     }
     Ok(())
 }
