@@ -18,6 +18,7 @@ mod net;
 mod ota;
 mod prolink;
 mod settings;
+#[cfg(feature = "dmx")]
 mod show;
 mod tracks;
 mod webui;
@@ -68,6 +69,18 @@ pub struct State {
     pub ota: Mutex<OtaStatus>,
     /// A preset that the page asked to test. The MIDI thread sends its note. `u8::MAX` is none.
     pub scene_test: AtomicU8,
+    /// The live controls of the DMX output.
+    #[cfg(feature = "dmx")]
+    pub dmx_live: dmx::DmxLive,
+    /// The DMX part of the status. The `dmx` thread writes it.
+    #[cfg(feature = "dmx")]
+    pub dmx_status: Mutex<dmx::DmxStatus>,
+    /// The DMX show. The `dmx` thread reads it for each frame.
+    #[cfg(feature = "dmx")]
+    pub show: Arc<Mutex<autoblink_core_dmx::Show>>,
+    /// The flash partition of the show. `None` when the partition table has no show partition.
+    #[cfg(feature = "dmx")]
+    pub show_store: Mutex<Option<show::ShowStore>>,
     start: Instant,
 }
 
@@ -117,6 +130,44 @@ fn run() -> anyhow::Result<()> {
     })?;
     let default_ssid = format!("autoblink-{:02X}{:02X}", mac[4], mac[5]);
     let settings = Settings::new(nvs, default_ssid)?;
+
+    // The state needs nothing from the network. Thus the DMX output can start before the network.
+    #[cfg(feature = "dmx")]
+    let mut show_store = show::ShowStore::open();
+    #[cfg(feature = "dmx")]
+    let show = Arc::new(Mutex::new(
+        show_store.as_mut().map(|s| s.load()).unwrap_or_default(),
+    ));
+    let state = Arc::new(State {
+        tracker: Mutex::new(Tracker::new()),
+        iface: Mutex::new("Ethernet: no address".into()),
+        midi: Mutex::new(MidiStatus::default()),
+        tracks: Tracks::default(),
+        link: Mutex::new(None),
+        conflict: AtomicU8::new(0),
+        own_device: AtomicU8::new(0),
+        wifi_join_down: AtomicBool::new(false),
+        reset_reason,
+        ota: Mutex::new(OtaStatus {
+            state: if ota_error.is_some() { "error" } else { "" },
+            error: ota_error,
+            ..Default::default()
+        }),
+        scene_test: AtomicU8::new(u8::MAX),
+        #[cfg(feature = "dmx")]
+        dmx_live: dmx::DmxLive::default(),
+        #[cfg(feature = "dmx")]
+        dmx_status: Mutex::new(dmx::DmxStatus::default()),
+        #[cfg(feature = "dmx")]
+        show: show.clone(),
+        #[cfg(feature = "dmx")]
+        show_store: Mutex::new(show_store),
+        start: Instant::now(),
+    });
+    // The maintenance start of a firmware update also sends the idle look.
+    #[cfg(feature = "dmx")]
+    let dmx_q = dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36, state.clone(), show)?;
+
     let ssid = settings.ssid();
     let join = settings.join();
     let join_ssid = join.as_ref().map(|(s, _)| s.clone());
@@ -171,24 +222,6 @@ fn run() -> anyhow::Result<()> {
         unsafe { sys::esp_restart() };
     }
 
-    let state = Arc::new(State {
-        tracker: Mutex::new(Tracker::new()),
-        iface: Mutex::new("Ethernet: no address".into()),
-        midi: Mutex::new(MidiStatus::default()),
-        tracks: Tracks::default(),
-        link: Mutex::new(None),
-        conflict: AtomicU8::new(0),
-        own_device: AtomicU8::new(0),
-        wifi_join_down: AtomicBool::new(false),
-        reset_reason,
-        ota: Mutex::new(OtaStatus {
-            state: if ota_error.is_some() { "error" } else { "" },
-            error: ota_error,
-            ..Default::default()
-        }),
-        scene_test: AtomicU8::new(u8::MAX),
-        start: Instant::now(),
-    });
     let midi_beats = midi::start(
         p.uart2,
         p.pins.gpio17,
@@ -196,6 +229,8 @@ fn run() -> anyhow::Result<()> {
         state.clone(),
         settings.midi.clone(),
         settings.scenes.clone(),
+        #[cfg(feature = "dmx")]
+        dmx_q.clone(),
     )?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
@@ -204,17 +239,22 @@ fn run() -> anyhow::Result<()> {
 
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
 
-    #[cfg(feature = "dmx")]
-    let dmx = dmx::Dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36)?;
-
     prolink::spawn(
         state.clone(),
         device_number,
         move |beat| {
             // A full queue drops the LED pulse. The receive thread does not wait for the LEDs.
             let _ = beat_tx.try_send(beat.beat_in_bar);
+            // A full queue drops the beat. The receive thread does not wait for the DMX thread.
             #[cfg(feature = "dmx")]
-            dmx.beat();
+            let _ = dmx_q.send_back(
+                dmx::DmxMsg::Beat {
+                    beat_in_bar: beat.beat_in_bar,
+                    bpm: beat.bpm,
+                    at_ms: beat.at_us / 1000,
+                },
+                0,
+            );
             let page_beat = (beat.device, beat.beat_in_bar);
             // A full queue drops the beat. The receive thread does not wait for the MIDI thread.
             let _ = midi_beats.send_back(beat, 0);

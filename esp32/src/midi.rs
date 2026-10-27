@@ -34,6 +34,8 @@ use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::sys;
 
+#[cfg(feature = "dmx")]
+use crate::dmx::DmxMsg;
 use crate::State;
 
 /// The CCs go out at most this often.
@@ -74,6 +76,7 @@ pub fn start(
     state: Arc<State>,
     cfg: Arc<Mutex<MidiConfig>>,
     scenes_cfg: Arc<Mutex<ScenesConfig>>,
+    #[cfg(feature = "dmx")] dmx: Arc<Queue<DmxMsg>>,
 ) -> anyhow::Result<Arc<Queue<Beat>>> {
     let uart_cfg = config::Config::new().baudrate(Hertz(31_250));
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio35>, None::<Gpio17>, &uart_cfg)?;
@@ -156,12 +159,16 @@ pub fn start(
                     &mut send,
                 );
                 mapper.beat(&cfg, b.beat_in_bar, &mut send);
-                scenes.beat(
-                    &scenes_cfg.lock().unwrap(),
-                    state.now_ms(),
-                    b.beat_in_bar,
-                    &mut send,
-                );
+                let scenes_cfg = scenes_cfg.lock().unwrap();
+                scenes.beat(&scenes_cfg, state.now_ms(), b.beat_in_bar, &mut |o| {
+                    #[cfg(feature = "dmx")]
+                    to_dmx(&dmx, &scenes_cfg, o);
+                    send(o);
+                });
+                #[cfg(feature = "dmx")]
+                scenes.drain_fired(|e, p| {
+                    let _ = dmx.send_back(DmxMsg::Fired(e, p), 0);
+                });
             }
 
             let now_ms = state.now_ms();
@@ -247,8 +254,18 @@ pub fn start(
                     if let Err(e) = uart.write(&buf[..n]) {
                         log::warn!("MIDI message not sent: {e}");
                     }
+                    #[cfg(feature = "dmx")]
+                    let _ = dmx.send_back(DmxMsg::Test(test), 0);
                 }
-                scenes.update(&scenes_cfg, state.now_ms(), &scene_in, &mut send);
+                scenes.update(&scenes_cfg, state.now_ms(), &scene_in, &mut |o| {
+                    #[cfg(feature = "dmx")]
+                    to_dmx(&dmx, &scenes_cfg, o);
+                    send(o);
+                });
+                #[cfg(feature = "dmx")]
+                scenes.drain_fired(|e, p| {
+                    let _ = dmx.send_back(DmxMsg::Fired(e, p), 0);
+                });
                 scenes.status(&scenes_cfg)
             };
 
@@ -272,4 +289,22 @@ pub fn start(
     })?;
     log::info!("MIDI output is on IO17");
     Ok(beats)
+}
+
+/// Queues a note of a preset for the `dmx` thread. Other messages and the extra notes go only to
+/// MIDI. A full queue drops the message, so that the MIDI thread does not wait.
+#[cfg(feature = "dmx")]
+fn to_dmx(dmx: &Queue<DmxMsg>, c: &ScenesConfig, o: Out) {
+    let preset = |ch: u8, note: u8| {
+        note.checked_sub(c.first_note)
+            .filter(|p| ch == c.channel && *p < c.count)
+    };
+    let msg = match o {
+        Out::NoteOn { ch, note, .. } => preset(ch, note).map(DmxMsg::On),
+        Out::NoteOff { ch, note } => preset(ch, note).map(DmxMsg::Off),
+        _ => None,
+    };
+    if let Some(m) = msg {
+        let _ = dmx.send_back(m, 0);
+    }
 }
