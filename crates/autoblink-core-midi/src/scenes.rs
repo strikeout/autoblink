@@ -86,6 +86,21 @@ impl Event {
         }
     }
 
+    /// Returns true for the events of the phrase structure.
+    pub fn is_phrase_event(self) -> bool {
+        matches!(
+            self,
+            Event::Intro
+                | Event::Groove
+                | Event::Build
+                | Event::Drop
+                | Event::Break
+                | Event::Outro
+                | Event::PhraseChange
+                | Event::Fill
+        )
+    }
+
     /// Returns true for the rows of the Rhythm group.
     pub fn is_overlay(self) -> bool {
         matches!(
@@ -345,6 +360,8 @@ pub struct Scenes {
     ms_per_beat: f64,
     events: [u8; EVENT_COUNT],
     last: [Option<u8>; EVENT_COUNT],
+    /// The presets that rows sent since the last `drain_fired`: (event, preset entry).
+    fired: Vec<(Event, u8)>,
 }
 
 impl Default for Scenes {
@@ -364,9 +381,13 @@ impl Default for Scenes {
             ms_per_beat: 500.0,
             events: [0; EVENT_COUNT],
             last: [None; EVENT_COUNT],
+            fired: Vec::with_capacity(8),
         }
     }
 }
+
+/// The most entries that `Scenes::fired` keeps.
+const FIRED_MAX: usize = 16;
 
 fn index(e: Event) -> usize {
     e as usize
@@ -618,6 +639,10 @@ impl Scenes {
         out: &mut impl FnMut(Out),
     ) {
         self.last[index(row.event)] = Some(step);
+        if self.fired.len() >= FIRED_MAX {
+            self.fired.remove(0);
+        }
+        self.fired.push((row.event, row.presets[usize::from(step)]));
         let ch = cfg.channel;
         let note = cfg.note(row.presets[usize::from(step)]);
         // A flash of the same note stays on. The new flash replaces its off time.
@@ -658,6 +683,14 @@ impl Scenes {
                 };
                 self.flashes.push((now_ms + ms.max(1.0) as u64, ch, note));
             }
+        }
+    }
+
+    /// Calls `f(event, preset)` for each preset that a row sent since the last call, in order.
+    /// The list keeps the newest 16 entries.
+    pub fn drain_fired(&mut self, mut f: impl FnMut(Event, u8)) {
+        for (e, p) in self.fired.drain(..) {
+            f(e, p);
         }
     }
 
@@ -789,6 +822,56 @@ mod tests {
             }),
             bass_cut: None,
         }
+    }
+
+    #[test]
+    fn drain_fired_reports_event_and_preset() {
+        let c = cfg(vec![row(Event::Drop, &[3, 4])]);
+        let mut s = Scenes::default();
+        s.update(&c, 1000, &input(0, 8, 16), &mut |_| {});
+        let mut got = Vec::new();
+        s.drain_fired(|e, p| got.push((e, p)));
+        assert_eq!(got, vec![(Event::Drop, 3)]);
+        let mut again = Vec::new();
+        s.drain_fired(|e, p| again.push((e, p)));
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn drain_fired_reports_bar_steps() {
+        let mut drop = row(Event::Drop, &[0, 1]);
+        drop.advance = 1;
+        let c = cfg(vec![drop]);
+        let mut s = Scenes::default();
+        s.update(&c, 1000, &input(0, 8, 32), &mut |_| {});
+        s.beat(&c, 3000, 1, &mut |_| {});
+        let mut got = Vec::new();
+        s.drain_fired(|e, p| got.push((e, p)));
+        assert_eq!(got, vec![(Event::Drop, 0), (Event::Drop, 1)]);
+    }
+
+    #[test]
+    fn drain_fired_keeps_16_and_skips_disabled() {
+        let mut c = cfg(vec![row(Event::Beat, &[1])]);
+        let mut s = Scenes::default();
+        for i in 0..20 {
+            s.beat(&c, 1000 + i * 500, 2, &mut |_| {});
+        }
+        let mut n = 0;
+        s.drain_fired(|_, _| n += 1);
+        assert_eq!(n, 16);
+        c.enabled = false;
+        s.beat(&c, 20000, 2, &mut |_| {});
+        s.drain_fired(|_, _| n += 1);
+        assert_eq!(n, 16);
+    }
+
+    #[test]
+    fn phrase_events() {
+        assert!(Event::Drop.is_phrase_event());
+        assert!(Event::Fill.is_phrase_event());
+        assert!(!Event::Beat.is_phrase_event());
+        assert!(!Event::Stop.is_phrase_event());
     }
 
     #[test]
