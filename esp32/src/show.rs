@@ -14,8 +14,6 @@ use esp_idf_svc::partition::EspPartition;
 const HEADER: usize = 4;
 /// The size of the read buffer and of the write buffer. The buffers are on the stack.
 const BUF: usize = 256;
-/// The size of the chunks that `write_json` sends.
-const CHUNK: usize = 1024;
 
 pub struct ShowStore {
     part: EspPartition,
@@ -80,26 +78,6 @@ impl ShowStore {
         serde_json::to_writer(&mut w, show)?;
         io::Write::flush(&mut w)?;
         self.part.write(0, &(len as u32).to_le_bytes())?;
-        Ok(())
-    }
-
-    /// Streams the stored JSON to `w` in chunks of 1 KB.
-    pub fn write_json(
-        &mut self,
-        w: &mut impl FnMut(&[u8]) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        let Some(len) = self.stored_len()? else {
-            return w(&serde_json::to_vec(&Show::default())?);
-        };
-        let mut chunk = [0u8; CHUNK];
-        let mut pos = HEADER;
-        let end = HEADER + len;
-        while pos < end {
-            let n = CHUNK.min(end - pos);
-            self.part.read(pos, &mut chunk[..n])?;
-            w(&chunk[..n])?;
-            pos += n;
-        }
         Ok(())
     }
 

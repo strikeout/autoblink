@@ -234,7 +234,12 @@ fn run() -> anyhow::Result<()> {
     )?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
-    let (_server, web_beats) = webui::start(state.clone(), settings.clone())?;
+    let (_server, web_beats) = webui::start(
+        state.clone(),
+        settings.clone(),
+        #[cfg(feature = "dmx")]
+        dmx_q.clone(),
+    )?;
     let track_changes = tracks::start(state.clone())?;
 
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
