@@ -25,13 +25,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use esp_idf_svc::hal::cpu::Core;
-use esp_idf_svc::sys;
 use autoblink_core_prolink::{
     build_announce, build_claim1, build_claim2, build_claim_final, build_keepalive,
     build_status_packet, has_magic, pad_name, parse_abs_position, parse_beat, parse_cdj_status,
     parse_keepalive, TrackRef, PKT_CONFLICT, PORT_BEAT, PORT_DISCOVERY, PORT_STATUS,
 };
+use esp_idf_svc::hal::cpu::Core;
+use esp_idf_svc::sys;
 
 use crate::midi::Beat;
 use crate::State;
@@ -82,7 +82,11 @@ pub fn spawn(
         }
         // A CDJ-3000 class status packet has more than 0x1c0 bytes.
         let mut buf = [0u8; 1500];
-        let mut polls = fds.map(|fd| sys::pollfd { fd, events: sys::POLLIN as _, revents: 0 });
+        let mut polls = fds.map(|fd| sys::pollfd {
+            fd,
+            events: sys::POLLIN as _,
+            revents: 0,
+        });
         loop {
             // SAFETY: the task subscribed above. A reset of an unsubscribed task only gives an
             // error code.
@@ -115,7 +119,9 @@ pub fn spawn(
         }
     })?;
 
-    crate::spawn(c"virtual-cdj", 4608, move || virtual_cdj(&sender, &state, &device_number, &fds))?;
+    crate::spawn(c"virtual-cdj", 4608, move || {
+        virtual_cdj(&sender, &state, &device_number, &fds)
+    })?;
     Ok(())
 }
 
@@ -141,7 +147,11 @@ fn on_beat_port(st: &State, data: &[u8], on_master_beat: &impl Fn(Beat)) {
     let is_master = st.tracker.lock().unwrap().on_beat(&beat, now);
     if is_master {
         if beat.beat_in_bar == 1 {
-            log::debug!("Bar: deck {} at {:.2} BPM", beat.device_number, beat.effective_bpm);
+            log::debug!(
+                "Bar: deck {} at {:.2} BPM",
+                beat.device_number,
+                beat.effective_bpm
+            );
         }
         on_master_beat(Beat {
             device: beat.device_number,
@@ -154,13 +164,18 @@ fn on_beat_port(st: &State, data: &[u8], on_master_beat: &impl Fn(Beat)) {
 
 /// Handles a packet on port 50002: the CDJ status of a player.
 fn on_status(st: &State, data: &[u8], on_track: &impl Fn(TrackRef)) {
-    let Some(cdj) = parse_cdj_status(data) else { return };
+    let Some(cdj) = parse_cdj_status(data) else {
+        return;
+    };
     let now = st.now_ms();
     let change = st.tracker.lock().unwrap().on_cdj_status(&cdj, now);
     if let Some(track) = change {
         log::info!(
             "Deck {} loaded track {} (slot {}, player {})",
-            track.device, track.rekordbox_id, track.slot, track.source_player
+            track.device,
+            track.rekordbox_id,
+            track.slot,
+            track.source_player
         );
         on_track(track);
     }
@@ -212,7 +227,14 @@ fn virtual_cdj(sock: &UdpSocket, state: &State, wanted: &AtomicU8, fds: &[RawFd]
                 errors = 0;
             }
             // The players send their status only to a device that sends its own status to them.
-            let ips: Vec<[u8; 4]> = state.tracker.lock().unwrap().decks().iter().map(|d| d.ip).collect();
+            let ips: Vec<[u8; 4]> = state
+                .tracker
+                .lock()
+                .unwrap()
+                .decks()
+                .iter()
+                .map(|d| d.ip)
+                .collect();
             for ip in ips.into_iter().filter(|ip| *ip != [0; 4]) {
                 let _ = sock.send_to(&status, SocketAddrV4::new(ip.into(), PORT_STATUS));
             }
@@ -242,7 +264,13 @@ fn bind_netif(fds: &[RawFd], netif: &str) -> bool {
 
 /// Sends the announce and claim packets. Returns the claimed device number. When another device
 /// reports a conflict, the next number is tried.
-fn join(sock: &UdpSocket, state: &State, name: &[u8; 20], eth: &LinkInfo, want: u8) -> anyhow::Result<u8> {
+fn join(
+    sock: &UdpSocket,
+    state: &State,
+    name: &[u8; 20],
+    eth: &LinkInfo,
+    want: u8,
+) -> anyhow::Result<u8> {
     let bcast = SocketAddrV4::new(eth.broadcast, PORT_DISCOVERY);
     let ip = eth.ip.octets();
     let send = |pkt: &[u8]| -> anyhow::Result<()> {
@@ -265,7 +293,10 @@ fn join(sock: &UdpSocket, state: &State, name: &[u8; 20], eth: &LinkInfo, want: 
             let deadline = Instant::now() + CLAIM_INTERVAL;
             while Instant::now() < deadline {
                 if state.conflict.swap(0, Ordering::Relaxed) == claimed {
-                    log::warn!("Device number {claimed} is in use. The virtual CDJ tries {}.", claimed + 1);
+                    log::warn!(
+                        "Device number {claimed} is in use. The virtual CDJ tries {}.",
+                        claimed + 1
+                    );
                     claimed += 1;
                     anyhow::ensure!(claimed <= 15, "No free device number is available");
                     continue 'claim;

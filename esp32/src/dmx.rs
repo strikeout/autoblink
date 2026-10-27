@@ -33,7 +33,11 @@ pub struct Dmx {
 impl Dmx {
     /// Starts the frame thread. `rx` is not used. The UART driver of ESP-IDF 5.5 does not install
     /// without a receive buffer, so the driver gets the input-only pin IO36.
-    pub fn start(uart: UART1<'static>, tx: Gpio4<'static>, rx: Gpio36<'static>) -> anyhow::Result<Self> {
+    pub fn start(
+        uart: UART1<'static>,
+        tx: Gpio4<'static>,
+        rx: Gpio36<'static>,
+    ) -> anyhow::Result<Self> {
         let cfg = config::Config::new()
             .baudrate(Hertz(250_000))
             .stop_bits(config::StopBits::STOP2);
@@ -44,9 +48,10 @@ impl Dmx {
             // Byte 0 is the start code (0 for dimmer data). Bytes 1 to 512 are the channels.
             let mut frame = [0u8; 513];
             loop {
-                let level = last_beat.lock().unwrap().map_or(0.0, |t| {
-                    1.0 - t.elapsed().as_secs_f32() * 1000.0 / FLASH_MS
-                });
+                let level = last_beat
+                    .lock()
+                    .unwrap()
+                    .map_or(0.0, |t| 1.0 - t.elapsed().as_secs_f32() * 1000.0 / FLASH_MS);
                 frame[1] = (level.clamp(0.0, 1.0) * 255.0) as u8;
                 // The UART sends the frame, then the break. The break before the next frame
                 // and the idle time after it make the reset sequence of DMX512.

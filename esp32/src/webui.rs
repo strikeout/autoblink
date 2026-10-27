@@ -54,7 +54,9 @@ impl Active {
     fn send(&self, text: &[u8]) {
         // A send waits for the HTTP server task, and that task takes this lock when a connection
         // closes. Send without the lock, so that the two tasks cannot block each other.
-        let (generation, Some(mut sender)) = self.0.lock().unwrap().clone() else { return };
+        let (generation, Some(mut sender)) = self.0.lock().unwrap().clone() else {
+            return;
+        };
         if sender.send(FrameType::Text(false), text).is_err() {
             let mut active = self.0.lock().unwrap();
             if active.0 == generation {
@@ -106,21 +108,30 @@ pub fn start(
         stack_size: 8 * 1024,
         uri_match_wildcard: true,
         max_open_sockets: 6,
-        keep_alive: Some(KeepAlive { idle_secs: 5, interval_secs: 5, probe_count: 3 }),
+        keep_alive: Some(KeepAlive {
+            idle_secs: 5,
+            interval_secs: 5,
+            probe_count: 3,
+        }),
         ..Default::default()
     })?;
     let active = Arc::new(Active::default());
 
     let wave_state = state.clone();
     server.fn_handler("/waveform/*", Method::Get, move |req| {
-        let deck = req.uri().rsplit('/').next().and_then(|n| n.parse::<u8>().ok());
+        let deck = req
+            .uri()
+            .rsplit('/')
+            .next()
+            .and_then(|n| n.parse::<u8>().ok());
         let overview = deck.and_then(|n| {
             let tracks = wave_state.tracks.0.lock().unwrap();
             tracks.get(&n).and_then(|t| t.overview.clone())
         });
         match overview {
             Some(o) => {
-                let mut resp = req.into_response(200, None, &[("Content-Type", "application/json")])?;
+                let mut resp =
+                    req.into_response(200, None, &[("Content-Type", "application/json")])?;
                 write_waveform(&mut resp, &o)
             }
             None => req.into_status_response(404)?.write_all(b"no waveform"),
@@ -142,7 +153,10 @@ pub fn start(
             req.into_response(
                 200,
                 None,
-                &[("Content-Type", "text/html; charset=utf-8"), ("Content-Encoding", "gzip")],
+                &[
+                    ("Content-Type", "text/html; charset=utf-8"),
+                    ("Content-Encoding", "gzip"),
+                ],
             )?
             .write_all(INDEX_HTML_GZ)
         })?;
@@ -195,7 +209,10 @@ pub fn start(
         // serde_json refuses that byte, so remove it.
         let text = buf.strip_suffix(&[0]).unwrap_or(&buf);
         let Ok(cmd) = serde_json::from_slice::<Value>(text) else {
-            return ws.send(FrameType::Text(false), error("The command is not valid JSON").as_bytes());
+            return ws.send(
+                FrameType::Text(false),
+                error("The command is not valid JSON").as_bytes(),
+            );
         };
         if cmd["type"] == "take_over" {
             take_over(ws, &ws_active)?;
@@ -224,7 +241,10 @@ pub fn start(
             match beat_rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
                 Ok((device, beat)) => {
                     beat_msg.clear();
-                    let _ = write!(beat_msg, r#"{{"type":"beat","device":{device},"beat":{beat}}}"#);
+                    let _ = write!(
+                        beat_msg,
+                        r#"{{"type":"beat","device":{device},"beat":{beat}}}"#
+                    );
                     active.send(beat_msg.as_bytes());
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -277,12 +297,24 @@ fn write_waveform<W: Write>(w: &mut W, o: &TrackOverview) -> Result<(), W::Error
         text.clear();
     }
     // The response is not a `std::io::Write`, so serde_json writes the tail into a buffer first.
-    let cues: Vec<CueJson> =
-        o.cues.iter().map(|c| CueJson { hot: c.hot_cue, start: c.start_ms, end: c.end_ms }).collect();
+    let cues: Vec<CueJson> = o
+        .cues
+        .iter()
+        .map(|c| CueJson {
+            hot: c.hot_cue,
+            start: c.start_ms,
+            end: c.end_ms,
+        })
+        .collect();
     let phrases: Vec<SpanJson> = o
         .phrases
         .iter()
-        .map(|p| SpanJson { kind: Disp(p.kind), start: p.start_ms, end: p.end_ms, fill: p.fill_ms })
+        .map(|p| SpanJson {
+            kind: Disp(p.kind),
+            start: p.start_ms,
+            end: p.end_ms,
+            fill: p.fill_ms,
+        })
         .collect();
     let mut tail = br#"],"cues":"#.to_vec();
     let _ = serde_json::to_writer(&mut tail, &cues);
@@ -329,7 +361,14 @@ fn command(cmd: &Value, settings: &Mutex<Settings>, state: &Arc<State>) -> Strin
                     None => Err("A set command needs a value".into()),
                 }
             } else {
-                settings.cycle(idx, if cmd["dir"].as_i64() == Some(-1) { -1 } else { 1 })
+                settings.cycle(
+                    idx,
+                    if cmd["dir"].as_i64() == Some(-1) {
+                        -1
+                    } else {
+                        1
+                    },
+                )
             };
             match result {
                 Ok(()) => settings.message(),
@@ -338,7 +377,11 @@ fn command(cmd: &Value, settings: &Mutex<Settings>, state: &Arc<State>) -> Strin
         }
         // The update thread does the work. The page sees the result in the "ota" field of the status.
         Some(kind @ ("ota_check" | "ota_install")) => {
-            let cmd = if kind == "ota_check" { OtaCmd::Check } else { OtaCmd::Install };
+            let cmd = if kind == "ota_check" {
+                OtaCmd::Check
+            } else {
+                OtaCmd::Install
+            };
             // The reply is small on purpose. The TLS handshake of the OTA thread takes about
             // 40 KB of heap, and the full settings message can then fail to allocate.
             match ota::run(state.clone(), cmd) {
@@ -385,7 +428,10 @@ struct Src {
 
 impl Serialize for Src {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(&format_args!("deck#{} {} (rb#{})", self.player, self.slot, self.id))
+        serializer.collect_str(&format_args!(
+            "deck#{} {} (rb#{})",
+            self.player, self.slot, self.id
+        ))
     }
 }
 
@@ -399,10 +445,14 @@ struct PhraseJson {
 
 /// Builds the track fields like `host/src/web/status.rs`.
 fn track_fields(d: &Deck, t: Option<&TrackData>) -> TrackFields {
-    let Some(t) = t.filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0) else {
+    let Some(t) = t.filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0)
+    else {
         return TrackFields::default();
     };
-    let mut f = TrackFields { wave: t.overview.as_ref().map(|o| o.rekordbox_id), ..Default::default() };
+    let mut f = TrackFields {
+        wave: t.overview.as_ref().map(|o| o.rekordbox_id),
+        ..Default::default()
+    };
     if let Some(m) = &t.metadata {
         let mut parts: Vec<String> = [&m.artist, &m.title, &m.key]
             .into_iter()
@@ -418,12 +468,15 @@ fn track_fields(d: &Deck, t: Option<&TrackData>) -> TrackFields {
     }
     match &t.structure {
         Some(Ok(ss)) => {
-            f.phrase = d.beat_count.and_then(|bc| phrase_status(ss, bc)).map(|p| PhraseJson {
-                kind: Disp(p.kind),
-                progress: p.progress,
-                fill: p.fill,
-                beats_left: p.beats_left,
-            });
+            f.phrase = d
+                .beat_count
+                .and_then(|bc| phrase_status(ss, bc))
+                .map(|p| PhraseJson {
+                    kind: Disp(p.kind),
+                    progress: p.progress,
+                    fill: p.fill,
+                    beats_left: p.beats_left,
+                });
         }
         Some(Err(reason)) => f.phrase_note = Some(format!("phrase info unavailable: {reason}")),
         // The fetch is still in progress.
@@ -534,11 +587,18 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
     let now = state.now_ms();
     let (decks, master_num, master_virtual) = {
         let tracker = state.tracker.lock().unwrap();
-        (tracker.decks().to_vec(), tracker.master().map(|m| m.num), tracker.master_is_virtual())
+        (
+            tracker.decks().to_vec(),
+            tracker.master().map(|m| m.num),
+            tracker.master_is_virtual(),
+        )
     };
     let fields: Vec<TrackFields> = {
         let tracks = state.tracks.0.lock().unwrap();
-        decks.iter().map(|d| track_fields(d, tracks.get(&d.num))).collect()
+        decks
+            .iter()
+            .map(|d| track_fields(d, tracks.get(&d.num)))
+            .collect()
     };
     let master = master_num.and_then(|n| decks.iter().find(|d| d.num == n));
     let deck_json: Vec<DeckJson> = decks
@@ -555,7 +615,11 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
             };
             DeckJson {
                 num: d.num,
-                name: if d.name.is_empty() { Cow::Owned(format!("Deck {}", d.num)) } else { Cow::Borrowed(&d.name) },
+                name: if d.name.is_empty() {
+                    Cow::Owned(format!("Deck {}", d.num))
+                } else {
+                    Cow::Borrowed(&d.name)
+                },
                 playing: d.is_playing(now),
                 master: is_master,
                 virtual_master: is_master && master_virtual,
@@ -580,7 +644,11 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
         .collect();
     let (clock, output) = {
         let midi = state.midi.lock().unwrap();
-        let clock = ClockJson { out16: midi.out16, state: midi.clock_state, delta_ms: midi.delta_ms };
+        let clock = ClockJson {
+            out16: midi.out16,
+            state: midi.clock_state,
+            delta_ms: midi.delta_ms,
+        };
         let output = OutputJson {
             port: "UART2 TX (IO17)",
             connected: true,
@@ -590,8 +658,16 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
             notes: midi.notes,
             ccs: midi.ccs,
             // Like the host: the history keeps an entry for 3 s, newest first.
-            notes_recent: midi.recent_notes.iter().filter_map(|&(n, t)| Some((n, age_ms(t)?))).collect(),
-            ccs_recent: midi.recent_ccs.iter().filter_map(|&(n, v, t)| Some((n, v, age_ms(t)?))).collect(),
+            notes_recent: midi
+                .recent_notes
+                .iter()
+                .filter_map(|&(n, t)| Some((n, age_ms(t)?)))
+                .collect(),
+            ccs_recent: midi
+                .recent_ccs
+                .iter()
+                .filter_map(|&(n, v, t)| Some((n, v, age_ms(t)?)))
+                .collect(),
             mtc: None,
             mtc_qf: 0,
             mtc_full: 0,
@@ -689,5 +765,7 @@ fn origin_allowed(origin: Option<&str>, host: Option<&str>) -> bool {
         host.rsplit_once(':').map_or(host, |(name, _)| name)
     }
     .to_ascii_lowercase();
-    same && (name.parse::<std::net::IpAddr>().is_ok() || name == "localhost" || name.ends_with(".local"))
+    same && (name.parse::<std::net::IpAddr>().is_ok()
+        || name == "localhost"
+        || name.ends_with(".local"))
 }

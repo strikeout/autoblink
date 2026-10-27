@@ -21,6 +21,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use autoblink_core_dbserver::{current_phrase_idx, phrase_info};
+use autoblink_core_midi::clock::Master;
+use autoblink_core_midi::{Clock, Mapper, MidiConfig, Out, Phrase, Smoother, Snapshot, CLOCK};
 use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::{Gpio17, Gpio35};
@@ -28,9 +31,6 @@ use esp_idf_svc::hal::task::queue::Queue;
 use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::sys;
-use autoblink_core_midi::clock::Master;
-use autoblink_core_dbserver::{current_phrase_idx, phrase_info};
-use autoblink_core_midi::{Clock, Mapper, MidiConfig, Out, Phrase, Smoother, Snapshot, CLOCK};
 
 use crate::State;
 
@@ -140,7 +140,14 @@ pub fn start(
                     last_master = b.device;
                 }
                 smoothed_bpm = smoother.push(b.bpm, cfg.smoothing_ms);
-                clock.beat(&cfg, b.at_us, b.device, b.beat_in_bar, smoothed_bpm, &mut send);
+                clock.beat(
+                    &cfg,
+                    b.at_us,
+                    b.device,
+                    b.beat_in_bar,
+                    smoothed_bpm,
+                    &mut send,
+                );
                 mapper.beat(&cfg, b.beat_in_bar, &mut send);
             }
 
@@ -150,7 +157,11 @@ pub fn start(
                 tracker.master().map_or((Snapshot::default(), None), |m| {
                     let snap = Snapshot {
                         device: m.num,
-                        bpm: if m.num == last_master && smoothed_bpm > 0.0 { smoothed_bpm } else { m.bpm },
+                        bpm: if m.num == last_master && smoothed_bpm > 0.0 {
+                            smoothed_bpm
+                        } else {
+                            m.bpm
+                        },
                         pitch: m.pitch,
                         phrase16: m.phrase16,
                         beat_phase: m.beat_phase(now_ms),

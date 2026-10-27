@@ -8,7 +8,10 @@ use std::time::Duration;
 
 use esp_idf_svc::eth::{EspEth, EthDriver, RmiiClockConfig, RmiiEth, RmiiEthChipset};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::hal::gpio::{self, Gpio0, Gpio16, Gpio18, Gpio19, Gpio21, Gpio22, Gpio23, Gpio25, Gpio26, Gpio27, Output, PinDriver};
+use esp_idf_svc::hal::gpio::{
+    self, Gpio0, Gpio16, Gpio18, Gpio19, Gpio21, Gpio22, Gpio23, Gpio25, Gpio26, Gpio27, Output,
+    PinDriver,
+};
 use esp_idf_svc::hal::mac::MAC;
 use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::ipv4::{self, Mask, RouterConfiguration, Subnet};
@@ -28,7 +31,11 @@ pub const MDNS_NAME: &str = "autoblink";
 /// `netif` removes the binding.
 pub fn bind_device(fd: RawFd, netif: &str) -> io::Result<()> {
     let mut req = sys::ifreq::default();
-    for (dst, src) in req.ifr_name.iter_mut().zip(netif.bytes().take(sys::IFNAMSIZ as usize - 1)) {
+    for (dst, src) in req
+        .ifr_name
+        .iter_mut()
+        .zip(netif.bytes().take(sys::IFNAMSIZ as usize - 1))
+    {
         *dst = src as _;
     }
     // SAFETY: `req` is a valid `ifreq`, and the length is its size.
@@ -41,7 +48,11 @@ pub fn bind_device(fd: RawFd, netif: &str) -> io::Result<()> {
             std::mem::size_of::<sys::ifreq>() as _,
         )
     };
-    if r == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// Opens a TCP connection to `addr` on the network interface `netif`. An empty `netif` is for
@@ -66,7 +77,9 @@ pub fn connect_on(netif: &str, addr: &SocketAddr, timeout: Duration) -> io::Resu
         sin_len: std::mem::size_of::<sys::sockaddr_in>() as _,
         sin_family: sys::AF_INET as _,
         sin_port: v4.port().to_be(),
-        sin_addr: sys::in_addr { s_addr: u32::from_ne_bytes(v4.ip().octets()) },
+        sin_addr: sys::in_addr {
+            s_addr: u32::from_ne_bytes(v4.ip().octets()),
+        },
         sin_zero: Default::default(),
     };
     // SAFETY: `sa` is a valid `sockaddr_in`, and the length is its size.
@@ -82,7 +95,11 @@ pub fn connect_on(netif: &str, addr: &SocketAddr, timeout: Duration) -> io::Resu
         if e.raw_os_error() != Some(sys::EINPROGRESS as i32) {
             return Err(e);
         }
-        let mut p = sys::pollfd { fd, events: sys::POLLOUT as _, revents: 0 };
+        let mut p = sys::pollfd {
+            fd,
+            events: sys::POLLOUT as _,
+            revents: 0,
+        };
         // SAFETY: `p` is one valid `pollfd`.
         match unsafe { sys::poll(&mut p, 1, timeout.as_millis() as _) } {
             0 => return Err(io::ErrorKind::TimedOut.into()),
@@ -164,7 +181,10 @@ pub fn start_wifi(
     let driver = WifiDriver::new(modem, sysloop, None)?;
     let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
         ip_configuration: Some(ipv4::Configuration::Router(RouterConfiguration {
-            subnet: Subnet { gateway: AP_IP, mask: Mask(24) },
+            subnet: Subnet {
+                gateway: AP_IP,
+                mask: Mask(24),
+            },
             dhcp_enabled: true,
             dns: None,
             secondary_dns: None,
@@ -173,8 +193,12 @@ pub fn start_wifi(
     })?;
     let mut wifi = EspWifi::wrap_all(driver, EspNetif::new(NetifStack::Sta)?, ap_netif)?;
     let ap = AccessPointConfiguration {
-        ssid: ssid.try_into().map_err(|_| anyhow::anyhow!("The WiFi name is too long"))?,
-        password: password.try_into().map_err(|_| anyhow::anyhow!("The WiFi password is too long"))?,
+        ssid: ssid
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("The WiFi name is too long"))?,
+        password: password
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("The WiFi password is too long"))?,
         auth_method: AuthMethod::WPA2Personal,
         channel: 6,
         max_connections: 4,
@@ -186,12 +210,19 @@ pub fn start_wifi(
         return Ok(wifi);
     };
     let client = ClientConfiguration {
-        ssid: join_ssid.as_str().try_into().map_err(|_| anyhow::anyhow!("The join WiFi name is too long"))?,
+        ssid: join_ssid
+            .as_str()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("The join WiFi name is too long"))?,
         password: join_password
             .as_str()
             .try_into()
             .map_err(|_| anyhow::anyhow!("The join WiFi password is too long"))?,
-        auth_method: if join_password.is_empty() { AuthMethod::None } else { AuthMethod::WPA2Personal },
+        auth_method: if join_password.is_empty() {
+            AuthMethod::None
+        } else {
+            AuthMethod::WPA2Personal
+        },
         ..Default::default()
     };
     wifi.set_configuration(&Configuration::Mixed(client, ap))?;

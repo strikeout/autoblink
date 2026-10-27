@@ -75,7 +75,9 @@ pub async fn reconnect_loop<F, L>(
         if midi_out.is_connected() {
             warned = false;
             let wanted = cfg.read().midi.output.clone();
-            let ports = tokio::task::spawn_blocking(list.clone()).await.unwrap_or_default();
+            let ports = tokio::task::spawn_blocking(list.clone())
+                .await
+                .unwrap_or_default();
             if port_present(&wanted, &ports) {
                 continue;
             }

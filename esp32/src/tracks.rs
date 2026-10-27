@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use autoblink_core_dbserver::{asking_player, fetch_with, SongStructure, TrackMetadata, TrackOverview};
+use autoblink_core_dbserver::{
+    asking_player, fetch_with, SongStructure, TrackMetadata, TrackOverview,
+};
 use autoblink_core_prolink::TrackRef;
 
 use esp_idf_svc::sys;
@@ -61,7 +63,13 @@ pub fn start(state: Arc<State>) -> anyhow::Result<Sender<TrackRef>> {
                     tracks.remove(&track.device);
                     continue;
                 }
-                tracks.insert(track.device, TrackData { rekordbox_id: track.rekordbox_id, ..Default::default() });
+                tracks.insert(
+                    track.device,
+                    TrackData {
+                        rekordbox_id: track.rekordbox_id,
+                        ..Default::default()
+                    },
+                );
                 drop(tracks);
                 if fetch_one(&state, track) {
                     continue;
@@ -73,9 +81,18 @@ pub fn start(state: Arc<State>) -> anyhow::Result<Sender<TrackRef>> {
                 while crate::ota::busy() && Instant::now() < until {
                     thread::sleep(Duration::from_secs(1));
                 }
-                let loaded = state.tracker.lock().unwrap().deck(track.device).map(|d| d.track.rekordbox_id);
+                let loaded = state
+                    .tracker
+                    .lock()
+                    .unwrap()
+                    .deck(track.device)
+                    .map(|d| d.track.rekordbox_id);
                 if loaded == Some(track.rekordbox_id) {
-                    log::info!("Deck {} track {}: the fetch starts again", track.device, track.rekordbox_id);
+                    log::info!(
+                        "Deck {} track {}: the fetch starts again",
+                        track.device,
+                        track.rekordbox_id
+                    );
                     fetch_one(&state, track);
                 }
             }
@@ -89,39 +106,65 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
     let (source, players) = {
         let tracker = state.tracker.lock().unwrap();
         // A track from rekordbox has a source player above 15, which is not a deck.
-        let source = tracker.device_address(track.source_player).map(|(name, ip)| (ip, name.to_owned()));
-        let players: Vec<(u8, u8)> =
-            tracker.decks().iter().map(|d| (d.num, d.track.source_player)).collect();
+        let source = tracker
+            .device_address(track.source_player)
+            .map(|(name, ip)| (ip, name.to_owned()));
+        let players: Vec<(u8, u8)> = tracker
+            .decks()
+            .iter()
+            .map(|d| (d.num, d.track.source_player))
+            .collect();
         (source, players)
     };
     // SAFETY: the two heap calls only read counters.
-    let (free, block) =
-        unsafe { (sys::esp_get_free_heap_size(), sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT)) };
+    let (free, block) = unsafe {
+        (
+            sys::esp_get_free_heap_size(),
+            sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT),
+        )
+    };
     let result = match source {
-        _ if free < MIN_FREE_HEAP || block < MIN_HEAP_BLOCK => {
-            Err(format!("not enough memory for the track data ({free} bytes free, largest block {block} bytes)"))
-        }
+        _ if free < MIN_FREE_HEAP || block < MIN_HEAP_BLOCK => Err(format!(
+            "not enough memory for the track data ({free} bytes free, largest block {block} bytes)"
+        )),
         Some((ip, name)) if ip != [0; 4] => {
             let own = state.own_device.load(Ordering::Relaxed);
             let asking = asking_player(own, track.source_player, &name, players);
             // Connect on the interface of the virtual CDJ.
             let netif = state.link.lock().unwrap().map_or("", |l| l.netif);
             let connect = |addr: &_, timeout| crate::net::connect_on(netif, addr, timeout);
-            fetch_with(&connect, ip.into(), asking, track.slot, track.track_type, track.rekordbox_id)
-                .map_err(|e| e.to_string())
+            fetch_with(
+                &connect,
+                ip.into(),
+                asking,
+                track.slot,
+                track.track_type,
+                track.rekordbox_id,
+            )
+            .map_err(|e| e.to_string())
         }
-        _ => Err(format!("player {} is not on the network", track.source_player)),
+        _ => Err(format!(
+            "player {} is not on the network",
+            track.source_player
+        )),
     };
 
     // The tracker checks the track ID itself. Lock it before the tracks, never inside them.
     if let Ok(f) = &result {
         if let Some(secs) = f.metadata.duration_s {
-            state.tracker.lock().unwrap().set_track_length(track.device, track.rekordbox_id, secs);
+            state
+                .tracker
+                .lock()
+                .unwrap()
+                .set_track_length(track.device, track.rekordbox_id, secs);
         }
     }
     let mut tracks = state.tracks.0.lock().unwrap();
     // A newer track on the deck makes this result stale.
-    let Some(data) = tracks.get_mut(&track.device).filter(|d| d.rekordbox_id == track.rekordbox_id) else {
+    let Some(data) = tracks
+        .get_mut(&track.device)
+        .filter(|d| d.rekordbox_id == track.rekordbox_id)
+    else {
         return true;
     };
     match result {
@@ -129,14 +172,23 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
             for w in &f.warnings {
                 log::warn!("Deck {} track {}: {w}", track.device, track.rekordbox_id);
             }
-            log::info!("Deck {}: {} - {}", track.device, f.metadata.artist, f.metadata.title);
+            log::info!(
+                "Deck {}: {} - {}",
+                track.device,
+                f.metadata.artist,
+                f.metadata.title
+            );
             data.metadata = Some(f.metadata);
             data.structure = Some(f.song_structure);
             data.overview = f.overview.map(Arc::new);
             true
         }
         Err(e) => {
-            log::warn!("Deck {} track {}: the fetch failed: {e}", track.device, track.rekordbox_id);
+            log::warn!(
+                "Deck {} track {}: the fetch failed: {e}",
+                track.device,
+                track.rekordbox_id
+            );
             data.structure = Some(Err(e));
             false
         }

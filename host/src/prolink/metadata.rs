@@ -223,7 +223,11 @@ pub async fn run(
             map.insert(key, ());
         }
 
-        let session = Arc::clone(sessions.entry(ip).or_insert_with(|| Arc::new(Semaphore::new(1))));
+        let session = Arc::clone(
+            sessions
+                .entry(ip)
+                .or_insert_with(|| Arc::new(Semaphore::new(1))),
+        );
         let inflight2 = Arc::clone(&inflight);
         let state2 = Arc::clone(&state);
         let warned2 = Arc::clone(&warned);

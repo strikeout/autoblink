@@ -105,7 +105,14 @@ pub fn fetch(
     track_type: u8,
     rekordbox_id: u32,
 ) -> Result<Fetched, FetchError> {
-    fetch_with(&TcpStream::connect_timeout, ip, asking, track_slot, track_type, rekordbox_id)
+    fetch_with(
+        &TcpStream::connect_timeout,
+        ip,
+        asking,
+        track_slot,
+        track_type,
+        rekordbox_id,
+    )
 }
 
 /// Like [`fetch`], but opens the two TCP connections with `connect`. Use it to select the

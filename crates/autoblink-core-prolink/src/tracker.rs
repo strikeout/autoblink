@@ -85,7 +85,11 @@ impl Deck {
     }
 
     fn period_ms(&self) -> f64 {
-        if self.bpm > 0.0 { 60_000.0 / self.bpm } else { 1_000.0 }
+        if self.bpm > 0.0 {
+            60_000.0 / self.bpm
+        } else {
+            1_000.0
+        }
     }
 }
 
@@ -113,7 +117,13 @@ pub struct Tracker {
 
 impl Tracker {
     pub const fn new() -> Self {
-        Self { decks: Vec::new(), peers: Vec::new(), beat_master: None, flag_master: None, own: 0 }
+        Self {
+            decks: Vec::new(),
+            peers: Vec::new(),
+            beat_master: None,
+            flag_master: None,
+            own: 0,
+        }
     }
 
     /// Sets the device number of this device, so that the tracker ignores its own packets.
@@ -131,7 +141,12 @@ impl Tracker {
             return;
         }
         if ka.device_type != DEV_CDJ || !self.is_player(ka.device_number) {
-            let peer = Peer { num: ka.device_number, name: ka.name.clone(), ip: ka.ip, last_seen_ms: now_ms };
+            let peer = Peer {
+                num: ka.device_number,
+                name: ka.name.clone(),
+                ip: ka.ip,
+                last_seen_ms: now_ms,
+            };
             match self.peers.iter_mut().find(|p| p.num == ka.device_number) {
                 Some(p) => *p = peer,
                 None => self.peers.push(peer),
@@ -205,7 +220,8 @@ impl Tracker {
         if deck.status_playing {
             deck.pitch = st.pitch_pct;
         }
-        deck.beat_count = (st.beat_count != u32::MAX && st.beat_count != 0).then_some(st.beat_count);
+        deck.beat_count =
+            (st.beat_count != u32::MAX && st.beat_count != 0).then_some(st.beat_count);
         if let Some(count) = deck.beat_count {
             // Like the host: the phrase position follows the beat number of the track.
             deck.phrase16 = ((count - 1) % 16 + 1) as u8;
@@ -252,7 +268,11 @@ impl Tracker {
         if secs == 0 {
             return;
         }
-        if let Some(d) = self.decks.iter_mut().find(|d| d.num == device && d.track.rekordbox_id == rekordbox_id) {
+        if let Some(d) = self
+            .decks
+            .iter_mut()
+            .find(|d| d.num == device && d.track.rekordbox_id == rekordbox_id)
+        {
             d.track_len_ms = Some(secs.saturating_mul(1000));
         }
     }
@@ -263,7 +283,8 @@ impl Tracker {
             .retain(|d| now_ms.saturating_sub(d.last_seen_ms) <= DECK_TIMEOUT_MS);
         self.peers
             .retain(|p| now_ms.saturating_sub(p.last_seen_ms) <= DECK_TIMEOUT_MS);
-        let present = |m: Option<u8>, decks: &[Deck]| m.filter(|n| decks.iter().any(|d| d.num == *n));
+        let present =
+            |m: Option<u8>, decks: &[Deck]| m.filter(|n| decks.iter().any(|d| d.num == *n));
         self.beat_master = present(self.beat_master, &self.decks);
         self.flag_master = present(self.flag_master, &self.decks);
     }
@@ -278,9 +299,12 @@ impl Tracker {
 
     /// The name and the IP address of any device on the network: a deck or another device.
     pub fn device_address(&self, num: u8) -> Option<(&str, [u8; 4])> {
-        self.deck(num)
-            .map(|d| (d.name.as_str(), d.ip))
-            .or_else(|| self.peers.iter().find(|p| p.num == num).map(|p| (p.name.as_str(), p.ip)))
+        self.deck(num).map(|d| (d.name.as_str(), d.ip)).or_else(|| {
+            self.peers
+                .iter()
+                .find(|p| p.num == num)
+                .map(|p| (p.name.as_str(), p.ip))
+        })
     }
 
     pub fn master(&self) -> Option<&Deck> {
@@ -300,7 +324,10 @@ impl Tracker {
         let i = match self.decks.iter().position(|d| d.num == num) {
             Some(i) => i,
             None => {
-                self.decks.push(Deck { num, ..Deck::default() });
+                self.decks.push(Deck {
+                    num,
+                    ..Deck::default()
+                });
                 self.decks.sort_by_key(|d| d.num);
                 self.decks.iter().position(|d| d.num == num).unwrap()
             }
@@ -414,8 +441,21 @@ mod tests {
     fn keepalive_names_the_deck_and_skips_other_devices() {
         let mut t = Tracker::new();
         t.on_keepalive(&keepalive(3, "XDJ-AZ"), 0);
-        t.on_keepalive(&KeepAlive { device_type: 1, ..keepalive(0x21, "DJM") }, 0);
-        t.on_keepalive(&KeepAlive { device_type: 3, ip: [10, 0, 0, 9], ..keepalive(17, "rekordbox") }, 0);
+        t.on_keepalive(
+            &KeepAlive {
+                device_type: 1,
+                ..keepalive(0x21, "DJM")
+            },
+            0,
+        );
+        t.on_keepalive(
+            &KeepAlive {
+                device_type: 3,
+                ip: [10, 0, 0, 9],
+                ..keepalive(17, "rekordbox")
+            },
+            0,
+        );
         assert_eq!(t.decks().len(), 1);
         assert_eq!(t.device_address(17), Some(("rekordbox", [10, 0, 0, 9])));
         assert_eq!(t.decks()[0].name, "XDJ-AZ");
@@ -449,10 +489,19 @@ mod tests {
     #[test]
     fn status_reports_a_track_change_once() {
         let mut t = Tracker::new();
-        let tr = t.on_cdj_status(&status(2, false, PlayState::Playing, 207), 0).unwrap();
-        assert_eq!((tr.device, tr.slot, tr.track_type, tr.rekordbox_id), (2, 3, 1, 207));
-        assert!(t.on_cdj_status(&status(2, false, PlayState::Playing, 207), 200).is_none());
-        let eject = t.on_cdj_status(&status(2, false, PlayState::NoTrack, 0), 400).unwrap();
+        let tr = t
+            .on_cdj_status(&status(2, false, PlayState::Playing, 207), 0)
+            .unwrap();
+        assert_eq!(
+            (tr.device, tr.slot, tr.track_type, tr.rekordbox_id),
+            (2, 3, 1, 207)
+        );
+        assert!(t
+            .on_cdj_status(&status(2, false, PlayState::Playing, 207), 200)
+            .is_none());
+        let eject = t
+            .on_cdj_status(&status(2, false, PlayState::NoTrack, 0), 400)
+            .unwrap();
         assert_eq!(eject.rekordbox_id, 0);
     }
 
@@ -484,7 +533,10 @@ mod tests {
         };
         t.on_abs_position(&p, 0);
         let d = t.deck(3).unwrap();
-        assert_eq!((d.playhead_ms, d.track_len_ms), (Some(12_345), Some(300_000)));
+        assert_eq!(
+            (d.playhead_ms, d.track_len_ms),
+            (Some(12_345), Some(300_000))
+        );
         t.set_track_length(3, 0, 299);
         assert_eq!(t.deck(3).unwrap().track_len_ms, Some(299_000));
     }
