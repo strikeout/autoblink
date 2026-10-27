@@ -81,18 +81,21 @@ const STATUS_INTERVAL: Duration = Duration::from_millis(100);
 struct Active(Mutex<(u32, Option<EspHttpWsDetachedSender>)>);
 
 impl Active {
-    fn send(&self, text: &[u8]) {
+    /// Returns true when this failed send removed the active page.
+    fn send(&self, text: &[u8]) -> bool {
         // A send waits for the HTTP server task, and that task takes this lock when a connection
         // closes. Send without the lock, so that the two tasks cannot block each other.
         let (generation, Some(mut sender)) = self.0.lock().unwrap().clone() else {
-            return;
+            return false;
         };
         if sender.send(FrameType::Text(false), text).is_err() {
             let mut active = self.0.lock().unwrap();
             if active.0 == generation {
                 active.1 = None;
+                return true;
             }
         }
+        false
     }
 
     /// Makes `sender` the active connection. Returns the old active connection.
@@ -235,14 +238,9 @@ pub fn start(
             return ws.send(FrameType::Text(false), msg.as_bytes());
         }
         if ws.is_closed() {
-            let _was_active = ws_active.remove(ws.session());
-            // A page that goes away while it holds the strobe never sends the release.
-            #[cfg(feature = "dmx")]
-            if _was_active {
-                ws_state
-                    .dmx_live
-                    .strobe_hold
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            // The active page can leave while it holds the strobe. It then never sends the release.
+            if ws_active.remove(ws.session()) {
+                release_strobe(&ws_state);
             }
             return Ok(());
         }
@@ -326,7 +324,9 @@ pub fn start(
                         beat_msg,
                         r#"{{"type":"beat","device":{device},"beat":{beat}}}"#
                     );
-                    active.send(beat_msg.as_bytes());
+                    if active.send(beat_msg.as_bytes()) {
+                        release_strobe(&state);
+                    }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -338,13 +338,25 @@ pub fn start(
                 if active.is_some() && !ota::busy() {
                     let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
                     status_message(&state, clock_enabled, &mut status);
-                    active.send(&status);
+                    if active.send(&status) {
+                        release_strobe(&state);
+                    }
                 }
             }
         }
     })?;
 
     Ok((server, beat_tx))
+}
+
+/// Releases the strobe hold. The active page can leave the network while it holds the strobe,
+/// and it cannot send the release.
+fn release_strobe(_state: &State) {
+    #[cfg(feature = "dmx")]
+    _state
+        .dmx_live
+        .strobe_hold
+        .store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Adds `GET /show` and `POST /show`.

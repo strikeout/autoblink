@@ -400,7 +400,6 @@ function onHello(m) {
   set('fwcur', 'v' + m.version);
   document.querySelectorAll('[data-cap]').forEach((e) => { e.hidden = !caps.has(e.dataset.cap); });
   if (caps.has('dmx') && !showTimer) loadShow();
-  if (caps.has('dmx')) liveSend(strobeHeld); // a box restart resets the master, and a lost release leaves the strobe on
 }
 
 function onStatus(s) {
@@ -431,6 +430,8 @@ function onStatus(s) {
   if (s.output) renderOutput(s.output);
   if (scenes) renderSceneLive(s.scene);
   if (s.dmx) dmxLast = s.dmx; // some status messages have no dmx field
+  const ms = $('ltmaster');
+  if (dmxLast && document.activeElement !== ms && !ms.matches(':active')) ms.value = dmxLast.master;
   renderLayers();
   if (s.decks) renderDecks(s);
   if (s.ota) renderOta(s.ota);
@@ -813,6 +814,7 @@ const setRows = new Map();
 const setGroups = new Map();
 let group = null, groupName = null;
 function onSettings(m) {
+  if (releaseLost) { releaseLost = false; liveSend(false); } // only the active page gets this message
   for (const it of m.items) {
     let row = setRows.get(it.idx);
     if (!row) {
@@ -1367,7 +1369,7 @@ const FIXTURE_TYPES = { dimmer: ['dimmer'], rgb: ['red', 'green', 'blue'], rgb_d
 const SWATCHES = [[255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255], [255, 255, 255]];
 const EVERY = [['beat', 'beat'], ['half', '½ beat'], ['bar', 'bar']];
 const EFFECTS = ['none', 'flash', 'pulse', 'chase', 'random', 'strobe', 'fog'];
-let show = null, strobeHeld = false, showTimer = 0, lookSel = 0, dmxLast = null, layerKey = '';
+let show = null, strobeHeld = false, releaseLost = false, showTimer = 0, lookSel = 0, dmxLast = null, layerKey = '';
 
 const chanLen = (f) => f.channels.length;
 const ftype = (f) => Object.keys(FIXTURE_TYPES).find((k) => FIXTURE_TYPES[k].join() === f.channels.join()) || 'custom';
@@ -1599,7 +1601,12 @@ function renderLayers() {
   $('ltstrobe').classList.toggle('on', !!(dmxLast && dmxLast.strobe_hold));
 }
 
-function liveSend(strobe) { strobeHeld = strobe; send({ type: 'dmx_live', master: +$('ltmaster').value, strobe }); }
+function liveSend(strobe) {
+  strobeHeld = strobe;
+  // A release that the page cannot send is sent again when the box accepts this page.
+  if (!strobe && (!ws || ws.readyState !== 1)) releaseLost = true;
+  send({ type: 'dmx_live', master: +$('ltmaster').value, strobe });
+}
 $('ltmaster').addEventListener('input', () => liveSend(strobeHeld));
 $('ltstrobe').addEventListener('pointerdown', (e) => { $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
 for (const t of ['pointerup', 'pointercancel']) $('ltstrobe').addEventListener(t, () => liveSend(false));
