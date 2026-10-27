@@ -104,11 +104,14 @@ impl Active {
 
     /// Removes the connection `session` if it is the active connection. Call it only on the HTTP
     /// server task, where the socket number of a closed connection is not yet free.
-    fn remove(&self, session: i32) {
+    /// Returns true when the session was the active page.
+    fn remove(&self, session: i32) -> bool {
         let mut active = self.0.lock().unwrap();
-        if active.1.as_ref().is_some_and(|a| a.session() == session) {
+        let was_active = active.1.as_ref().is_some_and(|a| a.session() == session);
+        if was_active {
             active.1 = None;
         }
+        was_active
     }
 
     fn is_some(&self) -> bool {
@@ -232,7 +235,15 @@ pub fn start(
             return ws.send(FrameType::Text(false), msg.as_bytes());
         }
         if ws.is_closed() {
-            ws_active.remove(ws.session());
+            let _was_active = ws_active.remove(ws.session());
+            // A page that goes away while it holds the strobe never sends the release.
+            #[cfg(feature = "dmx")]
+            if _was_active {
+                ws_state
+                    .dmx_live
+                    .strobe_hold
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
             return Ok(());
         }
 

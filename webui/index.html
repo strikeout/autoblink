@@ -400,6 +400,7 @@ function onHello(m) {
   set('fwcur', 'v' + m.version);
   document.querySelectorAll('[data-cap]').forEach((e) => { e.hidden = !caps.has(e.dataset.cap); });
   if (caps.has('dmx') && !showTimer) loadShow();
+  if (caps.has('dmx')) liveSend(strobeHeld); // a box restart resets the master, and a lost release leaves the strobe on
 }
 
 function onStatus(s) {
