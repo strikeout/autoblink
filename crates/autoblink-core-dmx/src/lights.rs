@@ -58,6 +58,7 @@ impl Lights {
         self.last_on_ms = Some(now_ms);
         if let Some(l) = self.layers.iter_mut().find(|l| l.preset == preset) {
             l.off_at = None;
+            l.manual = false;
             return;
         }
         self.layers.push(Layer {
@@ -175,16 +176,16 @@ impl Lights {
             .stopped_at
             .is_some_and(|s| now_ms >= s + IDLE_AFTER_MS && self.last_on_ms.is_none_or(|o| o <= s));
         let mut scratch = [0u8; UNIVERSE];
-        if self.layers.is_empty() || stopped {
-            if let Some(look) = show.idle.and_then(|p| show.look(p)) {
-                render(
-                    show,
-                    look,
-                    |r, k, n| factor(&look.rows[r].effect, beat, k, n),
-                    out,
-                );
-            }
-        } else {
+        // The idle look is the bottom layer. Thus a layer without a look never blacks out the rig.
+        if let Some(look) = show.idle.and_then(|p| show.look(p)) {
+            render(
+                show,
+                look,
+                |r, k, n| factor(&look.rows[r].effect, beat, k, n),
+                out,
+            );
+        }
+        if !stopped {
             for layer in &self.layers {
                 let Some(look) = show.look(layer.preset) else {
                     continue;
@@ -379,7 +380,29 @@ mod tests {
         l.on(1, 0);
         let mut out = [0; UNIVERSE];
         l.frame(&s, Some(&beat), &LIVE, 250, &mut out);
-        assert!((125..=129).contains(&out[3]), "{}", out[3]);
+        // The idle look (white, dimmer 50) is under the blue look (dimmer 255).
+        for (ch, want) in [(0, 152), (1, 127), (2, 127), (3, 255)] {
+            assert!(out[ch].abs_diff(want) <= 2, "{ch}: {}", out[ch]);
+        }
+    }
+
+    #[test]
+    fn layer_without_look_shows_idle() {
+        let s = show();
+        let mut l = Lights::default();
+        l.on(9, 0);
+        assert_eq!(frame(&mut l, &s, 10)[0..4], [50, 255, 255, 255]);
+    }
+
+    #[test]
+    fn on_makes_a_manual_layer_scene_held() {
+        let s = show();
+        let mut l = Lights::default();
+        l.test(&s, 1, 0);
+        l.on(1, 10);
+        l.fired(&s, Event::Drop, 1, 20);
+        assert_eq!(l.layers().collect::<Vec<_>>(), [1]);
+        assert_eq!(frame(&mut l, &s, 30)[3], 255);
     }
 
     #[test]
