@@ -7,7 +7,10 @@ pub type Universe = [u8; UNIVERSE];
 
 /// The fixtures of a group, with the position of each fixture in the group.
 /// A wrong index gives no fixture, because only an unsanitized show has one.
-fn group_fixtures(show: &Show, group: u8) -> impl Iterator<Item = (usize, usize, &Fixture)> + '_ {
+pub(crate) fn group_fixtures(
+    show: &Show,
+    group: u8,
+) -> impl Iterator<Item = (usize, usize, &Fixture)> + '_ {
     let ids = show
         .groups
         .get(usize::from(group))
@@ -20,7 +23,7 @@ fn group_fixtures(show: &Show, group: u8) -> impl Iterator<Item = (usize, usize,
 }
 
 /// The channel indices of a fixture. The universe end cuts the list.
-fn fixture_channels(f: &Fixture) -> impl Iterator<Item = (usize, Channel)> + '_ {
+pub(crate) fn fixture_channels(f: &Fixture) -> impl Iterator<Item = (usize, Channel)> + '_ {
     let start = usize::from(f.address).saturating_sub(1);
     f.channels
         .iter()

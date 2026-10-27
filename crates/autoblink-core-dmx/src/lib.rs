@@ -12,3 +12,5 @@ pub mod clock;
 pub use clock::*;
 pub mod effect;
 pub use effect::*;
+pub mod lights;
+pub use lights::*;
