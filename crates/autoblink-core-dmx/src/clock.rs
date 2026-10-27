@@ -71,8 +71,10 @@ impl BeatClock {
                 }
             }
         } else {
+            // A lost packet leaves a gap. The count goes on by the beats of the gap.
+            let gap = ((t - anchor) / period).round().max(1.0) as u32;
             self.anchor_ms = Some(t);
-            self.count = self.count.wrapping_add(1);
+            self.count = self.count.wrapping_add(gap);
             self.beat_in_bar = beat_in_bar;
             self.lateness.clear();
         }
@@ -125,6 +127,17 @@ mod tests {
         }
         c.beat(2000 - 40, 1, 120.0);
         assert_eq!(c.now(1960).unwrap().phase, 0.0);
+    }
+
+    #[test]
+    fn resync_counts_lost_beats() {
+        let mut c = BeatClock::default();
+        c.beat(0, 1, 120.0);
+        c.beat(500, 2, 120.0);
+        c.beat(1500, 4, 120.0);
+        let b = c.now(1500).unwrap();
+        assert_eq!(b.count, 3);
+        assert_eq!(b.beat_in_bar, 4);
     }
 
     #[test]

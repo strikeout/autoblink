@@ -25,7 +25,10 @@ pub fn factor(effect: &Effect, beat: Option<&Beat>, k: usize, n: usize) -> u8 {
         ),
         Every::Bar => (
             (f64::from(b.beat_in_bar.saturating_sub(1)) + b.phase) / 4.0,
-            b.count / 4,
+            // Count the bar starts, so that a bar steps with beat 1.
+            b.count
+                .wrapping_sub(u32::from(b.beat_in_bar.saturating_sub(1)))
+                / 4,
         ),
     };
     let lit = |on: bool| if on { 255 } else { 0 };
@@ -107,6 +110,15 @@ mod tests {
         let bar = Effect::Flash { every: Every::Bar };
         let v = factor(&bar, Some(&beat(0.0, 3, 2)), 0, 1);
         assert!(v == 31 || v == 32, "{v}");
+    }
+
+    #[test]
+    fn bar_count_follows_bar_start() {
+        let e = Effect::Chase { every: Every::Bar };
+        let lit =
+            |count, bib| (0..3).find(|&k| factor(&e, Some(&beat(0.0, bib, count)), k, 3) == 255);
+        assert_eq!(lit(2, 1), lit(5, 4));
+        assert_ne!(lit(2, 1), lit(6, 1));
     }
 
     #[test]
