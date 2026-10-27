@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs scripts/check.sh before each push.
+# Enable it once for each clone: git config core.hooksPath .githooks
+# Skip it for one push: git push --no-verify
+exec sh scripts/check.sh
