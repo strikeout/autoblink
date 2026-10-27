@@ -3,7 +3,11 @@
 //! The firmware keeps a show as JSON. `Show::from_json` always returns a valid show.
 //! No type here has an `f32` field, because LLVM for Xtensa cannot compile one.
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::marker::PhantomData;
+
+use serde::de::{IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// The number of channels in one DMX universe.
 pub const UNIVERSE: usize = 512;
@@ -12,6 +16,8 @@ pub const MAX_CHANNELS: usize = 32;
 pub const MAX_GROUPS: usize = 8;
 pub const MAX_LOOKS: usize = 32;
 pub const MAX_NAME: usize = 16;
+/// The most rows of one look. A row sets one group, so more rows than groups give nothing.
+pub const MAX_ROWS: usize = MAX_GROUPS;
 /// The longest cooldown of a look row, in seconds.
 const MAX_COOLDOWN_S: u16 = 600;
 
@@ -37,6 +43,7 @@ pub struct Fixture {
     pub name: String,
     /// The DMX start channel, 1 to 512.
     pub address: u16,
+    #[serde(deserialize_with = "bounded::<_, _, MAX_CHANNELS>")]
     pub channels: Vec<Channel>,
 }
 
@@ -44,6 +51,7 @@ pub struct Fixture {
 pub struct Group {
     pub name: String,
     /// Indices into `Show::fixtures`.
+    #[serde(deserialize_with = "bounded::<_, _, MAX_FIXTURES>")]
     pub fixtures: Vec<u8>,
 }
 
@@ -110,18 +118,55 @@ pub struct LookRow {
 pub struct Look {
     #[serde(default)]
     pub fade: Fade,
+    #[serde(deserialize_with = "bounded::<_, _, MAX_ROWS>")]
     pub rows: Vec<LookRow>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Show {
+    #[serde(deserialize_with = "bounded::<_, _, MAX_FIXTURES>")]
     pub fixtures: Vec<Fixture>,
+    #[serde(deserialize_with = "bounded::<_, _, MAX_GROUPS>")]
     pub groups: Vec<Group>,
     /// `looks[i]` is the look of preset `i`.
+    #[serde(deserialize_with = "bounded::<_, _, MAX_LOOKS>")]
     pub looks: Vec<Option<Look>>,
     /// The preset that plays when no other look plays.
     pub idle: Option<u8>,
+}
+
+/// Reads a JSON list and keeps only its first `N` entries. It reads the other entries as
+/// `IgnoredAny`, so they use no memory. Without this limit, a long list can use all of the heap
+/// of the firmware before `Show::sanitize` runs.
+fn bounded<'de, D, T, const N: usize>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Bounded<T, const N: usize>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>, const N: usize> Visitor<'de> for Bounded<T, N> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a list")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
+            let mut v = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(N));
+            while v.len() < N {
+                match seq.next_element()? {
+                    Some(x) => v.push(x),
+                    None => return Ok(v),
+                }
+            }
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(v)
+        }
+    }
+
+    d.deserialize_seq(Bounded::<T, N>(PhantomData))
 }
 
 fn clean(name: &mut String) {
@@ -151,6 +196,7 @@ impl Show {
         let groups = self.groups.len();
         for look in self.looks.iter_mut().flatten() {
             look.rows.retain(|r| usize::from(r.group) < groups);
+            look.rows.truncate(MAX_ROWS);
             for r in &mut look.rows {
                 r.cooldown_s = r.cooldown_s.min(MAX_COOLDOWN_S);
                 match &mut r.effect {
@@ -325,6 +371,65 @@ mod tests {
         assert!(json.contains(r#"{"fixed":5}"#));
         assert!(json.contains(r#""dimmer""#));
         assert_eq!(Show::from_json(json.as_bytes()), s);
+    }
+
+    /// A JSON list with `n` copies of `item`.
+    fn list(item: &str, n: usize) -> String {
+        format!("[{}]", vec![item; n].join(","))
+    }
+
+    #[test]
+    fn read_cuts_looks_without_sanitize() {
+        let json = format!(r#"{{"looks":{}}}"#, list("null", 40));
+        let s: Show = serde_json::from_str(&json).unwrap();
+        assert_eq!(s.looks.len(), MAX_LOOKS);
+    }
+
+    #[test]
+    fn read_cuts_rows_without_sanitize() {
+        let row = r#"{"group":0,"color":[0,0,0,0],"intensity":0}"#;
+        let json = format!(r#"{{"looks":[{{"rows":{}}}]}}"#, list(row, 20));
+        let s: Show = serde_json::from_str(&json).unwrap();
+        assert_eq!(s.looks[0].as_ref().unwrap().rows.len(), MAX_ROWS);
+    }
+
+    #[test]
+    fn read_continues_after_a_cut_list() {
+        let fixture = format!(
+            r#"{{"name":"a","channels":{},"address":7}}"#,
+            list(r#"{"fixed":1}"#, 40)
+        );
+        let group = format!(r#"{{"fixtures":{},"name":"g"}}"#, list("0", 40));
+        let json = format!(
+            r#"{{"fixtures":{},"groups":{},"looks":{},"idle":3}}"#,
+            list(&fixture, 40),
+            list(&group, 10),
+            list("null", 40)
+        );
+        let s: Show = serde_json::from_str(&json).unwrap();
+        assert_eq!(s.fixtures.len(), MAX_FIXTURES);
+        assert_eq!(s.fixtures[31].channels.len(), MAX_CHANNELS);
+        assert_eq!(s.fixtures[31].address, 7);
+        assert_eq!(s.groups.len(), MAX_GROUPS);
+        assert_eq!(s.groups[7].fixtures.len(), MAX_FIXTURES);
+        assert_eq!(s.groups[7].name, "g");
+        assert_eq!(s.idle, Some(3));
+    }
+
+    #[test]
+    fn sanitize_cuts_rows() {
+        let mut s = Show::default();
+        s.fixtures = vec![fixture(0)];
+        s.groups = vec![Group {
+            name: "a".into(),
+            fixtures: vec![0],
+        }];
+        s.looks = vec![Some(Look {
+            fade: Fade::Cut,
+            rows: vec![row(0, Effect::None); 20],
+        })];
+        s.sanitize();
+        assert_eq!(s.looks[0].as_ref().unwrap().rows.len(), MAX_ROWS);
     }
 
     #[test]

@@ -394,6 +394,14 @@ fn post_show(req: &mut Request<&mut EspHttpConnection>, state: &State) -> (u16, 
             format!("The show has {len} bytes. The limit is {MAX_SHOW_LEN} bytes."),
         );
     }
+    // The parsed show and the scratch buffer of serde_json for a long string need heap. A body
+    // larger than half of the largest free block can fail to allocate, and the box restarts.
+    // SAFETY: the heap call only reads counters.
+    let block = unsafe { sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT) };
+    if len > block / 2 {
+        log::warn!("POST /show refused: {len} bytes, largest free block {block} bytes");
+        return (503, "Not enough memory for the show. Try again.".into());
+    }
     // serde_json reads the body in small blocks. A full copy of the body is not on the heap.
     let body = std::io::BufReader::with_capacity(512, StdRead(&mut *req));
     let mut show: autoblink_core_dmx::Show = match serde_json::from_reader(body) {
