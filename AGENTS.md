@@ -66,9 +66,10 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `show.rs` (the `show` partition), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
 | `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable. The host uses `scenes.rs` too. | `clock.rs`, `mapper.rs`, `scenes.rs` (DMX scenes), `settings.rs` (host setting indices) |
+| `crates/autoblink-core-dmx` | DMX looks of the firmware, host-testable | `show.rs` (show model and limits), `render.rs` (look into universe), `clock.rs` (beat clock), `effect.rs` (intensity and bar effects), `lights.rs` (engine) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
@@ -126,10 +127,10 @@ All have `#[cfg(not(windows))]` guards around reuse_port calls.
 - **`cargo test --locked`** runs tests across all crates
 - No dedicated test infrastructure found (no `tests/` directory, no fixtures)
 - Do the builds on your computer. GitHub runs only quick checks.
-- Before a push, run `sh scripts/check.sh`. It runs the checks of CI. When the branch changes `esp32/`, `crates/` or `webui/`, it also builds the firmware with and without `dmx`.
+- Before a push, run `sh scripts/check.sh`. It runs the checks of CI. When the branch changes `esp32/`, `crates/` or `webui/`, it also builds the firmware with and without `dmx`. The feature `dmx` is a default feature, so `--no-default-features` builds without it.
 - `ci.yml` runs for each pull request and each merge to `main`. One Linux job checks the format, runs clippy with `-D warnings` and runs the tests. A change to Markdown or `docs/` only does not start it.
 - The Windows and macOS jobs of `ci.yml` run `cargo check` only after a merge to `main` or on a manual start.
-- `esp32-ci.yml` builds the firmware without `dmx` only after a merge to `main` or on a manual start. No test runs on the device.
+- `esp32-ci.yml` builds the default firmware (with `dmx`) only after a merge to `main` or on a manual start. No test runs on the device.
 - To start a workflow on a branch, run `gh workflow run ci.yml --ref <branch>` or `gh workflow run esp32-ci.yml --ref <branch>`.
 - The release workflows (`release.yml`, `esp32-release.yml`) start from a tag. They build all targets.
 - Coverage gaps: packet parsing, state machine transitions, BPM smoothing, MIDI clock transport
@@ -186,6 +187,19 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - A row entry of 32 and up is an extra note (`scenes::EXTRA_BASE`): 32 is `extra[0]`. The page moves the entries when it removes an extra note.
 - The status field `scene.events` counts each event in the order of `Event::ALL`, also without presets and while the scenes are off. The page keeps the same order in `SCENE_EVENTS`.
 
+### DMX show
+
+- The `show` partition holds the DMX show (`show, data, undefined, 0x3F0000, 0x10000` in `esp32/partitions.csv`). Its content is JSON. A u32 length comes first. The firmware writes the length last, so a write that stops early leaves the old show valid.
+- OTA does not change the partition table. Flash a box once over USB to add the partition.
+- Do not use the subtype `0x40` for the partition. It panics espflash 4.6.0. The table uses the named subtype `undefined`.
+- `GET /show` serializes the running show. `POST /show` is a CORS simple request with an Origin check. It answers 413 when the body is larger than 60 000 bytes. It answers 503 when the body is larger than half of the largest free heap block. The reader bounds the lists of the show while it reads them.
+- The firmware sends the capability `dmx` and the status field `dmx`. The page sends the WebSocket commands `dmx_live` and `dmx_fog`.
+- The `dmx` thread has priority 6 on core 1. Its stack is 6 KB. This size is an estimate. Measure it with `/mem` on a box.
+- The `midi` thread and `prolink-rx` send messages to the `dmx` thread through a queue of depth 32. A full queue drops a message. A dropped Off can leave a layer on until the next On or a stop.
+- The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
+- The strobe hold ends when the active page closes or a send to it fails.
+- The HTTP task has 8 KB of stack. Nobody has measured it under `POST /show`.
+
 ### Debug logs
 
 - Run `curl http://autoblink.local/log` to read the log over WiFi. The page shows no log.
@@ -227,7 +241,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 | IO33 | Status LED, with the label 485_EN on the board. While the master deck plays, it pulses for 120 ms on beat 1 and for 25 ms on the other beats. When no beat arrives for 2 s, it shows a blink code (see below). |
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
 | IO35 | UART2 RX. It is not used, but the UART driver needs a receive pin. |
-| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. Only with `--features dmx`. |
+| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. The `dmx` feature is on by default. |
 | IO36 | UART1 RX. It is not used, but the UART driver needs a receive pin. |
 
 The blink code of IO33 repeats every 2 s. The LED shows the first line that applies:
@@ -279,7 +293,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - The ESP32 MIDI output follows the host rules (`autoblink-core-midi`), with the phrase notes and CCs. It has no No Bass note, no MTC and no OSC.
 - The ESP32 page has no mixer section. The XDJ-AZ sends the EQ and fader positions only as USB MIDI, and the classic ESP32 has no USB host.
 - The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
-- The DMX output (`--features dmx`) flashes channel 1 on each beat. It has no settings yet.
+- The DMX output no longer flashes channel 1 on each beat. The `dmx` thread renders the looks of the show (see "DMX show").
 - The emulator has no `scenes` capability. The page hides the DMX Scenes panel there.
 - The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `autoblink-core-midi` yet.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`

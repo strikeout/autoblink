@@ -1603,7 +1603,7 @@ function renderLayers() {
 
 function liveSend(strobe) {
   strobeHeld = strobe;
-  // A release that the page cannot send is sent again when the box accepts this page.
+  // When the box accepts this page, the page sends the lost release again.
   if (!strobe && (!ws || ws.readyState !== 1)) releaseLost = true;
   send({ type: 'dmx_live', master: +$('ltmaster').value, strobe });
 }

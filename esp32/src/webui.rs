@@ -81,7 +81,7 @@ const STATUS_INTERVAL: Duration = Duration::from_millis(100);
 struct Active(Mutex<(u32, Option<EspHttpWsDetachedSender>)>);
 
 impl Active {
-    /// Returns true when this failed send removed the active page.
+    /// Returns true when the send failed and removed the active page.
     fn send(&self, text: &[u8]) -> bool {
         // A send waits for the HTTP server task, and that task takes this lock when a connection
         // closes. Send without the lock, so that the two tasks cannot block each other.
@@ -238,7 +238,7 @@ pub fn start(
             return ws.send(FrameType::Text(false), msg.as_bytes());
         }
         if ws.is_closed() {
-            // The active page can leave while it holds the strobe. It then never sends the release.
+            // The active page can leave the network while it holds the strobe. It then does not send the release.
             if ws_active.remove(ws.session()) {
                 release_strobe(&ws_state);
             }
