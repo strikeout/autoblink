@@ -58,22 +58,22 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "autoblink-core-dbserver"
-version = "1.23.2"
+version = "1.23.3"
 
 [[package]]
 name = "autoblink-core-midi"
-version = "1.23.2"
+version = "1.23.3"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "autoblink-core-prolink"
-version = "1.23.2"
+version = "1.23.3"
 
 [[package]]
 name = "autoblink-esp32"
-version = "1.23.2"
+version = "1.23.3"
 dependencies = [
  "anyhow",
  "autoblink-core-dbserver",
