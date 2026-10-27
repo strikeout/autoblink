@@ -25,8 +25,9 @@ const CC_LABELS: [&str; CC_COUNT] = [
 ];
 
 /// The host indices that the firmware supports.
-pub const INDICES: [usize; 24] =
-    [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+pub const INDICES: [usize; 24] = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+];
 
 /// One row of the settings message.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -78,15 +79,45 @@ fn item(cfg: &MidiConfig, idx: usize) -> SettingItem {
     match idx {
         3 => toggle("Clock Enabled", Some("MIDI Clock"), cfg.clock_enabled),
         4 => toggle("Clock Loop Sync", None, cfg.clock_loop_sync),
-        5 => number("BPM Smoothing", None, format!("{} ms", cfg.smoothing_ms), cfg.smoothing_ms.to_string(), None),
-        6 => number("Latency Comp", None, format!("{} ms", cfg.latency_ms), cfg.latency_ms.to_string(), None),
-        7 => number("Phrase Lock Stable", None, format!("{} bars", cfg.phrase_lock_bars), cfg.phrase_lock_bars.to_string(), None),
+        5 => number(
+            "BPM Smoothing",
+            None,
+            format!("{} ms", cfg.smoothing_ms),
+            cfg.smoothing_ms.to_string(),
+            None,
+        ),
+        6 => number(
+            "Latency Comp",
+            None,
+            format!("{} ms", cfg.latency_ms),
+            cfg.latency_ms.to_string(),
+            None,
+        ),
+        7 => number(
+            "Phrase Lock Stable",
+            None,
+            format!("{} bars", cfg.phrase_lock_bars),
+            cfg.phrase_lock_bars.to_string(),
+            None,
+        ),
         8 => toggle("Notes Enabled", Some("MIDI Notes"), cfg.notes_enabled),
         9 => plain("Note Channel", (cfg.note_channel + 1).to_string(), None),
         10 => plain("Beat Note", cfg.beat_note.to_string(), Some(cfg.send_beat)),
-        11 => plain("Downbeat Note", cfg.downbeat_note.to_string(), Some(cfg.send_downbeat)),
-        12 => plain("Phrase Change Note", cfg.phrase_change_note.to_string(), Some(cfg.send_phrase_change)),
-        13 => plain("Phrase Kind Base Note", cfg.phrase_base_note.to_string(), Some(cfg.send_phrase_kind)),
+        11 => plain(
+            "Downbeat Note",
+            cfg.downbeat_note.to_string(),
+            Some(cfg.send_downbeat),
+        ),
+        12 => plain(
+            "Phrase Change Note",
+            cfg.phrase_change_note.to_string(),
+            Some(cfg.send_phrase_change),
+        ),
+        13 => plain(
+            "Phrase Kind Base Note",
+            cfg.phrase_base_note.to_string(),
+            Some(cfg.send_phrase_kind),
+        ),
         15 => toggle("CC Enabled", Some("MIDI CC"), cfg.cc_enabled),
         16 => plain("CC Channel", (cfg.cc_channel + 1).to_string(), None),
         _ => {
@@ -127,7 +158,10 @@ pub fn cycle(cfg: &mut MidiConfig, idx: usize, dir: i8) -> Result<(), String> {
         3 => cfg.clock_enabled = !cfg.clock_enabled,
         4 => cfg.clock_loop_sync = !cfg.clock_loop_sync,
         6 => cfg.latency_ms = (cfg.latency_ms + if dir < 0 { -5 } else { 5 }).clamp(-1000, 1000),
-        7 => cfg.phrase_lock_bars = (cfg.phrase_lock_bars as i16 + dir.signum() as i16).clamp(1, 32) as u8,
+        7 => {
+            cfg.phrase_lock_bars =
+                (cfg.phrase_lock_bars as i16 + dir.signum() as i16).clamp(1, 32) as u8
+        }
         8 => cfg.notes_enabled = !cfg.notes_enabled,
         10 => cfg.send_beat = !cfg.send_beat,
         11 => cfg.send_downbeat = !cfg.send_downbeat,
@@ -191,7 +225,10 @@ mod tests {
         v["ccs"].as_array_mut().unwrap().truncate(8);
         v["ccs"][0]["num"] = 99.into();
         let cfg: MidiConfig = serde_json::from_value(v).unwrap();
-        assert_eq!((cfg.ccs[0].num, cfg.ccs[8].num, cfg.ccs[10].num), (99, 20, 22));
+        assert_eq!(
+            (cfg.ccs[0].num, cfg.ccs[8].num, cfg.ccs[10].num),
+            (99, 20, 22)
+        );
     }
 
     #[test]

@@ -1,11 +1,16 @@
 name: ESP32 CI
 
+# The firmware build takes about 5 minutes. It runs after a merge to main and on a manual start.
+# Before a push, `sh scripts/check.sh` builds the firmware with and without the DMX feature.
 on:
   push:
     branches: [main]
     paths: ["esp32/**", "crates/**", "webui/**", ".github/workflows/esp32-ci.yml"]
-  pull_request:
-    paths: ["esp32/**", "crates/**", "webui/**", ".github/workflows/esp32-ci.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: esp32-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,6 +19,7 @@ jobs:
   esp32-build:
     name: Build ESP32 firmware (WT32-ETH01)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -49,16 +55,6 @@ jobs:
             esp32/target
           key: esp32-${{ hashFiles('esp32/Cargo.lock', 'esp32/.cargo/config.toml', 'esp32/sdkconfig.defaults') }}
 
-      - name: Build with the DMX output
-        working-directory: esp32
-        run: cargo build --release --locked --features dmx
-
       - name: Build
         working-directory: esp32
         run: cargo build --release --locked
-
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: esp32-firmware
-          path: esp32/target/xtensa-esp32-espidf/release/autoblink-esp32

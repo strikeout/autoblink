@@ -233,13 +233,22 @@ impl Clock {
             return;
         }
         self.bars = 0;
-        let Some(error) = self.earliest.take() else { return };
+        let Some(error) = self.earliest.take() else {
+            return;
+        };
         self.last_error_ms = Some(error / 1000.0);
         if error.abs() < DEADBAND {
             return;
         }
-        let duration = (cfg.smoothing_ms as f64 * 1000.0).max(1000.0).max(10.0 * error.abs());
-        self.slew = Some(Slew { start: now_f, duration, total: error, applied: 0.0 });
+        let duration = (cfg.smoothing_ms as f64 * 1000.0)
+            .max(1000.0)
+            .max(10.0 * error.abs());
+        self.slew = Some(Slew {
+            start: now_f,
+            duration,
+            total: error,
+            applied: 0.0,
+        });
     }
 
     /// The time from the nearest beat of the grid to `now`, in µs. The part of the slew that the
@@ -291,7 +300,11 @@ mod tests {
     const BEAT: u64 = 500_000; // 120 BPM
 
     fn master(playing: bool) -> Option<Master> {
-        Some(Master { device: 1, playing, bpm: 120.0 })
+        Some(Master {
+            device: 1,
+            playing,
+            bpm: 120.0,
+        })
     }
 
     fn run(f: impl FnOnce(&mut dyn FnMut(Out))) -> Vec<Out> {
@@ -332,7 +345,9 @@ mod tests {
         let mut now = 0;
         while now < BEAT {
             now += 1000;
-            n += pulses(&run(|o| { c.poll(&cfg, now, master(true), &mut |x| o(x)); }));
+            n += pulses(&run(|o| {
+                c.poll(&cfg, now, master(true), &mut |x| o(x));
+            }));
         }
         // The pulse at time 0 came with Start, so one beat later 24 more are out.
         assert_eq!(n, 24);
@@ -341,7 +356,10 @@ mod tests {
 
     #[test]
     fn latency_moves_the_send_time() {
-        let cfg = MidiConfig { latency_ms: 5, ..MidiConfig::default() };
+        let cfg = MidiConfig {
+            latency_ms: 5,
+            ..MidiConfig::default()
+        };
         let mut c = started(&cfg);
         let next = c.poll(&cfg, 0, master(true), &mut |_| {}).unwrap();
         assert_eq!(next, BEAT / 24 + 5_000);
@@ -351,30 +369,57 @@ mod tests {
     fn loop_sync_stops_when_the_master_stops() {
         let cfg = MidiConfig::default();
         let mut c = started(&cfg);
-        let out = run(|o| { c.poll(&cfg, 10, master(false), &mut |x| o(x)); });
+        let out = run(|o| {
+            c.poll(&cfg, 10, master(false), &mut |x| o(x));
+        });
         assert_eq!(out, [Out::Realtime(STOP)]);
         assert_eq!(c.state_label(), "wait");
     }
 
     #[test]
     fn without_loop_sync_a_restart_continues_at_the_beat() {
-        let cfg = MidiConfig { clock_loop_sync: false, ..MidiConfig::default() };
+        let cfg = MidiConfig {
+            clock_loop_sync: false,
+            ..MidiConfig::default()
+        };
         let mut c = Clock::default();
         c.poll(&cfg, 0, master(true), &mut |_| {});
         let out = run(|o| c.beat(&cfg, 0, 1, 3, 120.0, &mut |x| o(x)));
         assert_eq!(out, [Out::Realtime(START), Out::Realtime(CLOCK)]);
         // A pause does not stop the clock.
-        assert!(run(|o| { c.poll(&cfg, 10, master(false), &mut |x| o(x)); }).is_empty());
+        assert!(run(|o| {
+            c.poll(&cfg, 10, master(false), &mut |x| o(x));
+        })
+        .is_empty());
         // A new master stops it. Its first beat continues from the song position.
-        let other = Some(Master { device: 2, playing: true, bpm: 120.0 });
-        assert_eq!(run(|o| { c.poll(&cfg, 20, other, &mut |x| o(x)); }), [Out::Realtime(STOP)]);
+        let other = Some(Master {
+            device: 2,
+            playing: true,
+            bpm: 120.0,
+        });
+        assert_eq!(
+            run(|o| {
+                c.poll(&cfg, 20, other, &mut |x| o(x));
+            }),
+            [Out::Realtime(STOP)]
+        );
         let out = run(|o| c.beat(&cfg, 30, 2, 2, 120.0, &mut |x| o(x)));
-        assert_eq!(out, [Out::SongPosition(4), Out::Realtime(CONTINUE), Out::Realtime(CLOCK)]);
+        assert_eq!(
+            out,
+            [
+                Out::SongPosition(4),
+                Out::Realtime(CONTINUE),
+                Out::Realtime(CLOCK)
+            ]
+        );
     }
 
     #[test]
     fn a_late_downbeat_slews_the_grid() {
-        let cfg = MidiConfig { phrase_lock_bars: 1, ..MidiConfig::default() };
+        let cfg = MidiConfig {
+            phrase_lock_bars: 1,
+            ..MidiConfig::default()
+        };
         let mut c = started(&cfg);
         // The next downbeat comes 4 beats plus 10 ms later than the grid expects.
         let at = 4 * BEAT + 10_000;
@@ -405,7 +450,10 @@ mod tests {
 
     #[test]
     fn the_correction_uses_the_earliest_beat() {
-        let cfg = MidiConfig { phrase_lock_bars: 2, ..MidiConfig::default() };
+        let cfg = MidiConfig {
+            phrase_lock_bars: 2,
+            ..MidiConfig::default()
+        };
         let mut c = started(&cfg);
         bar(&mut c, &cfg, BEAT, [150_000, 40_000, 180_000, 90_000]);
         bar(&mut c, &cfg, 5 * BEAT, [120_000, 30_000, 200_000, 160_000]);
@@ -415,7 +463,10 @@ mod tests {
 
     #[test]
     fn a_small_error_does_not_move_the_grid() {
-        let cfg = MidiConfig { phrase_lock_bars: 1, ..MidiConfig::default() };
+        let cfg = MidiConfig {
+            phrase_lock_bars: 1,
+            ..MidiConfig::default()
+        };
         let mut c = started(&cfg);
         bar(&mut c, &cfg, BEAT, [4_000, 3_000, 4_000, 4_000]);
         assert!((c.last_error_ms().unwrap() - 3.0).abs() < 0.1);
@@ -426,11 +477,20 @@ mod tests {
     fn a_long_stall_resyncs_on_the_next_downbeat() {
         let cfg = MidiConfig::default();
         let mut c = started(&cfg);
-        let out = run(|o| { c.poll(&cfg, 2 * BEAT + 1000, master(true), &mut |x| o(x)); });
+        let out = run(|o| {
+            c.poll(&cfg, 2 * BEAT + 1000, master(true), &mut |x| o(x));
+        });
         // 48 pulses were due. The clock sends only 48 % 24 = 0 of them.
         assert_eq!(pulses(&out), 0);
         let out = run(|o| c.beat(&cfg, 4 * BEAT, 1, 1, 120.0, &mut |x| o(x)));
-        assert_eq!(out, [Out::Realtime(STOP), Out::Realtime(START), Out::Realtime(CLOCK)]);
+        assert_eq!(
+            out,
+            [
+                Out::Realtime(STOP),
+                Out::Realtime(START),
+                Out::Realtime(CLOCK)
+            ]
+        );
     }
 
     #[test]
@@ -438,7 +498,9 @@ mod tests {
         let mut cfg = MidiConfig::default();
         let mut c = started(&cfg);
         cfg.clock_enabled = false;
-        let out = run(|o| { c.poll(&cfg, 10, master(true), &mut |x| o(x)); });
+        let out = run(|o| {
+            c.poll(&cfg, 10, master(true), &mut |x| o(x));
+        });
         assert_eq!(out, [Out::Realtime(STOP)]);
         assert_eq!(c.state_label(), "idle");
     }

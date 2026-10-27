@@ -169,7 +169,7 @@ impl DjState {
             dev.current_phrase_idx = None;
             dev.prev_phrase_idx = None;
             // An eject has rekordbox_id 0. It clears the metadata but loads no track.
-            (s.rekordbox_id != 0).then(|| TrackChange {
+            (s.rekordbox_id != 0).then_some(TrackChange {
                 device_number: s.device_number,
                 track_source_player: s.track_source_player,
                 track_slot: s.track_slot,
@@ -492,6 +492,7 @@ impl DjState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_link_state(
         &mut self,
         bpm: f64,

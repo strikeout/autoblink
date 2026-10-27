@@ -30,6 +30,10 @@ cargo run -p autoblink-esp32-emulator
 # Tests (all crates)
 cargo test --locked
 
+# The checks of CI before a push: format, clippy, tests, and the firmware build when the branch changes it
+sh scripts/check.sh            # --esp32 always builds the firmware, --no-esp32 never builds it
+git config core.hooksPath .githooks   # once for each clone: the pre-push hook runs scripts/check.sh
+
 # Single workspace member
 cargo test -p autoblink-host
 cargo build -p autoblink-esp32-emulator
@@ -120,7 +124,13 @@ All have `#[cfg(not(windows))]` guards around reuse_port calls.
 
 - **`cargo test --locked`** runs tests across all crates
 - No dedicated test infrastructure found (no `tests/` directory, no fixtures)
-- ESP32 CI (`esp32-ci.yml`) builds the firmware when a change touches `esp32/`, `crates/` or `webui/`. No test runs on the device.
+- Do the builds on your computer. GitHub runs only quick checks.
+- Before a push, run `sh scripts/check.sh`. It runs the checks of CI. When the branch changes `esp32/`, `crates/` or `webui/`, it also builds the firmware with and without `dmx`.
+- `ci.yml` runs for each pull request and each merge to `main`. One Linux job checks the format, runs clippy with `-D warnings` and runs the tests. A change to Markdown or `docs/` only does not start it.
+- The Windows and macOS jobs of `ci.yml` run `cargo check` only after a merge to `main` or on a manual start.
+- `esp32-ci.yml` builds the firmware without `dmx` only after a merge to `main` or on a manual start. No test runs on the device.
+- To start a workflow on a branch, run `gh workflow run ci.yml --ref <branch>` or `gh workflow run esp32-ci.yml --ref <branch>`.
+- The release workflows (`release.yml`, `esp32-release.yml`) start from a tag. They build all targets.
 - Coverage gaps: packet parsing, state machine transitions, BPM smoothing, MIDI clock transport
 
 ## ESP32 Build Requirements
@@ -257,6 +267,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 ## Constraints
 
 - **until 2027-01-11** — Keep the host app alive under every fault. A task must restart after a panic (`runtime::supervise`). A blocking call must not run on a tokio worker. An FFI callback must not capture Rust data, because the vendored `rusty_link` callback setters keep a dangling pointer.
+- **until 2027-01-25** — After each merge to `main`, build `main` on the local computer. Run `git checkout main && git pull`, then `sh scripts/check.sh --esp32 && cargo build --release --locked`. GitHub Actions runs only quick checks, because the account has a limit of free Actions minutes.
 
 ## graphify
 

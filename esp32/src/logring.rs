@@ -56,7 +56,13 @@ impl Log for Logger {
         let mut line = String::new();
         // SAFETY: esp_log_timestamp has no preconditions.
         let ms = unsafe { sys::esp_log_timestamp() };
-        let _ = write!(line, "{ms} {} {}: {}", &record.level().as_str()[..1], record.target(), record.args());
+        let _ = write!(
+            line,
+            "{ms} {} {}: {}",
+            &record.level().as_str()[..1],
+            record.target(),
+            record.args()
+        );
         if line.len() > MAX_LINE {
             let mut end = MAX_LINE;
             while !line.is_char_boundary(end) {
@@ -111,7 +117,11 @@ pub fn init() {
         // SAFETY: this function holds LOCK. The volatile read accepts the random data after a power-on.
         let valid = unsafe { addr_of!((*r).magic).read_volatile() } == MAGIC;
         // SAFETY: a valid magic number shows that the previous start wrote the ring.
-        let previous = if valid { contents(unsafe { &*r }) } else { String::new() };
+        let previous = if valid {
+            contents(unsafe { &*r })
+        } else {
+            String::new()
+        };
         // SAFETY: this function holds LOCK.
         unsafe {
             addr_of_mut!((*r).magic).write(MAGIC);
@@ -137,9 +147,17 @@ pub fn text() -> String {
         contents(unsafe { &*ring() })
     };
     let previous = PREVIOUS.get().map_or("", String::as_str);
-    let previous = if previous.is_empty() { "(no lines: the box started from power-on)\n" } else { previous };
+    let previous = if previous.is_empty() {
+        "(no lines: the box started from power-on)\n"
+    } else {
+        previous
+    };
     let crash = CRASH.lock().unwrap_or_else(|e| e.into_inner());
-    let crash = if crash.is_empty() { "(no core dump)\n" } else { crash.as_str() };
+    let crash = if crash.is_empty() {
+        "(no core dump)\n"
+    } else {
+        crash.as_str()
+    };
     format!("=== The last crash ===\n{crash}=== The previous start ===\n{previous}=== This start ===\n{current}")
 }
 
@@ -160,8 +178,12 @@ pub fn report_core_dump() {
             }
         }
         let mut reason = [0u8; 200];
-        if sys::esp_core_dump_get_panic_reason(reason.as_mut_ptr().cast(), reason.len()) == sys::ESP_OK {
-            let reason = CStr::from_bytes_until_nul(&reason).map(CStr::to_string_lossy).unwrap_or_default();
+        if sys::esp_core_dump_get_panic_reason(reason.as_mut_ptr().cast(), reason.len())
+            == sys::ESP_OK
+        {
+            let reason = CStr::from_bytes_until_nul(&reason)
+                .map(CStr::to_string_lossy)
+                .unwrap_or_default();
             crash_line(format!("The last crash: {reason}"));
         }
         let mut s: sys::esp_core_dump_summary_t = std::mem::zeroed();
@@ -169,13 +191,20 @@ pub fn report_core_dump() {
             let task = CStr::from_ptr(s.exc_task.as_ptr()).to_string_lossy();
             let bt = &s.exc_bt_info;
             let depth = (bt.depth as usize).min(bt.bt.len());
-            let addrs: Vec<String> = bt.bt[..depth].iter().map(|a| format!("{a:#010x}")).collect();
+            let addrs: Vec<String> = bt.bt[..depth]
+                .iter()
+                .map(|a| format!("{a:#010x}"))
+                .collect();
             crash_line(format!(
                 "The last crash: task {task}, PC {:#010x}, cause {}, address {:#010x}{}",
                 s.exc_pc,
                 s.ex_info.exc_cause,
                 s.ex_info.exc_vaddr,
-                if bt.corrupted { ", the backtrace is corrupt" } else { "" }
+                if bt.corrupted {
+                    ", the backtrace is corrupt"
+                } else {
+                    ""
+                }
             ));
             crash_line(format!("The last crash: backtrace {}", addrs.join(" ")));
         }

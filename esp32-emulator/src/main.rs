@@ -172,7 +172,11 @@ impl EmulatorState {
         state.add_log(0, "INFO", "MIDI: GPIO1(IN) GPIO3(OUT) @ 31250");
         state.add_log(0, "INFO", "Pro DJ Link virtual CDJ #5");
         state.add_log(0, "INFO", "Listening on UDP:50000,50001,50002");
-        state.add_log(0, "INFO", "Proactive participation enabled (keep-alive + status templates)");
+        state.add_log(
+            0,
+            "INFO",
+            "Proactive participation enabled (keep-alive + status templates)",
+        );
         state.add_log(0, "INFO", "Ready for Pro DJ Link packets...");
         state
     }
@@ -195,30 +199,51 @@ impl EmulatorState {
 
     fn refresh_master(&mut self) {
         let prev_master = self.master_idx;
-        
+
         // 1. Priority: Explicit master flag from a deck
-        let explicit_master = self.decks.iter().position(|d| d.is_master && d.device_number != 0);
-        
+        let explicit_master = self
+            .decks
+            .iter()
+            .position(|d| d.is_master && d.device_number != 0);
+
         if let Some(idx) = explicit_master {
             if self.master_idx != idx {
                 let deck = &self.decks[idx];
-                self.add_log(0, "INFO", format!("Master handoff: #{} ({}) is now MASTER", deck.device_number, deck.name));
+                self.add_log(
+                    0,
+                    "INFO",
+                    format!(
+                        "Master handoff: #{} ({}) is now MASTER",
+                        deck.device_number, deck.name
+                    ),
+                );
             }
             self.master_idx = idx;
             return;
         }
 
         // 2. Fallback: First playing deck (if no explicit master)
-        let playing_deck = self.decks.iter().position(|d| d.is_playing && d.device_number != 0);
+        let playing_deck = self
+            .decks
+            .iter()
+            .position(|d| d.is_playing && d.device_number != 0);
         if let Some(idx) = playing_deck {
             if self.master_idx != idx {
                 let deck = &self.decks[idx];
-                self.add_log(0, "INFO", format!("Master fallback: #{} ({}) is PLAYING", deck.device_number, deck.name));
+                self.add_log(
+                    0,
+                    "INFO",
+                    format!(
+                        "Master fallback: #{} ({}) is PLAYING",
+                        deck.device_number, deck.name
+                    ),
+                );
             }
             self.master_idx = idx;
         } else {
             // 3. Last resort: Keep current master if it still exists, otherwise reset to 0
-            if self.master_idx >= self.decks.len() || self.decks[self.master_idx].device_number == 0 {
+            if self.master_idx >= self.decks.len() || self.decks[self.master_idx].device_number == 0
+            {
                 if prev_master != 0 {
                     self.add_log(0, "WARN", "Master lost: no active or playing decks");
                 }
@@ -232,14 +257,16 @@ impl EmulatorState {
             return;
         }
 
-        if &data[..10] != autoblink_core_prolink::MAGIC {
+        if data[..10] != autoblink_core_prolink::MAGIC {
             return;
         }
 
         let pkt_type = data[10];
 
         match port {
-            autoblink_core_prolink::PORT_DISCOVERY => self.handle_discovery_packet(addr, pkt_type, data),
+            autoblink_core_prolink::PORT_DISCOVERY => {
+                self.handle_discovery_packet(addr, pkt_type, data)
+            }
             autoblink_core_prolink::PORT_BEAT => self.handle_beat_packet(addr, pkt_type, data),
             autoblink_core_prolink::PORT_STATUS => self.handle_status_packet(addr, pkt_type, data),
             _ => {}
@@ -272,7 +299,14 @@ impl EmulatorState {
                         if self.decks[idx].name.is_empty() {
                             self.decks[idx].device_type = ka.device_type;
                             self.decks[idx].name = ka.name.clone();
-                            self.add_log(0, "INFO", format!("Identified: {} #{} ({})", ka.name, ka.device_number, type_name));
+                            self.add_log(
+                                0,
+                                "INFO",
+                                format!(
+                                    "Identified: {} #{} ({})",
+                                    ka.name, ka.device_number, type_name
+                                ),
+                            );
                         }
                     } else if let Some(slot) = self.find_empty_slot() {
                         self.decks[slot].device_number = ka.device_number;
@@ -280,7 +314,14 @@ impl EmulatorState {
                         self.decks[slot].name = ka.name.clone();
                         self.decks[slot].ip = Some(ka.ip);
                         self.decks[slot].last_seen = std::time::Instant::now();
-                        self.add_log(0, "INFO", format!("Discovered: {} #{} ({})", ka.name, ka.device_number, type_name));
+                        self.add_log(
+                            0,
+                            "INFO",
+                            format!(
+                                "Discovered: {} #{} ({})",
+                                ka.name, ka.device_number, type_name
+                            ),
+                        );
                     }
                 }
             }
@@ -293,7 +334,11 @@ impl EmulatorState {
             0x00 | 0x02 | 0x04 => {
                 if data.len() >= 12 {
                     let device_num = data[11];
-                    self.add_log(2, "DEBUG", format!("Claim {}: device #{}", pkt_type, device_num));
+                    self.add_log(
+                        2,
+                        "DEBUG",
+                        format!("Claim {}: device #{}", pkt_type, device_num),
+                    );
                 }
             }
             0x08 => {
@@ -311,7 +356,11 @@ impl EmulatorState {
                     if let Some(idx) = self.find_deck(beat.device_number) {
                         self.decks[idx].bpm = beat.effective_bpm;
                         self.decks[idx].pitch = beat.pitch_pct;
-                        self.decks[idx].beat = if beat.beat_in_bar == 0 { 4 } else { beat.beat_in_bar };
+                        self.decks[idx].beat = if beat.beat_in_bar == 0 {
+                            4
+                        } else {
+                            beat.beat_in_bar
+                        };
                         self.decks[idx].last_seen = std::time::Instant::now();
 
                         let old_beat = self.decks[idx].beat;
@@ -323,19 +372,28 @@ impl EmulatorState {
                         self.decks[idx].is_playing = true;
                     }
 
-                    if self.decks.get(self.master_idx).map(|d| d.device_number) == Some(beat.device_number) {
+                    if self.decks.get(self.master_idx).map(|d| d.device_number)
+                        == Some(beat.device_number)
+                    {
                         self.midi_note_count += 1;
                         self.midi_cc_count += 1;
                         self.last_note = self.midi_config.beat_note;
                         self.last_note_ch = self.midi_config.note_channel;
                         self.last_cc = self.midi_config.beat_phase_cc;
-                        self.last_cc_val = (beat.beat_in_bar * 31) as u8;
+                        self.last_cc_val = beat.beat_in_bar * 31;
                         self.last_cc_ch = self.midi_config.cc_channel;
                         self.last_note_at = Some(Instant::now());
                         self.last_cc_at = Some(Instant::now());
                     }
 
-                    self.add_log(2, "DEBUG", format!("Beat #{} bpm={:.2} beat={}/4", beat.device_number, beat.effective_bpm, beat.beat_in_bar));
+                    self.add_log(
+                        2,
+                        "DEBUG",
+                        format!(
+                            "Beat #{} bpm={:.2} beat={}/4",
+                            beat.device_number, beat.effective_bpm, beat.beat_in_bar
+                        ),
+                    );
                 }
             }
             autoblink_core_prolink::PKT_ABS_POSITION => {
@@ -345,14 +403,23 @@ impl EmulatorState {
                         self.decks[idx].pitch = abs.pitch_pct;
                         self.decks[idx].last_seen = std::time::Instant::now();
                     }
-                    if self.decks.get(self.master_idx).map(|d| d.device_number) == Some(abs.device_number) {
+                    if self.decks.get(self.master_idx).map(|d| d.device_number)
+                        == Some(abs.device_number)
+                    {
                         self.midi_cc_count += 1;
                         self.last_cc = self.midi_config.bar_phase_cc;
                         self.last_cc_val = 64;
                         self.last_cc_ch = self.midi_config.cc_channel;
                         self.last_cc_at = Some(Instant::now());
                     }
-                    self.add_log(2, "DEBUG", format!("AbsPosition #{} pos={}ms bpm={:.2}", abs.device_number, abs.playhead_ms, abs.effective_bpm));
+                    self.add_log(
+                        2,
+                        "DEBUG",
+                        format!(
+                            "AbsPosition #{} pos={}ms bpm={:.2}",
+                            abs.device_number, abs.playhead_ms, abs.effective_bpm
+                        ),
+                    );
                 }
             }
             _ => {}
@@ -370,7 +437,7 @@ impl EmulatorState {
                         self.decks[idx].is_on_air = s.is_on_air;
                         self.decks[idx].pitch = s.pitch_pct;
                         self.decks[idx].last_seen = std::time::Instant::now();
-                        
+
                         if s.is_master {
                             // Clear master flag from all other decks if this one claims it
                             for i in 0..self.decks.len() {
@@ -379,15 +446,30 @@ impl EmulatorState {
                                 }
                             }
                         }
-                        
+
                         self.decks[idx].is_master = s.is_master;
                         self.decks[idx].bpm = s.effective_bpm;
                         self.decks[idx].beat = s.beat_in_bar;
                     }
 
-                    let playing_str = if s.play_state.is_playing() || s.is_playing_flag { "playing" } else { "stopped" };
+                    let playing_str = if s.play_state.is_playing() || s.is_playing_flag {
+                        "playing"
+                    } else {
+                        "stopped"
+                    };
                     let master_str = if s.is_master { " MASTER" } else { "" };
-                    self.add_log(0, "INFO", format!("Status #{} {} bpm={:.2}{} (beat={})", s.device_number, playing_str, s.effective_bpm, master_str, s.beat_in_bar));
+                    self.add_log(
+                        0,
+                        "INFO",
+                        format!(
+                            "Status #{} {} bpm={:.2}{} (beat={})",
+                            s.device_number,
+                            playing_str,
+                            s.effective_bpm,
+                            master_str,
+                            s.beat_in_bar
+                        ),
+                    );
                 }
             }
             autoblink_core_prolink::PKT_MIXER_STATUS => {
@@ -406,7 +488,16 @@ impl EmulatorState {
                             self.decks[idx].bpm = bpm;
                         }
                     }
-                    self.add_log(0, "DEBUG", format!("Mixer #{} is {} (bpm={:?})", s.device_number, if s.is_master { "master" } else { "slave" }, s.track_bpm));
+                    self.add_log(
+                        0,
+                        "DEBUG",
+                        format!(
+                            "Mixer #{} is {} (bpm={:?})",
+                            s.device_number,
+                            if s.is_master { "master" } else { "slave" },
+                            s.track_bpm
+                        ),
+                    );
                 }
             }
             _ => {}
@@ -415,18 +506,22 @@ impl EmulatorState {
 
     fn find_empty_slot(&self) -> Option<usize> {
         for (i, d) in self.decks.iter().enumerate() {
-            if d.device_number == 0 { return Some(i); }
+            if d.device_number == 0 {
+                return Some(i);
+            }
         }
         None
     }
 
     fn find_deck(&self, device_num: u8) -> Option<usize> {
-        self.decks.iter().position(|d| d.device_number == device_num)
+        self.decks
+            .iter()
+            .position(|d| d.device_number == device_num)
     }
 
     fn tick(&mut self) {
         self.tick += 1;
-        
+
         let now = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(2);
 
@@ -445,25 +540,34 @@ impl EmulatorState {
         self.refresh_master();
 
         let master_idx = self.master_idx;
-        let master_bpm = if master_idx < self.decks.len() { self.decks[master_idx].bpm } else { 0.0 };
-        let master_playing = if master_idx < self.decks.len() { self.decks[master_idx].is_playing } else { false };
-        
+        let master_bpm = if master_idx < self.decks.len() {
+            self.decks[master_idx].bpm
+        } else {
+            0.0
+        };
+        let master_playing = if master_idx < self.decks.len() {
+            self.decks[master_idx].is_playing
+        } else {
+            false
+        };
+
         if master_bpm > 0.0 && master_playing {
             let clocks_to_add = ((24.0 * master_bpm) / 600.0).round() as u64;
             if clocks_to_add > 0 {
                 self.midi_clock_count += clocks_to_add;
-            } else if self.tick % 5 == 0 {
+            } else if self.tick.is_multiple_of(5) {
                 self.midi_clock_count += 1;
             }
         }
 
-        if self.tick % 500 == 0 {
+        if self.tick.is_multiple_of(500) {
             self.add_log(0, "INFO", "MIDI clock: 24PPQ running");
         }
     }
 
     fn visible_decks(&self) -> Vec<&DeckState> {
-        self.decks.iter()
+        self.decks
+            .iter()
             .filter(|d| d.device_number != 0 && d.device_number != self.virtual_device_num)
             .collect()
     }
@@ -587,8 +691,16 @@ impl EmulatorState {
         let note = |v: &str| v.parse::<u8>().ok().filter(|v| *v <= 127);
         let channel = |v: &str| v.parse::<u8>().ok().filter(|v| (1..=16).contains(v));
         let ok = match idx {
-            5 => value.parse::<u64>().ok().filter(|v| *v <= 1000).map(|v| c.smoothing_ms = v),
-            6 => value.parse::<i64>().ok().filter(|v| (-1000..=1000).contains(v)).map(|v| c.latency_ms = v),
+            5 => value
+                .parse::<u64>()
+                .ok()
+                .filter(|v| *v <= 1000)
+                .map(|v| c.smoothing_ms = v),
+            6 => value
+                .parse::<i64>()
+                .ok()
+                .filter(|v| (-1000..=1000).contains(v))
+                .map(|v| c.latency_ms = v),
             8 => channel(value).map(|v| c.note_channel = v),
             9 => note(value).map(|v| c.beat_note = v),
             10 => note(value).map(|v| c.downbeat_note = v),
@@ -614,7 +726,8 @@ impl EmulatorState {
             3 => self.midi_config.clock_enabled = !self.midi_config.clock_enabled,
             6 => {
                 let step = if dir < 0 { -5 } else { 5 };
-                self.midi_config.latency_ms = (self.midi_config.latency_ms + step).clamp(-1000, 1000);
+                self.midi_config.latency_ms =
+                    (self.midi_config.latency_ms + step).clamp(-1000, 1000);
             }
             _ => return false,
         }
@@ -627,7 +740,11 @@ impl EmulatorState {
         let first = self.log_total - self.logs.len() as u64;
         let skip = seq.saturating_sub(first) as usize;
         (
-            self.logs.iter().skip(skip).map(|l| l.message.clone()).collect(),
+            self.logs
+                .iter()
+                .skip(skip)
+                .map(|l| l.message.clone())
+                .collect(),
             self.log_total,
         )
     }
@@ -667,7 +784,10 @@ pub async fn run_emulator() -> Result<()> {
         let mut buf = [0u8; 4096];
         loop {
             if let Ok((len, addr)) = sock_50000_recv.recv_from(&mut buf).await {
-                state_net.write().await.handle_packet(addr, 50000, &buf[..len]);
+                state_net
+                    .write()
+                    .await
+                    .handle_packet(addr, 50000, &buf[..len]);
             }
         }
     });
@@ -696,7 +816,10 @@ pub async fn run_emulator() -> Result<()> {
         let mut buf = [0u8; 4096];
         loop {
             if let Ok((len, addr)) = sock.recv_from(&mut buf).await {
-                state_net3.write().await.handle_packet(addr, 50002, &buf[..len]);
+                state_net3
+                    .write()
+                    .await
+                    .handle_packet(addr, 50002, &buf[..len]);
             }
         }
     });
@@ -709,12 +832,12 @@ pub async fn run_emulator() -> Result<()> {
         let mut interval = interval(Duration::from_millis(1500));
         let mac = [0x02, 0xAB, 0xCD, 0xEF, 0x01, 0x02];
         let name = build::pad_name("autoblink-emu");
-        
+
         loop {
             interval.tick().await;
             let s = state_part.read().await;
             let dev_num = s.virtual_device_num;
-            
+
             // 1. Broadcast keep-alive
             // We use 10.10.10.50 as our IP in the packet for the emulator
             let my_ip = [10, 10, 10, 50];
@@ -722,10 +845,14 @@ pub async fn run_emulator() -> Result<()> {
             if let Err(e) = sock_part.send_to(&ka_pkt, "255.255.255.255:50000").await {
                 eprintln!("Failed to send keep-alive: {}", e);
             }
-            
+
             // 2. Unicast status template to all discovered decks on port 50002
             let status_pkt = build::build_status_packet(&name, dev_num);
-            for deck in s.decks.iter().filter(|d| d.device_number != 0 && d.ip.is_some()) {
+            for deck in s
+                .decks
+                .iter()
+                .filter(|d| d.device_number != 0 && d.ip.is_some())
+            {
                 if let Some(ip) = deck.ip {
                     let addr = SocketAddr::from((ip, 50002));
                     if let Err(e) = sock_part.send_to(&status_pkt, addr).await {
@@ -808,10 +935,16 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
         host.rsplit_once(':').map_or(host, |(name, _)| name)
     }
     .to_ascii_lowercase();
-    same && (name.parse::<std::net::IpAddr>().is_ok() || name == "localhost" || name.ends_with(".local"))
+    same && (name.parse::<std::net::IpAddr>().is_ok()
+        || name == "localhost"
+        || name.ends_with(".local"))
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, headers: HeaderMap, State(sh): State<Shared>) -> Response {
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    State(sh): State<Shared>,
+) -> Response {
     if !origin_allowed(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -888,7 +1021,11 @@ async fn handle_command(sh: &Shared, text: &str) -> Option<String> {
     let mut s = sh.state.write().await;
     match cmd["type"].as_str() {
         Some("cycle") => {
-            let dir = if cmd["dir"].as_i64().unwrap_or(1) < 0 { -1 } else { 1 };
+            let dir = if cmd["dir"].as_i64().unwrap_or(1) < 0 {
+                -1
+            } else {
+                1
+            };
             s.cycle_setting(idx, dir);
             None
         }

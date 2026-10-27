@@ -66,7 +66,6 @@ pub struct OtaStatus {
     pub error: Option<String>,
 }
 
-
 /// `true` while an update thread runs.
 static BUSY: AtomicBool = AtomicBool::new(false);
 
@@ -120,8 +119,12 @@ pub fn run(state: Arc<State>, cmd: OtaCmd) -> Result<(), String> {
 
 fn start_check(state: Arc<State>) -> Result<(), String> {
     // SAFETY: the heap calls only read counters.
-    let (free, block) =
-        unsafe { (sys::esp_get_free_heap_size(), sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT)) };
+    let (free, block) = unsafe {
+        (
+            sys::esp_get_free_heap_size(),
+            sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT),
+        )
+    };
     if free < CHECK_MIN_FREE || block < CHECK_MIN_BLOCK {
         return Err(format!(
             "Not enough memory for the check: {free} bytes free, largest block {block} bytes. \
@@ -138,7 +141,9 @@ fn start_check(state: Arc<State>) -> Result<(), String> {
         }
         BUSY.store(false, Ordering::Release);
     });
-    spawned.map(|_| ()).map_err(|e| format!("The firmware update cannot start a thread: {e}"))
+    spawned
+        .map(|_| ())
+        .map_err(|e| format!("The firmware update cannot start a thread: {e}"))
 }
 
 fn request_install(state: &State) -> Result<(), String> {
@@ -182,7 +187,11 @@ pub fn mark_valid() {
     // not fit into its strings. Thus read the label of the partition directly.
     // SAFETY: the running partition is a static entry of the partition table, or null.
     let label = unsafe { sys::esp_ota_get_running_partition().as_ref() }
-        .map(|p| unsafe { std::ffi::CStr::from_ptr(p.label.as_ptr()) }.to_string_lossy().into_owned())
+        .map(|p| {
+            unsafe { std::ffi::CStr::from_ptr(p.label.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        })
         .unwrap_or_default();
     match EspOta::new().and_then(|mut ota| ota.mark_running_slot_valid()) {
         Ok(()) => log::info!("The app in slot {label} is marked valid"),
@@ -207,7 +216,12 @@ fn check(state: &Mutex<OtaStatus>) -> anyhow::Result<bool> {
     let newer = newer(&latest, env!("CARGO_PKG_VERSION"))
         .ok_or_else(|| anyhow!("The release has the version {latest:?}. It is not x.y.z."))?;
     log::info!("Firmware update: the release has the version {latest}");
-    set(state, if newer { "available" } else { "up-to-date" }, Some(latest), 0);
+    set(
+        state,
+        if newer { "available" } else { "up-to-date" },
+        Some(latest),
+        0,
+    );
     Ok(newer)
 }
 
@@ -232,7 +246,8 @@ fn install(state: &Mutex<OtaStatus>) -> anyhow::Result<()> {
     let mut ota = EspOta::new()?;
     // Erase each sector before the write to it. One erase of the full slot stops the other
     // tasks for some seconds.
-    let mut update = ota.initiate_update_with_known_size(sys::OTA_WITH_SEQUENTIAL_WRITES as usize)?;
+    let mut update =
+        ota.initiate_update_with_known_size(sys::OTA_WITH_SEQUENTIAL_WRITES as usize)?;
     let mut buf = vec![0u8; 4096];
     let mut done = 0;
     loop {
@@ -249,7 +264,10 @@ fn install(state: &Mutex<OtaStatus>) -> anyhow::Result<()> {
     }
     // esp_ota_end examines the image. It refuses an image for another chip or with a bad checksum.
     update.complete()?;
-    log::info!("Firmware update: {} is written. The firmware restarts.", latest.as_deref().unwrap_or("?"));
+    log::info!(
+        "Firmware update: {} is written. The firmware restarts.",
+        latest.as_deref().unwrap_or("?")
+    );
     thread::sleep(Duration::from_secs(1));
     // SAFETY: esp_restart has no preconditions.
     unsafe { sys::esp_restart() }
@@ -267,7 +285,9 @@ fn get(url: &str) -> anyhow::Result<EspHttpConnection> {
         ..Default::default()
     })?;
     conn.initiate_request(Method::Get, url, &[])
-        .with_context(|| format!("No connection to {url}. The box needs a network with internet."))?;
+        .with_context(|| {
+            format!("No connection to {url}. The box needs a network with internet.")
+        })?;
     conn.initiate_response()?;
     match conn.status() {
         200 => Ok(conn),
@@ -291,7 +311,10 @@ fn fix_dns() {
     }
     let mut dns = sys::esp_netif_dns_info_t::default();
     // SAFETY: `sta` is a live netif, and `dns` is a valid output buffer.
-    if unsafe { sys::esp_netif_get_dns_info(sta, sys::esp_netif_dns_type_t_ESP_NETIF_DNS_MAIN, &mut dns) } != sys::ESP_OK {
+    if unsafe {
+        sys::esp_netif_get_dns_info(sta, sys::esp_netif_dns_type_t_ESP_NETIF_DNS_MAIN, &mut dns)
+    } != sys::ESP_OK
+    {
         return;
     }
     // SAFETY: the ip4 member is valid for each address type, because it is at the start of the union.
@@ -303,11 +326,18 @@ fn fix_dns() {
     dns.ip.u_addr.ip4.addr = u32::from_ne_bytes(PUBLIC_DNS.octets());
     dns.ip.type_ = sys::ESP_IPADDR_TYPE_V4 as u8;
     // SAFETY: `sta` is a live netif, and `dns` holds an IPv4 address.
-    unsafe { sys::esp_netif_set_dns_info(sta, sys::esp_netif_dns_type_t_ESP_NETIF_DNS_MAIN, &mut dns) };
+    unsafe {
+        sys::esp_netif_set_dns_info(sta, sys::esp_netif_dns_type_t_ESP_NETIF_DNS_MAIN, &mut dns)
+    };
 }
 
 fn set(state: &Mutex<OtaStatus>, name: &'static str, latest: Option<String>, progress: u8) {
-    *state.lock().unwrap() = OtaStatus { state: name, latest, progress, error: None };
+    *state.lock().unwrap() = OtaStatus {
+        state: name,
+        latest,
+        progress,
+        error: None,
+    };
 }
 
 /// Returns `Some(true)` when the version `a` is newer than `b`. Returns `None` when `a` or `b` is

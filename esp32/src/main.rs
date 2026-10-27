@@ -28,15 +28,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use autoblink_core_prolink::Tracker;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::gpio::PinDriver;
-use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::mdns::EspMdns;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys;
-use autoblink_core_prolink::Tracker;
 
 use crate::midi::MidiStatus;
 use crate::net::{EthPins, AP_IP};
@@ -94,7 +94,10 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     // SAFETY: esp_reset_reason has no preconditions.
     let reset_reason = reset_reason(unsafe { sys::esp_reset_reason() });
-    log::info!("AUTOBLINK {} starts. Reason for the restart: {reset_reason}", env!("CARGO_PKG_VERSION"));
+    log::info!(
+        "AUTOBLINK {} starts. Reason for the restart: {reset_reason}",
+        env!("CARGO_PKG_VERSION")
+    );
     logring::report_core_dump();
     let p = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
@@ -106,7 +109,9 @@ fn run() -> anyhow::Result<()> {
 
     let mut mac = [0u8; 6];
     // SAFETY: the buffer has the 6 bytes that a MAC address needs.
-    sys::esp!(unsafe { sys::esp_read_mac(mac.as_mut_ptr(), sys::esp_mac_type_t_ESP_MAC_WIFI_SOFTAP) })?;
+    sys::esp!(unsafe {
+        sys::esp_read_mac(mac.as_mut_ptr(), sys::esp_mac_type_t_ESP_MAC_WIFI_SOFTAP)
+    })?;
     let default_ssid = format!("autoblink-{:02X}{:02X}", mac[4], mac[5]);
     let settings = Settings::new(nvs, default_ssid)?;
     let ssid = settings.ssid();
@@ -118,7 +123,9 @@ fn run() -> anyhow::Result<()> {
         log::info!("WiFi \"{join}\": the firmware joins this network");
     }
     // mDNS answers on all networks. Without it, the page is still at its IP addresses.
-    let _mdns = start_mdns().inspect_err(|e| log::warn!("mDNS is off: {e}")).ok();
+    let _mdns = start_mdns()
+        .inspect_err(|e| log::warn!("mDNS is off: {e}"))
+        .ok();
 
     let (eth, _osc) = net::start_ethernet(
         EthPins {
@@ -142,8 +149,14 @@ fn run() -> anyhow::Result<()> {
         log::info!("Firmware update: the firmware starts only the network for the download");
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
-            let sta = wifi.sta_netif().get_ip_info().is_ok_and(|i| !i.ip.is_unspecified());
-            let eth_ip = eth.netif().get_ip_info().is_ok_and(|i| !i.ip.is_unspecified() && !i.ip.is_link_local());
+            let sta = wifi
+                .sta_netif()
+                .get_ip_info()
+                .is_ok_and(|i| !i.ip.is_unspecified());
+            let eth_ip = eth
+                .netif()
+                .get_ip_info()
+                .is_ok_and(|i| !i.ip.is_unspecified() && !i.ip.is_link_local());
             if sta || eth_ip {
                 break;
             }
@@ -172,7 +185,13 @@ fn run() -> anyhow::Result<()> {
         }),
         start: Instant::now(),
     });
-    let midi_beats = midi::start(p.uart2, p.pins.gpio17, p.pins.gpio35, state.clone(), settings.midi.clone())?;
+    let midi_beats = midi::start(
+        p.uart2,
+        p.pins.gpio17,
+        p.pins.gpio35,
+        state.clone(),
+        settings.midi.clone(),
+    )?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
     let (_server, web_beats) = webui::start(state.clone(), settings.clone())?;
@@ -227,8 +246,20 @@ fn run() -> anyhow::Result<()> {
     loop {
         state.tracker.lock().unwrap().expire(state.now_ms());
         // Free the track data of a deck that left the network.
-        let decks: Vec<u8> = state.tracker.lock().unwrap().decks().iter().map(|d| d.num).collect();
-        state.tracks.0.lock().unwrap().retain(|n, _| decks.contains(n));
+        let decks: Vec<u8> = state
+            .tracker
+            .lock()
+            .unwrap()
+            .decks()
+            .iter()
+            .map(|d| d.num)
+            .collect();
+        state
+            .tracks
+            .0
+            .lock()
+            .unwrap()
+            .retain(|n, _| decks.contains(n));
         settings.lock().unwrap().save_midi();
         // SAFETY: the heap calls only read counters.
         let (free, min, block) = unsafe {
@@ -241,7 +272,9 @@ fn run() -> anyhow::Result<()> {
         // The time of this line in GET /log shows the event that used the heap in the last second.
         if min.saturating_add(HEAP_LOW_STEP) <= heap_low {
             heap_low = min;
-            log::warn!("Heap low point: {min} bytes. Now {free} bytes free, largest block {block} bytes");
+            log::warn!(
+                "Heap low point: {min} bytes. Now {free} bytes free, largest block {block} bytes"
+            );
         }
         if Instant::now() >= next_heap_log {
             next_heap_log += Duration::from_secs(60);
@@ -258,7 +291,10 @@ fn run() -> anyhow::Result<()> {
                 join_retry = JOIN_RETRY;
             } else {
                 join_retry = (join_retry * 2).min(JOIN_RETRY_MAX);
-                log::info!("WiFi \"{name}\": the firmware tries to join. The next try is in {} s", join_retry.as_secs());
+                log::info!(
+                    "WiFi \"{name}\": the firmware tries to join. The next try is in {} s",
+                    join_retry.as_secs()
+                );
                 if let Err(e) = wifi.connect() {
                     log::warn!("WiFi: the connection did not start: {e}");
                 }
@@ -266,7 +302,11 @@ fn run() -> anyhow::Result<()> {
             next_join = Instant::now() + join_retry;
         }
 
-        let info = eth.netif().get_ip_info().ok().filter(|i| !i.ip.is_unspecified());
+        let info = eth
+            .netif()
+            .get_ip_info()
+            .ok()
+            .filter(|i| !i.ip.is_unspecified());
         let eth_ip = info.map(|i| (i.ip, i.subnet.mask.0));
         let sta_info = join_ssid
             .as_ref()
@@ -288,8 +328,15 @@ fn run() -> anyhow::Result<()> {
                 quiet_since = None;
                 dwell = SWITCH_AFTER;
             } else if quiet_since.get_or_insert_with(Instant::now).elapsed() >= dwell {
-                let (from, to) = if use_sta { (sta_name, eth_name) } else { (eth_name, sta_name) };
-                log::info!("No player on \"{from}\" for {} s. Pro DJ Link tries \"{to}\".", dwell.as_secs());
+                let (from, to) = if use_sta {
+                    (sta_name, eth_name)
+                } else {
+                    (eth_name, sta_name)
+                };
+                log::info!(
+                    "No player on \"{from}\" for {} s. Pro DJ Link tries \"{to}\".",
+                    dwell.as_secs()
+                );
                 use_sta = !use_sta;
                 quiet_since = None;
                 // Without a player on the two interfaces, the changes and their log lines become rare.
@@ -312,7 +359,9 @@ fn run() -> anyhow::Result<()> {
             broadcast: broadcast(i.ip, i.subnet.mask.0),
             mac,
         });
-        state.wifi_join_down.store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);
+        state
+            .wifi_join_down
+            .store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);
         let now = (eth_ip.map(|(ip, _)| ip), sta_ip);
         if now != last {
             if now.0 != last.0 {
@@ -353,7 +402,9 @@ fn run() -> anyhow::Result<()> {
                     None => log::info!("WiFi \"{name}\" is not connected"),
                 }
             }
-            let mut iface = now.0.map_or("Ethernet: no address".into(), |ip| format!("Ethernet {ip}"));
+            let mut iface = now
+                .0
+                .map_or("Ethernet: no address".into(), |ip| format!("Ethernet {ip}"));
             if let Some(ip) = now.1 {
                 iface.push_str(&format!(" · WiFi {ip}"));
             }
@@ -379,7 +430,11 @@ pub fn restart_soon() -> std::io::Result<()> {
 /// Without the spawn configuration, each Rust thread has the task name "pthread". The thread has
 /// priority 5 (CONFIG_PTHREAD_TASK_PRIO_DEFAULT), the priority of the HTTP server task. It runs on
 /// the two cores.
-pub fn spawn<F, T>(name: &'static CStr, stack_size: usize, f: F) -> std::io::Result<thread::JoinHandle<T>>
+pub fn spawn<F, T>(
+    name: &'static CStr,
+    stack_size: usize,
+    f: F,
+) -> std::io::Result<thread::JoinHandle<T>>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
@@ -404,7 +459,13 @@ where
 {
     // The configuration applies to the threads that the calling thread starts. Reset it after
     // the start, so that no other thread gets this name.
-    let _ = ThreadSpawnConfiguration { name: Some(name), priority, pin_to_core: core, ..Default::default() }.set();
+    let _ = ThreadSpawnConfiguration {
+        name: Some(name),
+        priority,
+        pin_to_core: core,
+        ..Default::default()
+    }
+    .set();
     let handle = thread::Builder::new()
         .name(name.to_string_lossy().into_owned())
         .stack_size(stack_size)
@@ -434,7 +495,9 @@ fn start_mdns() -> anyhow::Result<EspMdns> {
 
 /// Returns `true` when `a` and `b` are in one subnet with a prefix of `prefix` bits.
 fn same_subnet(a: Ipv4Addr, b: Ipv4Addr, prefix: u8) -> bool {
-    let mask = u32::MAX.checked_shl(32 - u32::from(prefix.min(32))).unwrap_or(0);
+    let mask = u32::MAX
+        .checked_shl(32 - u32::from(prefix.min(32)))
+        .unwrap_or(0);
     u32::from(a) & mask == u32::from(b) & mask
 }
 

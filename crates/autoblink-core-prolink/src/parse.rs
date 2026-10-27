@@ -83,40 +83,6 @@ pub fn parse_beat(data: &[u8]) -> Option<BeatPacket> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{BEAT_NONE, PITCH_NORMAL};
-
-    fn magic_pkt(kind: u8, len: usize) -> alloc::vec::Vec<u8> {
-        let mut v = alloc::vec![0u8; len];
-        v[..10].copy_from_slice(&MAGIC);
-        v[0x0a] = kind;
-        v
-    }
-
-    #[test]
-    fn beat_timings_scale_by_pitch_and_preserve_sentinel() {
-        let mut p = magic_pkt(PKT_BEAT, 0x60);
-        p[0x21] = 1;
-        p[0x5a] = 0x2e; // 120.00 BPM raw hi
-        p[0x5b] = 0xe0; // 120.00 BPM raw lo
-
-        let pitch_plus_8 = ((PITCH_NORMAL as f64) * 1.08).round() as u32;
-        p[0x54..0x58].copy_from_slice(&pitch_plus_8.to_be_bytes());
-
-        p[0x24..0x28].copy_from_slice(&500u32.to_be_bytes());
-        p[0x28..0x2c].copy_from_slice(&1000u32.to_be_bytes());
-        p[0x2c..0x30].copy_from_slice(&BEAT_NONE.to_be_bytes());
-        p[0x5c] = 1;
-
-        let bp = parse_beat(&p).expect("beat packet should parse");
-        assert_eq!(bp.next_beat_ms, 463);
-        assert_eq!(bp.second_beat_ms, 926);
-        assert_eq!(bp.next_bar_ms, BEAT_NONE);
-    }
-}
-
 pub fn parse_abs_position(data: &[u8]) -> Option<AbsPositionPacket> {
     if data.len() < 0x3c {
         return None;
@@ -210,4 +176,38 @@ pub fn parse_mixer_status(data: &[u8]) -> Option<MixerStatus> {
         track_bpm: bpm_from_raw(bpm_raw),
         beat_in_bar: data[0x37],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BEAT_NONE, PITCH_NORMAL};
+
+    fn magic_pkt(kind: u8, len: usize) -> alloc::vec::Vec<u8> {
+        let mut v = alloc::vec![0u8; len];
+        v[..10].copy_from_slice(&MAGIC);
+        v[0x0a] = kind;
+        v
+    }
+
+    #[test]
+    fn beat_timings_scale_by_pitch_and_preserve_sentinel() {
+        let mut p = magic_pkt(PKT_BEAT, 0x60);
+        p[0x21] = 1;
+        p[0x5a] = 0x2e; // 120.00 BPM raw hi
+        p[0x5b] = 0xe0; // 120.00 BPM raw lo
+
+        let pitch_plus_8 = ((PITCH_NORMAL as f64) * 1.08).round() as u32;
+        p[0x54..0x58].copy_from_slice(&pitch_plus_8.to_be_bytes());
+
+        p[0x24..0x28].copy_from_slice(&500u32.to_be_bytes());
+        p[0x28..0x2c].copy_from_slice(&1000u32.to_be_bytes());
+        p[0x2c..0x30].copy_from_slice(&BEAT_NONE.to_be_bytes());
+        p[0x5c] = 1;
+
+        let bp = parse_beat(&p).expect("beat packet should parse");
+        assert_eq!(bp.next_beat_ms, 463);
+        assert_eq!(bp.second_beat_ms, 926);
+        assert_eq!(bp.next_bar_ms, BEAT_NONE);
+    }
 }

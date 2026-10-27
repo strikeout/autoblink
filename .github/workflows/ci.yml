@@ -1,18 +1,29 @@
 name: CI
 
+# A pull request gets only the quick Linux job: format, clippy and tests.
+# Run `sh scripts/check.sh` before a push. It runs the same checks and the firmware build.
 on:
-  push:
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   RUSTY_LINK_VERSION: "0.2.3"
 
 jobs:
-  # ── Tests (Linux) ────────────────────────────────────────────────────────────
+  # ── Lint and tests (Linux) ──────────────────────────────────────────────────
   test:
-    name: Test
+    name: Lint and test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -54,17 +65,37 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
+      # Only main writes the cache. A pull request reads the cache of main.
       - name: Cache Cargo registry & build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check the format
+        run: cargo fmt --all --check
+
+      # The firmware has its own workspace and the esp toolchain. rustfmt reads the module tree
+      # from main.rs, so the stable toolchain can check the format.
+      - name: Check the format of the firmware
+        run: rustfmt --check --edition 2021 esp32/build.rs esp32/src/main.rs
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run tests
         run: cargo test --locked
 
   # ── Build checks (Windows + macOS) ──────────────────────────────────────────
+  # This job runs after a merge to main and on a manual start. It does not run for a pull request.
+  # The release workflow builds the release binaries for all targets.
   build:
-    name: Build (${{ matrix.os }})
+    name: Check (${{ matrix.os }})
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -154,6 +185,8 @@ jobs:
 
       - name: Cache Cargo registry & build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build
-        run: cargo build --release --locked
+      - name: Check
+        run: cargo check --locked

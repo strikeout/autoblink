@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::ValueEnum;
@@ -59,7 +59,7 @@ fn compute_percentiles_ms(mut samples: Vec<f64>) -> Percentiles {
     }
 }
 
-fn ensure_parent_dir(path: &PathBuf) -> anyhow::Result<()> {
+fn ensure_parent_dir(path: &Path) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;

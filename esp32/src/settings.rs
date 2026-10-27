@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use autoblink_core_midi::{settings as midi_settings, MidiConfig, SettingItem};
+use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 
 /// The host index of "Device Number": the number that the virtual CDJ asks for.
 const IDX_DEVICE: usize = 2;
@@ -43,7 +43,11 @@ impl Settings {
             .flatten()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
-        let device = nvs.get_u8("devnum").ok().flatten().filter(|n| (1..=15).contains(n));
+        let device = nvs
+            .get_u8("devnum")
+            .ok()
+            .flatten()
+            .filter(|n| (1..=15).contains(n));
         Ok(Self {
             nvs,
             default_ssid,
@@ -54,7 +58,8 @@ impl Settings {
     }
 
     pub fn ssid(&self) -> String {
-        self.get("ssid").unwrap_or_else(|| self.default_ssid.clone())
+        self.get("ssid")
+            .unwrap_or_else(|| self.default_ssid.clone())
     }
 
     pub fn password(&self) -> String {
@@ -93,15 +98,53 @@ impl Settings {
         let join = self.join().map(|(s, _)| s).unwrap_or_default();
         let mut items = vec![SettingItem {
             section: None,
-            ..row(IDX_DEVICE, "Device Number", "number", device.clone(), Some(device))
+            ..row(
+                IDX_DEVICE,
+                "Device Number",
+                "number",
+                device.clone(),
+                Some(device),
+            )
         }];
         items.extend(midi_settings::items(&self.midi.lock().unwrap()));
-        items.push(row(IDX_SSID, "WiFi name (applies after restart)", "text", ssid.clone(), Some(ssid)));
-        items.push(row(IDX_PASSWORD, "WiFi password (applies after restart)", "text", hidden(), None));
-        let shown = if join.is_empty() { "off".to_string() } else { join.clone() };
-        items.push(row(IDX_JOIN_SSID, "Join WiFi name (applies after restart)", "text", shown, Some(join)));
-        items.push(row(IDX_JOIN_PASSWORD, "Join WiFi password (applies after restart)", "text", hidden(), None));
-        serde_json::to_string(&Message { kind: "settings", items }).unwrap_or_default()
+        items.push(row(
+            IDX_SSID,
+            "WiFi name (applies after restart)",
+            "text",
+            ssid.clone(),
+            Some(ssid),
+        ));
+        items.push(row(
+            IDX_PASSWORD,
+            "WiFi password (applies after restart)",
+            "text",
+            hidden(),
+            None,
+        ));
+        let shown = if join.is_empty() {
+            "off".to_string()
+        } else {
+            join.clone()
+        };
+        items.push(row(
+            IDX_JOIN_SSID,
+            "Join WiFi name (applies after restart)",
+            "text",
+            shown,
+            Some(join),
+        ));
+        items.push(row(
+            IDX_JOIN_PASSWORD,
+            "Join WiFi password (applies after restart)",
+            "text",
+            hidden(),
+            None,
+        ));
+        serde_json::to_string(&Message {
+            kind: "settings",
+            items,
+        })
+        .unwrap_or_default()
     }
 
     /// Stores a typed value. Returns the error text for the page when the value is not valid.
@@ -112,26 +155,37 @@ impl Settings {
                     .parse::<u8>()
                     .ok()
                     .filter(|n| (1..=15).contains(n))
-                    .ok_or_else(|| format!("Value \"{value}\" is out of range for setting {idx}"))?;
-                self.nvs.set_u8("devnum", n).map_err(|e| format!("Cannot save the setting: {e}"))?;
+                    .ok_or_else(|| {
+                        format!("Value \"{value}\" is out of range for setting {idx}")
+                    })?;
+                self.nvs
+                    .set_u8("devnum", n)
+                    .map_err(|e| format!("Cannot save the setting: {e}"))?;
                 self.device_number.store(n, Ordering::Relaxed);
                 log::info!("Device number changed to {n}. The virtual CDJ joins again.");
                 Ok(())
             }
             IDX_SSID if (1..=32).contains(&value.len()) => self.put("ssid", value),
             IDX_SSID => Err("The WiFi name must have 1 to 32 bytes".into()),
-            IDX_PASSWORD if (8..=63).contains(&value.len()) && value.is_ascii() => self.put("pass", value),
+            IDX_PASSWORD if (8..=63).contains(&value.len()) && value.is_ascii() => {
+                self.put("pass", value)
+            }
             IDX_PASSWORD => Err("The WiFi password must have 8 to 63 ASCII characters".into()),
             // An empty name stops the join. The page cannot send an empty password, so the
             // password goes too. Then the next name can be an open network.
-            IDX_JOIN_SSID if value.is_empty() => self.remove("jpass").and_then(|()| self.remove("jssid")),
+            IDX_JOIN_SSID if value.is_empty() => {
+                self.remove("jpass").and_then(|()| self.remove("jssid"))
+            }
             IDX_JOIN_SSID if value.len() <= 32 => self.put("jssid", value),
             IDX_JOIN_SSID => Err("The WiFi name must have 0 to 32 bytes".into()),
             IDX_JOIN_PASSWORD if value.is_empty() => self.remove("jpass"),
-            IDX_JOIN_PASSWORD if (8..=63).contains(&value.len()) && value.is_ascii() => self.put("jpass", value),
-            IDX_JOIN_PASSWORD => {
-                Err("The WiFi password must be empty (open network) or have 8 to 63 ASCII characters".into())
+            IDX_JOIN_PASSWORD if (8..=63).contains(&value.len()) && value.is_ascii() => {
+                self.put("jpass", value)
             }
+            IDX_JOIN_PASSWORD => Err(
+                "The WiFi password must be empty (open network) or have 8 to 63 ASCII characters"
+                    .into(),
+            ),
             _ => self.change_midi(|cfg| midi_settings::set(cfg, idx, value)),
         }
     }
@@ -145,7 +199,10 @@ impl Settings {
     ///
     /// An NVS write stops the flash cache of both cores for up to some 100 ms, and the MIDI clock
     /// stops with it. Many fast clicks on the page then give many stops. The delay gives one.
-    fn change_midi(&mut self, f: impl FnOnce(&mut MidiConfig) -> Result<(), String>) -> Result<(), String> {
+    fn change_midi(
+        &mut self,
+        f: impl FnOnce(&mut MidiConfig) -> Result<(), String>,
+    ) -> Result<(), String> {
         f(&mut self.midi.lock().unwrap())?;
         self.midi_changed = Some(Instant::now());
         Ok(())
@@ -159,26 +216,37 @@ impl Settings {
         }
         self.midi_changed = None;
         let json = serde_json::to_string(&*self.midi.lock().unwrap());
-        match json.map_err(anyhow::Error::from).and_then(|j| Ok(self.nvs.set_str("midi", &j)?)) {
+        match json
+            .map_err(anyhow::Error::from)
+            .and_then(|j| Ok(self.nvs.set_str("midi", &j)?))
+        {
             Ok(()) => log::info!("The MIDI settings are saved"),
             Err(e) => log::warn!("Cannot save the MIDI settings: {e}"),
         }
     }
 
     fn put(&self, key: &str, value: &str) -> Result<(), String> {
-        self.nvs.set_str(key, value).map_err(|e| format!("Cannot save the setting: {e}"))?;
+        self.nvs
+            .set_str(key, value)
+            .map_err(|e| format!("Cannot save the setting: {e}"))?;
         log::info!("Setting {key} changed. It applies after a restart.");
         Ok(())
     }
 
     fn remove(&self, key: &str) -> Result<(), String> {
-        self.nvs.remove(key).map_err(|e| format!("Cannot save the setting: {e}"))?;
+        self.nvs
+            .remove(key)
+            .map_err(|e| format!("Cannot save the setting: {e}"))?;
         log::info!("Setting {key} removed. It applies after a restart.");
         Ok(())
     }
 
     fn get(&self, key: &str) -> Option<String> {
         let mut buf = [0u8; 65];
-        self.nvs.get_str(key, &mut buf).ok().flatten().map(str::to_owned)
+        self.nvs
+            .get_str(key, &mut buf)
+            .ok()
+            .flatten()
+            .map(str::to_owned)
     }
 }

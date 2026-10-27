@@ -51,8 +51,15 @@ pub fn spawn(
                     mac,
                 );
 
-                let reason =
-                    watch_group(&mut group, &ctx, &hint, device_number, bind_ip, &device_table).await;
+                let reason = watch_group(
+                    &mut group,
+                    &ctx,
+                    &hint,
+                    device_number,
+                    bind_ip,
+                    &device_table,
+                )
+                .await;
                 tracing::warn!(%reason, "Rebuilding the Pro DJ Link network tasks");
                 group.shutdown().await;
                 tokio::time::sleep(CHECK_INTERVAL).await;
@@ -140,10 +147,9 @@ fn network_changed(hint: &str, bind_ip: Ipv4Addr, players: bool) -> Option<Strin
         return Some(format!("the address {bind_ip} is gone"));
     };
     match candidates.first() {
-        Some(best) if hint == "auto" && !players && best.priority < current.priority => Some(format!(
-            "a better interface is up: {} ({})",
-            best.name, best.ip
-        )),
+        Some(best) if hint == "auto" && !players && best.priority < current.priority => Some(
+            format!("a better interface is up: {} ({})", best.name, best.ip),
+        ),
         _ => None,
     }
 }
