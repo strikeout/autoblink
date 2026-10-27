@@ -68,7 +68,7 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
 | `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
 | `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
-| `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable | `clock.rs`, `mapper.rs`, `settings.rs` (host setting indices) |
+| `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable. The host uses `scenes.rs` too. | `clock.rs`, `mapper.rs`, `scenes.rs` (DMX scenes), `settings.rs` (host setting indices) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
@@ -94,6 +94,7 @@ Plus `pub fn interface_priority()` for network interface ranking.
 - `prolink/metadata.rs` — the dbserver client. One TCP session gets the metadata, the PSSI phrases, the PWV4 waveform preview, the extended cue list (`0x2b04`) and the PQTZ beat grid. The beat grid puts the phrases on the time axis. The web route `GET /waveform/{deck}` serves the waveform and the cues.
 - `web/status.rs` — status snapshot; takes each lock alone, never two at once
 - `settings.rs` — the settings table and the validated changes
+- DMX scenes: the engine is `autoblink_core_midi::scenes`. `midi/mapper.rs` gives it the beats and the master state. The page sends the full settings as `scenes_set`. The host writes them to `scenes.json` in the folder of the config file (`config::save_scenes`, on a blocking thread). The TOML config has no scenes.
 - `webui/index.html` (repo root) — the one page that the host, the emulator and the ESP32 serve
 - `runtime/mod.rs` — `supervise` restarts each long-running task after a panic. The MIDI clock, the MTC, the mapper and the MIDI output worker run on the `midi-rt` thread, a separate single-thread runtime.
 
@@ -162,6 +163,28 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
 - An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller. Version 1.20.0 used 83 %.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
+
+### Web page without a flash
+
+- The firmware serves the page from the app image. A change to `webui/index.html` therefore needs a flash, or an OTA update and a restart.
+- To work on the page, serve it from the computer: `python3 -m http.server 8000 -d webui`.
+- Open http://localhost:8000/index.html?box=autoblink.local. The page then uses the box for the WebSocket and the waveforms. A reload shows each change.
+- The firmware accepts a page from `localhost` or `127.0.0.1` (`dev_origin` in `webui.rs`). The waveform route sends `Access-Control-Allow-Origin: *`.
+- Flash the box only when the page is complete.
+
+### DMX scenes
+
+- The firmware keeps the scenes as JSON in NVS (key `scenes`). Like the MIDI settings, it writes them 2 s after the last change (`Settings::save`).
+- The webui parses `scenes_set` straight into `ScenesConfig`, not into a `serde_json::Value`. `MAX_COMMAND_LEN` is 3072 bytes for this command.
+- The page sends `scene_test`. The webui puts the preset into `State::scene_test`, and the `midi` thread sends the note.
+- The `midi` thread has 6 KB of stack since 1.23.0 (5 KB before). Measure it with `/mem`.
+- Do not use an `f32` field in a struct that serde reads on the firmware. LLVM for Xtensa stops with "Cannot select: XtensaISD::PCREL_WRAPPER" (`scenes::Decay` uses `f64`).
+- The firmware has no mixer data. The page hides the Mixer rows of the scenes without the `mixer` capability.
+- The setting "Note Off Velocity 0" (index 33, default on) sends each note off as a note on with velocity 0. It applies to the MIDI notes and the DMX scenes. A DMX controller of the user kept the light on after a 0x80 note off. The test of a preset (`scene_test`) always uses 0x80.
+- The scene setting `one_at_a_time` (default on) is for a controller that shows one preset at a time. A note off of such a controller can end a preset with a different note. With the setting on, a flash ends before the next note on. The held scene comes back after a flash or a pulse. The engine sends no note off before a note on of the same note. Such a note off turns the light off for a moment.
+- Index 33 is after the OSC rows, so that the other indices stay. The page puts a row into the group of its section.
+- A row entry of 32 and up is an extra note (`scenes::EXTRA_BASE`): 32 is `extra[0]`. The page moves the entries when it removes an extra note.
+- The status field `scene.events` counts each event in the order of `Event::ALL`, also without presets and while the scenes are off. The page keeps the same order in `SCENE_EVENTS`.
 
 ### Debug logs
 
@@ -257,6 +280,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - The ESP32 page has no mixer section. The XDJ-AZ sends the EQ and fader positions only as USB MIDI, and the classic ESP32 has no USB host.
 - The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
 - The DMX output (`--features dmx`) flashes channel 1 on each beat. It has no settings yet.
+- The emulator has no `scenes` capability. The page hides the DMX Scenes panel there.
 - The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `autoblink-core-midi` yet.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`
 - `host/src/state.rs` and `host/src/main.rs` are the highest-coupling files in the host crate

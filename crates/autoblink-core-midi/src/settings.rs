@@ -1,6 +1,9 @@
 //! The MIDI rows of the settings message of protocol v1. The indices, labels, values and ranges
 //! are the same as in `host/src/settings.rs`, so the page shows the same rows and help texts.
 //!
+//! Index 33 ("Note Off Velocity 0") comes after the OSC rows of the host. It is in the section
+//! "MIDI Notes", and the page puts it into that group.
+//!
 //! The firmware leaves out the rows that need data that it does not receive: the No Bass note
 //! (14, from the USB MIDI of the XDJ-AZ), MTC and OSC.
 
@@ -25,8 +28,8 @@ const CC_LABELS: [&str; CC_COUNT] = [
 ];
 
 /// The host indices that the firmware supports.
-pub const INDICES: [usize; 24] = [
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+pub const INDICES: [usize; 25] = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 33,
 ];
 
 /// One row of the settings message.
@@ -120,6 +123,7 @@ fn item(cfg: &MidiConfig, idx: usize) -> SettingItem {
         ),
         15 => toggle("CC Enabled", Some("MIDI CC"), cfg.cc_enabled),
         16 => plain("CC Channel", (cfg.cc_channel + 1).to_string(), None),
+        33 => toggle("Note Off Velocity 0", Some("MIDI Notes"), cfg.off_vel0),
         _ => {
             let cc = cfg.ccs[idx - CC_FIRST];
             plain(CC_LABELS[idx - CC_FIRST], cc.num.to_string(), Some(cc.on))
@@ -168,6 +172,7 @@ pub fn cycle(cfg: &mut MidiConfig, idx: usize, dir: i8) -> Result<(), String> {
         12 => cfg.send_phrase_change = !cfg.send_phrase_change,
         13 => cfg.send_phrase_kind = !cfg.send_phrase_kind,
         15 => cfg.cc_enabled = !cfg.cc_enabled,
+        33 => cfg.off_vel0 = !cfg.off_vel0,
         i if (CC_FIRST..CC_FIRST + CC_COUNT).contains(&i) => {
             let cc = &mut cfg.ccs[i - CC_FIRST];
             cc.on = !cc.on;

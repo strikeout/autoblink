@@ -200,6 +200,13 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::Text,
         section: None,
     },
+    // Index 33 is after the OSC rows, so that the indices of the other rows stay. The page puts
+    // it into the group of its section.
+    SettingDef {
+        label: "Note Off Velocity 0",
+        kind: SettingKind::Toggle,
+        section: Some("MIDI Notes"),
+    },
 ];
 
 /// The index of the first note with a switch. The notes follow in [`note_slot`] order.
@@ -353,6 +360,7 @@ pub fn get_value(cfg: &Config, interfaces: &[NetworkIfaceInfo], idx: usize) -> S
         30 => tick(cfg.osc.enabled),
         31 => cfg.osc.targets.join(", "),
         32 => cfg.osc.prefix.clone(),
+        33 => tick(cfg.midi.notes.off_vel0),
         _ => String::new(),
     }
 }
@@ -443,6 +451,10 @@ pub fn apply_change(
         }
         8 => {
             cfg.midi.notes.enabled = !cfg.midi.notes.enabled;
+            true
+        }
+        33 => {
+            cfg.midi.notes.off_vel0 = !cfg.midi.notes.off_vel0;
             true
         }
         15 => {
@@ -683,6 +695,10 @@ fn log_setting_change(idx: usize, cfg: &Config) {
         30 => tracing::info!(enabled = cfg.osc.enabled, "OSC output setting changed"),
         31 => tracing::info!(targets = ?cfg.osc.targets, "OSC targets changed"),
         32 => tracing::info!(prefix = %cfg.osc.prefix, "OSC prefix changed"),
+        33 => tracing::info!(
+            off_vel0 = cfg.midi.notes.off_vel0,
+            "Note off velocity 0 setting changed"
+        ),
         _ => {}
     }
 }

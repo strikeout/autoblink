@@ -108,11 +108,11 @@ dependencies = [
 
 [[package]]
 name = "autoblink-core-dbserver"
-version = "1.22.2"
+version = "1.23.0"
 
 [[package]]
 name = "autoblink-core-midi"
-version = "1.22.2"
+version = "1.23.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -120,11 +120,11 @@ dependencies = [
 
 [[package]]
 name = "autoblink-core-prolink"
-version = "1.22.2"
+version = "1.23.0"
 
 [[package]]
 name = "autoblink-esp32-emulator"
-version = "1.22.2"
+version = "1.23.0"
 dependencies = [
  "anyhow",
  "autoblink-core-prolink",
@@ -138,9 +138,10 @@ dependencies = [
 
 [[package]]
 name = "autoblink-host"
-version = "1.22.2"
+version = "1.23.0"
 dependencies = [
  "anyhow",
+ "autoblink-core-midi",
  "autoblink-core-prolink",
  "axum",
  "clap 4.6.0",

@@ -1,6 +1,6 @@
 //! MIDI output on UART2, TX on IO17, at 31250 baud.
 //!
-//! One thread runs the clock and the note and CC mapper of `autoblink-core-midi`. The receive thread
+//! One thread runs the clock, the note and CC mapper and the DMX scenes of `autoblink-core-midi`. The receive thread
 //! sends it each master beat through a FreeRTOS queue. The thread sleeps until 1 ms before the
 //! next clock pulse, then waits in a loop, so the pulse goes out on time.
 //!
@@ -18,11 +18,13 @@
 //! between the bytes of the other messages.
 
 use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use autoblink_core_dbserver::{current_phrase_idx, phrase_info};
 use autoblink_core_midi::clock::Master;
+use autoblink_core_midi::scenes::{SceneInput, ScenePhrase, SceneStatus, Scenes, ScenesConfig};
 use autoblink_core_midi::{Clock, Mapper, MidiConfig, Out, Phrase, Smoother, Snapshot, CLOCK};
 use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::delay::TickType;
@@ -48,6 +50,8 @@ pub struct MidiStatus {
     pub clock_state: &'static str,
     pub out16: u8,
     pub delta_ms: Option<f64>,
+    /// The current DMX scene.
+    pub scene: SceneStatus,
 }
 
 /// A master beat, as the receive thread saw it.
@@ -69,6 +73,7 @@ pub fn start(
     rx: Gpio35<'static>,
     state: Arc<State>,
     cfg: Arc<Mutex<MidiConfig>>,
+    scenes_cfg: Arc<Mutex<ScenesConfig>>,
 ) -> anyhow::Result<Arc<Queue<Beat>>> {
     let uart_cfg = config::Config::new().baudrate(Hertz(31_250));
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio35>, None::<Gpio17>, &uart_cfg)?;
@@ -76,13 +81,15 @@ pub fn start(
     let beat_rx = beats.clone();
 
     // Priority 10 is above the HTTP server task (5). Core 1 does not run the WiFi task.
-    crate::spawn_rt(c"midi", 5 * 1024, 10, Some(Core::Core1), move || {
+    // ponytail: 6 KB is an estimate for the scenes (5 KB before). Measure with /mem on a box.
+    crate::spawn_rt(c"midi", 6 * 1024, 10, Some(Core::Core1), move || {
         // SAFETY: a null handle subscribes the calling task.
         if let Err(e) = sys::esp!(unsafe { sys::esp_task_wdt_add(std::ptr::null_mut()) }) {
             log::warn!("The task watchdog does not watch the MIDI thread: {e}");
         }
         let mut clock = Clock::default();
         let mut mapper = Mapper::default();
+        let mut scenes = Scenes::default();
         let mut smoother = Smoother::default();
         let mut smoothed_bpm = 0.0;
         let mut last_master = 0u8;
@@ -116,13 +123,13 @@ pub fn start(
             let mut status = MidiStatus::default();
             let mut send = |o: Out| {
                 let mut buf = [0u8; 6];
-                let n = o.encode(&mut buf);
+                let n = o.encode(&mut buf, cfg.off_vel0);
                 if let Err(e) = uart.write(&buf[..n]) {
                     log::warn!("MIDI message not sent: {e}");
                 }
                 match o {
                     Out::Realtime(CLOCK) => status.pulses += 1,
-                    Out::Note { note, .. } => {
+                    Out::Note { note, .. } | Out::NoteOn { note, .. } => {
                         status.notes += 1;
                         status.recent_notes.push_front((note, Instant::now()));
                     }
@@ -149,9 +156,16 @@ pub fn start(
                     &mut send,
                 );
                 mapper.beat(&cfg, b.beat_in_bar, &mut send);
+                scenes.beat(
+                    &scenes_cfg.lock().unwrap(),
+                    state.now_ms(),
+                    b.beat_in_bar,
+                    &mut send,
+                );
             }
 
             let now_ms = state.now_ms();
+            let mut scene_in = SceneInput::default();
             let (mut snap, track) = {
                 let tracker = state.tracker.lock().unwrap();
                 tracker.master().map_or((Snapshot::default(), None), |m| {
@@ -168,6 +182,14 @@ pub fn start(
                         playing: m.is_playing(now_ms),
                         phrase: None,
                     };
+                    scene_in = SceneInput {
+                        device: m.num,
+                        track: m.track.rekordbox_id,
+                        playing: snap.playing,
+                        bpm: snap.bpm,
+                        phrase: None,
+                        bass_cut: None,
+                    };
                     (snap, m.beat_count.map(|bc| (m.track.rekordbox_id, bc)))
                 })
             };
@@ -181,6 +203,15 @@ pub fn start(
                     .and_then(|ss| {
                         let idx = current_phrase_idx(ss, beat_count)?;
                         let info = phrase_info(ss, idx, beat_count)?;
+                        let entry = &ss.phrases[idx];
+                        scene_in.phrase = Some(ScenePhrase {
+                            idx,
+                            code: info.kind.code(),
+                            beats_left: info.beats_left,
+                            fill_beats_left: entry
+                                .has_fill
+                                .then(|| u32::from(entry.fill_beat).saturating_sub(beat_count)),
+                        });
                         Some(Phrase {
                             rekordbox_id: rbid,
                             idx,
@@ -200,6 +231,26 @@ pub fn start(
                 mapper.update(&cfg, &snap, &mut send);
                 next_cc = Instant::now() + CC_INTERVAL;
             }
+            let scene = {
+                let scenes_cfg = scenes_cfg.lock().unwrap();
+                let test = state.scene_test.swap(u8::MAX, Ordering::Relaxed);
+                if test != u8::MAX {
+                    // The test always uses the 0x80 note off, as on the host. A DMX controller that
+                    // ignores 0x80 then keeps the preset on, so that the user sees it.
+                    let mut buf = [0u8; 6];
+                    let o = Out::Note {
+                        ch: scenes_cfg.channel,
+                        note: scenes_cfg.note(test),
+                        vel: 127,
+                    };
+                    let n = o.encode(&mut buf, false);
+                    if let Err(e) = uart.write(&buf[..n]) {
+                        log::warn!("MIDI message not sent: {e}");
+                    }
+                }
+                scenes.update(&scenes_cfg, state.now_ms(), &scene_in, &mut send);
+                scenes.status(&scenes_cfg)
+            };
 
             let mut s = state.midi.lock().unwrap();
             s.pulses += status.pulses;
@@ -216,6 +267,7 @@ pub fn start(
             s.clock_state = clock.state_label();
             s.out16 = clock.out16();
             s.delta_ms = clock.last_error_ms().map(f64::abs);
+            s.scene = scene;
         }
     })?;
     log::info!("MIDI output is on IO17");

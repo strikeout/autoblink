@@ -32,6 +32,8 @@ pub struct Status {
     /// The XDJ-AZ mixer. `None` until a mixer control moves.
     pub mixer: Option<Vec<Mixer>>,
     pub output: Output,
+    /// The current DMX scene.
+    pub scene: autoblink_core_midi::scenes::SceneStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,6 +318,7 @@ pub fn snapshot(
         link_peers,
         link_active,
         mixer,
+        scene: act.scene,
         output: Output {
             port: cfg.midi.output.clone(),
             connected: out_link.connected,

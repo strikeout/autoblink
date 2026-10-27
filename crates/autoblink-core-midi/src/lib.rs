@@ -8,6 +8,7 @@
 pub mod clock;
 pub mod config;
 pub mod mapper;
+pub mod scenes;
 pub mod settings;
 
 pub use clock::Clock;
@@ -29,13 +30,19 @@ pub enum Out {
     SongPosition(u16),
     /// A note on, followed at once by its note off. The channel is 0-based.
     Note { ch: u8, note: u8, vel: u8 },
+    /// A note on without its note off. The channel is 0-based.
+    NoteOn { ch: u8, note: u8, vel: u8 },
+    /// A note off. The channel is 0-based.
+    NoteOff { ch: u8, note: u8 },
     /// A control change. The channel is 0-based.
     Cc { ch: u8, num: u8, val: u8 },
 }
 
 impl Out {
-    /// Writes the bytes of the message into `buf` and returns their number.
-    pub fn encode(self, buf: &mut [u8; 6]) -> usize {
+    /// Writes the bytes of the message into `buf` and returns their number. With `off_vel0`, a
+    /// note off is a note on with velocity 0 (`MidiConfig::off_vel0`).
+    pub fn encode(self, buf: &mut [u8; 6], off_vel0: bool) -> usize {
+        let off = if off_vel0 { 0x90 } else { 0x80 };
         match self {
             Out::Realtime(b) => {
                 buf[0] = b;
@@ -47,8 +54,16 @@ impl Out {
             }
             Out::Note { ch, note, vel } => {
                 let (ch, note) = (ch & 0x0f, note & 0x7f);
-                *buf = [0x90 | ch, note, vel & 0x7f, 0x80 | ch, note, 0];
+                *buf = [0x90 | ch, note, vel & 0x7f, off | ch, note, 0];
                 6
+            }
+            Out::NoteOn { ch, note, vel } => {
+                *buf = [0x90 | (ch & 0x0f), note & 0x7f, vel & 0x7f, 0, 0, 0];
+                3
+            }
+            Out::NoteOff { ch, note } => {
+                *buf = [off | (ch & 0x0f), note & 0x7f, 0, 0, 0, 0];
+                3
             }
             Out::Cc { ch, num, val } => {
                 *buf = [0xB0 | (ch & 0x0f), num & 0x7f, val & 0x7f, 0, 0, 0];

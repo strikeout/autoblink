@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
@@ -11,6 +11,8 @@ use crate::osc::{Arg, OscOut};
 use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::state::{BeatSource, SharedState};
+use autoblink_core_midi::scenes::{SceneInput, ScenePhrase, Scenes};
+use autoblink_core_midi::Out;
 
 // ── MIDI byte helpers ─────────────────────────────────────────────────────────
 
@@ -20,6 +22,15 @@ fn note_on(ch: u8, note: u8, vel: u8) -> [u8; 3] {
 
 fn note_off(ch: u8, note: u8) -> [u8; 3] {
     [0x80 | (ch & 0x0f), note & 0x7f, 0]
+}
+
+/// The note off. With `vel0`, it is a note on with velocity 0 (`NoteConfig::off_vel0`).
+fn release(ch: u8, note: u8, vel0: bool) -> [u8; 3] {
+    if vel0 {
+        note_on(ch, note, 0)
+    } else {
+        note_off(ch, note)
+    }
 }
 
 fn cc(ch: u8, num: u8, val: u8) -> [u8; 3] {
@@ -147,7 +158,7 @@ mod tests {
         let msgs = midi.get_messages();
         assert!(msgs.contains(&cc(0, 20, 0).to_vec()));
         assert!(msgs.contains(&note_on(9, 40, 127).to_vec()));
-        assert!(msgs.contains(&note_off(9, 40).to_vec()));
+        assert!(msgs.contains(&release(9, 40, true).to_vec()));
         assert!(msgs.contains(&program_change(0, 0).to_vec()));
         assert!(msgs.contains(&cc(0, 22, 28).to_vec())); // 33 - 5 beats left
 
@@ -161,6 +172,119 @@ mod tests {
         assert!(msgs.contains(&program_change(0, 1).to_vec()));
         assert!(msgs.contains(&cc(0, 22, 25).to_vec())); // 65 - 40 beats left
 
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn master_phrase_fires_its_dmx_scene() {
+        use crate::state::{PhraseEntry, PhraseKind, SongStructure, TrackMood};
+        use autoblink_core_midi::scenes::{Decay, Event, Gate, Order, Row};
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let cfg = new_shared(Config::default());
+        {
+            let mut c = cfg.write();
+            c.scenes.enabled = true;
+            c.scenes.channel = 3;
+            c.scenes.rows = vec![Row {
+                event: Event::Intro,
+                presets: vec![2],
+                advance: 0,
+                order: Order::Up,
+                gate: Gate::Hold,
+                decay: Decay::default(),
+            }];
+        }
+        let state = new_shared_state(30);
+        {
+            let mut st = state.write();
+            st.master.device_number = 1;
+            st.apply_cdj_status(&cdj_at(7, 5));
+            st.set_song_structure(
+                1,
+                7,
+                SongStructure {
+                    mood: TrackMood::Mid,
+                    end_beat: 65,
+                    phrases: vec![PhraseEntry {
+                        index: 1,
+                        beat: 1,
+                        kind: PhraseKind::Intro,
+                        has_fill: false,
+                        fill_beat: 0,
+                    }],
+                },
+            );
+            st.apply_cdj_status(&cdj_at(7, 5));
+        }
+        let (status_tx, status_rx) = broadcast::channel(8);
+        let (_beat_tx, beat_rx) = broadcast::channel(8);
+        let handle = tokio::spawn(run_with_midi(
+            midi.clone(),
+            state,
+            beat_rx,
+            status_rx,
+            cfg,
+            Arc::new(Mutex::new(MidiActivity::default())),
+        ));
+        let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
+            device_number: 16,
+            is_master: false,
+            bpm_raw: 12800,
+            track_bpm: Some(128.0),
+            beat_in_bar: 1,
+        }));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let msgs = midi.get_messages();
+        assert!(msgs.contains(&note_on(3, 2, 127).to_vec()));
+        assert!(!msgs.contains(&note_on(3, 2, 0).to_vec()));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn a_scene_flash_sends_its_note_off_after_the_decay() {
+        use autoblink_core_midi::scenes::{Decay, Event, Gate, Order, Row};
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let cfg = new_shared(Config::default());
+        {
+            let mut c = cfg.write();
+            c.scenes.enabled = true;
+            c.scenes.rows = vec![Row {
+                event: Event::Beat,
+                presets: vec![5],
+                advance: 0,
+                order: Order::Up,
+                gate: Gate::Flash,
+                decay: Decay::Ms(80),
+            }];
+        }
+        let state = new_shared_state(30);
+        state.write().master.source = Some(BeatSource::AbletonLink);
+        let (_status_tx, status_rx) = broadcast::channel(8);
+        let (beat_tx, beat_rx) = broadcast::channel(8);
+        let handle = tokio::spawn(run_with_midi(
+            midi.clone(),
+            state,
+            beat_rx,
+            status_rx,
+            cfg,
+            Arc::new(Mutex::new(MidiActivity::default())),
+        ));
+        let _ = beat_tx.send(BeatEvent::LinkBeat {
+            bpm: 120.0,
+            beat_in_bar: 2,
+            bar_phase: 0.25,
+            beat_phase: 0.0,
+            received_at: Instant::now(),
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let msgs = midi.get_messages();
+        assert!(msgs.contains(&note_on(0, 5, 127).to_vec()));
+        assert!(!msgs.contains(&note_on(0, 5, 0).to_vec()));
+        // No other event wakes the task. The note off comes from the timer alone.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(midi.get_messages().contains(&note_on(0, 5, 0).to_vec()));
         handle.abort();
     }
 
@@ -230,7 +354,11 @@ mod tests {
     #[test]
     fn test_fire_beat_notes_regular_and_downbeat() {
         let midi = MockMidiTransport::new();
-        let note_cfg = NoteConfig::default();
+        // The 0x80 note off: the setting "Note Off Velocity 0" is off.
+        let note_cfg = NoteConfig {
+            off_vel0: false,
+            ..NoteConfig::default()
+        };
         let activity = Arc::new(Mutex::new(MidiActivity::default()));
 
         fire_beat_notes(&midi, &note_cfg, 2, &activity);
@@ -290,7 +418,7 @@ mod tests {
 
         state.write().mixer[0].low = Some(0);
         wake();
-        let pulse = vec![note_on(9, 39, 127).to_vec(), note_off(9, 39).to_vec()];
+        let pulse = vec![note_on(9, 39, 127).to_vec(), release(9, 39, true).to_vec()];
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(midi.get_messages().windows(2).any(|w| w == pulse));
 
@@ -598,12 +726,13 @@ fn pulse_note(
     vel: u8,
     on: bool,
     activity: &Arc<Mutex<MidiActivity>>,
+    vel0: bool,
 ) {
     if !on {
         return;
     }
     let _ = midi.send_message(&note_on(ch, note, vel));
-    let _ = midi.send_message(&note_off(ch, note));
+    let _ = midi.send_message(&release(ch, note, vel0));
     // The UI counters are optional. Do not wait for the lock.
     if let Some(mut act) = activity.try_lock() {
         act.notes_sent += 1;
@@ -627,10 +756,11 @@ fn fire_beat_notes(
         vel,
         n.enabled && n.send.beat,
         activity,
+        n.off_vel0,
     );
     if beat_in_bar == 1 {
         let on = n.enabled && n.send.downbeat;
-        pulse_note(midi, n.channel, n.downbeat, 127, on, activity);
+        pulse_note(midi, n.channel, n.downbeat, 127, on, activity, n.off_vel0);
     }
 }
 
@@ -639,6 +769,53 @@ fn send_osc_beat(osc: &OscOut, cfg: &SharedConfig, beat_in_bar: u8) {
     osc.send(cfg, "/beat", &[Arg::I(beat_in_bar.into())]);
     if beat_in_bar == 1 {
         osc.send(cfg, "/downbeat", &[]);
+    }
+}
+
+/// Sends one message of the DMX scenes.
+fn send_scene(midi: &dyn MidiTransport, o: Out, activity: &Arc<Mutex<MidiActivity>>, vel0: bool) {
+    match o {
+        Out::Note { ch, note, vel } => pulse_note(midi, ch, note, vel, true, activity, vel0),
+        Out::NoteOn { ch, note, vel } => {
+            let _ = midi.send_message(&note_on(ch, note, vel));
+            // The UI counters are optional. Do not wait for the lock.
+            if let Some(mut act) = activity.try_lock() {
+                act.notes_sent += 1;
+                remember(&mut act.recent_notes, (note, Instant::now()));
+            }
+        }
+        Out::NoteOff { ch, note } => {
+            let _ = midi.send_message(&release(ch, note, vel0));
+        }
+        _ => {}
+    }
+}
+
+/// Returns the state of the master deck for the DMX scenes.
+fn scene_input(state: &SharedState) -> SceneInput {
+    let st = state.read();
+    let dev = st.devices.get(&st.master.device_number);
+    let phrase = st.master_phrase().zip(dev).map(|(info, d)| {
+        let entry = d
+            .song_structure
+            .as_ref()
+            .and_then(|ss| ss.phrases.get(info.idx));
+        ScenePhrase {
+            idx: info.idx,
+            code: info.kind.code(),
+            beats_left: info.beats_left,
+            fill_beats_left: entry
+                .filter(|e| e.has_fill)
+                .map(|e| u32::from(e.fill_beat).saturating_sub(d.beat_count)),
+        }
+    });
+    SceneInput {
+        device: st.master.device_number,
+        track: dev.map_or(0, |d| d.rekordbox_id),
+        playing: st.master.is_playing,
+        bpm: st.master.bpm,
+        phrase,
+        bass_cut: Some(st.no_bass()),
     }
 }
 
@@ -683,10 +860,19 @@ async fn run_with_midi(
     let mut prev_osc_beats_left = u32::MAX;
     // (device, rekordbox_id, title) of the last track that was sent over OSC.
     let mut prev_osc_track: Option<(u8, u32, String)> = None;
+    let mut scenes = Scenes::default();
+    let start = Instant::now();
+    let now_ms = || start.elapsed().as_millis() as u64;
     tracing::info!("MIDI mapper task started");
 
     loop {
+        // Wake up for the note off of a scene flash.
+        let flash_off = scenes
+            .next_off_ms()
+            .map(|ms| tokio::time::Instant::from_std(start + Duration::from_millis(ms)));
         tokio::select! {
+            _ = async { tokio::time::sleep_until(flash_off.unwrap()).await }, if flash_off.is_some() => {}
+
             evt = beat_rx.recv() => {
                 match evt {
                     Ok(BeatEvent::Beat { packet: bp, .. }) => {
@@ -701,6 +887,13 @@ async fn run_with_midi(
 
                         let note_cfg = cfg.read().midi.notes;
                         fire_beat_notes(midi.as_ref(), &note_cfg, bp.beat_in_bar, &activity);
+                        let (scene_cfg, vel0) = {
+                            let c = cfg.read();
+                            (c.scenes.clone(), c.midi.notes.off_vel0)
+                        };
+                        scenes.beat(&scene_cfg, now_ms(), bp.beat_in_bar, &mut |o| {
+                            send_scene(midi.as_ref(), o, &activity, vel0)
+                        });
                         send_osc_beat(&osc, &cfg, bp.beat_in_bar);
                         tracing::debug!(
                             device = bp.device_number,
@@ -718,6 +911,13 @@ async fn run_with_midi(
                         }
                         let note_cfg = cfg.read().midi.notes;
                         fire_beat_notes(midi.as_ref(), &note_cfg, beat_in_bar, &activity);
+                        let (scene_cfg, vel0) = {
+                            let c = cfg.read();
+                            (c.scenes.clone(), c.midi.notes.off_vel0)
+                        };
+                        scenes.beat(&scene_cfg, now_ms(), beat_in_bar, &mut |o| {
+                            send_scene(midi.as_ref(), o, &activity, vel0)
+                        });
                         send_osc_beat(&osc, &cfg, beat_in_bar);
                         tracing::debug!(
                             beat = beat_in_bar,
@@ -894,6 +1094,7 @@ async fn run_with_midi(
                     127,
                     on,
                     &activity,
+                    n.off_vel0,
                 );
                 tracing::debug!(note = n.phrase_change, on, "Phrase change");
             }
@@ -934,7 +1135,15 @@ async fn run_with_midi(
                     let n = cfg_now.notes;
                     let note = n.phrase_base.saturating_add(code);
                     let on = n.enabled && n.send.phrase_kind;
-                    pulse_note(midi.as_ref(), n.channel, note, 127, on, &activity);
+                    pulse_note(
+                        midi.as_ref(),
+                        n.channel,
+                        note,
+                        127,
+                        on,
+                        &activity,
+                        n.off_vel0,
+                    );
                     if cfg_now.program.enabled {
                         let _ = midi.send_message(&program_change(cfg_now.program.channel, code));
                     }
@@ -984,9 +1193,31 @@ async fn run_with_midi(
             prev_no_bass = no_bass;
             let n = cfg.read().midi.notes;
             let on = n.enabled && n.send.no_bass;
-            pulse_note(midi.as_ref(), n.channel, n.no_bass, 127, on, &activity);
+            pulse_note(
+                midi.as_ref(),
+                n.channel,
+                n.no_bass,
+                127,
+                on,
+                &activity,
+                n.off_vel0,
+            );
             osc.send(&cfg, "/no_bass", &[Arg::I(no_bass.into())]);
             tracing::debug!(no_bass, note = n.no_bass, on, "NO_BASS");
+        }
+
+        // ── DMX scenes ────────────────────────────────────────────────────────
+        let (scene_cfg, vel0) = {
+            let c = cfg.read();
+            (c.scenes.clone(), c.midi.notes.off_vel0)
+        };
+        let input = scene_input(&state);
+        scenes.update(&scene_cfg, now_ms(), &input, &mut |o| {
+            send_scene(midi.as_ref(), o, &activity, vel0)
+        });
+        // The UI counters are optional. Do not wait for the lock.
+        if let Some(mut act) = activity.try_lock() {
+            act.scene = scenes.status(&scene_cfg);
         }
     }
 }

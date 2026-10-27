@@ -65,6 +65,8 @@ pub struct State {
     pub reset_reason: &'static str,
     /// The state of the firmware update for the page.
     pub ota: Mutex<OtaStatus>,
+    /// A preset that the page asked to test. The MIDI thread sends its note. `u8::MAX` is none.
+    pub scene_test: AtomicU8,
     start: Instant,
 }
 
@@ -183,6 +185,7 @@ fn run() -> anyhow::Result<()> {
             error: ota_error,
             ..Default::default()
         }),
+        scene_test: AtomicU8::new(u8::MAX),
         start: Instant::now(),
     });
     let midi_beats = midi::start(
@@ -191,6 +194,7 @@ fn run() -> anyhow::Result<()> {
         p.pins.gpio35,
         state.clone(),
         settings.midi.clone(),
+        settings.scenes.clone(),
     )?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
@@ -260,7 +264,7 @@ fn run() -> anyhow::Result<()> {
             .lock()
             .unwrap()
             .retain(|n, _| decks.contains(n));
-        settings.lock().unwrap().save_midi();
+        settings.lock().unwrap().save();
         // SAFETY: the heap calls only read counters.
         let (free, min, block) = unsafe {
             (
