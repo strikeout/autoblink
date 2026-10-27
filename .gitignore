@@ -10,3 +10,6 @@
 # The firmware has its own target directory.
 /esp32/target/
 /esp32/.embuild/
+
+# Brainstorm mockups of the visual companion
+.superpowers/
