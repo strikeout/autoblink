@@ -4,6 +4,7 @@ members = [
   "host",
   "esp32-emulator",
   "crates/autoblink-core-midi",
+  "crates/autoblink-core-dmx",
   "crates/autoblink-core-prolink",
   "crates/autoblink-core-dbserver",
 ]
