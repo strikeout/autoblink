@@ -145,6 +145,24 @@ input.num.text{width:150px;text-align:left}
 #p-scenes .hint{color:var(--dim);font-size:11px;margin-left:auto}
 #p-scenes select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
 #p-scenes input.num{width:52px}
+/* DMX lights */
+#p-lights select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
+#p-lights .ltl{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;color:var(--muted);margin-bottom:10px}
+#p-lights .ltl input[type=range]{width:140px}
+#p-lights .ltl .lay{color:var(--text);margin-right:8px}
+#p-lights .ltl .lay b{color:var(--accent);margin-right:3px}
+#p-lights .lt{margin-bottom:12px}
+#p-lights .lr{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;padding:2px 0;color:var(--muted)}
+#p-lights input.name{width:120px;text-align:left}
+#p-lights .lr .nm{min-width:90px;color:var(--text)}
+#p-lights .lr.off{opacity:.55}
+#p-lights .bad{border-color:var(--danger);color:var(--danger)}
+#p-lights .tg{flex-wrap:wrap}
+#p-lights .swt{width:16px;height:16px;min-width:0;padding:0;border-radius:4px}
+#p-lights .swt.on{outline:2px solid var(--text);outline-offset:1px}
+#p-lights input[type=color]{width:26px;height:20px;padding:0;border:1px solid var(--border);border-radius:4px;background:none}
+#p-lights .hint{color:var(--dim);font-size:11px}
+.chip.look::after{content:'';position:absolute;left:0;bottom:0;border:6px solid transparent;border-left-color:var(--lk);border-bottom-color:var(--lk);border-bottom-left-radius:6px}
 .palette{display:flex;flex-wrap:wrap;gap:6px;padding:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
 .chip{display:inline-flex;flex-direction:column;align-items:flex-start;min-width:64px;padding:4px 8px 5px;border-radius:6px;background:#10303a;border:1px solid #0f5866;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;position:relative}
 .chip b{font-size:15px;color:var(--accent);line-height:1.1}
@@ -283,6 +301,24 @@ input.num.text{width:150px;text-align:left}
     </div>
   </details>
 
+  <details id="p-lights" class="panel wide" data-cap="dmx" hidden open>
+    <summary><h2>Lights</h2></summary>
+    <div class="ltl">
+      <label title="The master level of all lights.">Master <input id="ltmaster" type="range" min="0" max="255" value="255"></label>
+      <button id="ltstrobe" title="Hold to strobe all lights.">Strobe</button>
+      <button id="ltfog" title="Run the fog machine once.">Fog</button>
+      <span id="ltlayers" title="The looks that play now."></span>
+    </div>
+    <div class="section" title="The lights on the DMX line. The address is the first channel.">Patch <button id="ltaddfx">+ Light</button></div>
+    <div id="ltpatch" class="lt"></div>
+    <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
+    <div id="ltgroups" class="lt"></div>
+    <div class="section">Look of a preset</div>
+    <div id="ltlook" class="lt"></div>
+    <div class="section">Idle look</div>
+    <div id="ltidle" class="lt"></div>
+  </details>
+
   <details id="p-settings" class="panel wide" data-cap="settings" open>
     <summary><h2>Settings</h2></summary>
     <div id="sgrid" class="sgrid">
@@ -363,6 +399,7 @@ function onHello(m) {
   set('version', 'v' + m.version + (m.device && m.device !== 'host' ? ' · ' + m.device : ''));
   set('fwcur', 'v' + m.version);
   document.querySelectorAll('[data-cap]').forEach((e) => { e.hidden = !caps.has(e.dataset.cap); });
+  if (caps.has('dmx') && !showTimer) loadShow();
 }
 
 function onStatus(s) {
@@ -392,6 +429,8 @@ function onStatus(s) {
 
   if (s.output) renderOutput(s.output);
   if (scenes) renderSceneLive(s.scene);
+  if (s.dmx) dmxLast = s.dmx; // some status messages have no dmx field
+  renderLayers();
   if (s.decks) renderDecks(s);
   if (s.ota) renderOta(s.ota);
   const up = s.system && s.system.uptime_s;
@@ -968,14 +1007,18 @@ function onScenes(m) {
   // Do not rebuild under an input that has the focus.
   if ($('p-scenes').contains(document.activeElement) && document.activeElement.tagName === 'INPUT') scenePending = true;
   else renderScenes();
+  renderLights();
 }
 
 function sceneChip(i, mini) {
   const x = i >= EXTRA_BASE ? scenes.extra[i - EXTRA_BASE] : null;
   const note = x ? x.note : scenes.first_note + i;
   const label = x ? x.label : (scenes.labels[i] || '');
-  return h('span', 'chip' + (mini ? ' mini' : '') + (x ? ' extra' : ''),
+  const lk = x ? null : lookColor(i);
+  const c = h('span', 'chip' + (mini ? ' mini' : '') + (x ? ' extra' : '') + (lk ? ' look' : ''),
     !mini && h('i', null, 'n' + note), h('b', null, x ? '♪' + note : String(i + 1)), h('small', null, label));
+  if (lk) c.style.setProperty('--lk', lk);
+  return c;
 }
 
 /** The form at the end of the palette: a note outside the range, with an optional name. */
@@ -1317,6 +1360,257 @@ for (const [id, apply] of [
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
 }
 $('p-scenes').addEventListener('focusout', () => setTimeout(() => { if (scenePending) renderScenes(); }));
+
+// ---- DMX lights: the patch, the groups and the looks of the show ----
+const FIXTURE_TYPES = { dimmer: ['dimmer'], rgb: ['red', 'green', 'blue'], rgb_dimmer: ['dimmer', 'red', 'green', 'blue'], rgbw: ['red', 'green', 'blue', 'white'], rgbw_dimmer: ['dimmer', 'red', 'green', 'blue', 'white'], strobe: ['dimmer', 'strobe'], fog: ['fog'] };
+const SWATCHES = [[255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255], [255, 255, 255]];
+const EVERY = [['beat', 'beat'], ['half', '½ beat'], ['bar', 'bar']];
+const EFFECTS = ['none', 'flash', 'pulse', 'chase', 'random', 'strobe', 'fog'];
+let show = null, strobeHeld = false, showTimer = 0, lookSel = 0, dmxLast = null, layerKey = '';
+
+const chanLen = (f) => f.channels.length;
+const ftype = (f) => Object.keys(FIXTURE_TYPES).find((k) => FIXTURE_TYPES[k].join() === f.channels.join()) || 'custom';
+const effKind = (e) => (e.effect === 'none' ? 'none' : Object.keys(e.effect)[0]);
+const rgbHex = (c) => '#' + c.slice(0, 3).map((v) => pad2(v.toString(16))).join('');
+
+function nextAddress() {
+  return show.fixtures.reduce((m, f) => Math.max(m, f.address + chanLen(f)), 1);
+}
+
+/** True when the lights overlap on the DMX line, or end after channel 512. */
+function addressBad(i) {
+  const f = show.fixtures[i];
+  return f.address + chanLen(f) > 513 || show.fixtures.some((g, j) => j !== i
+    && f.address < g.address + chanLen(g) && g.address < f.address + chanLen(f));
+}
+
+async function loadShow() {
+  try {
+    const r = await fetch(BASE + '/show');
+    if (!r.ok) throw new Error(r.status);
+    show = await r.json();
+    renderLights();
+    renderScenes();
+  } catch (e) { toast('The show did not load: ' + e.message); }
+}
+
+/** Saves the show 1 s after the last change. A plain POST is a simple CORS request. */
+function showSave() {
+  clearTimeout(showTimer);
+  showTimer = setTimeout(() => showPost(true), 1000);
+}
+
+async function showPost(retry) {
+  showTimer = 0;
+  try {
+    const r = await fetch(BASE + '/show', { method: 'POST', body: JSON.stringify(show) });
+    if (r.status === 503 && retry) { await new Promise((ok) => setTimeout(ok, 1000)); return showPost(false); }
+    if (!r.ok) toast('The show is not saved: ' + r.status + ' ' + (await r.text()).trim());
+  } catch { toast('The show is not saved: no connection'); }
+}
+
+/** Runs an edit, saves, and draws the panel again. */
+function showEdit(f, redraw = true) {
+  f();
+  showSave();
+  if (redraw) { renderLights(); renderScenes(); }
+}
+
+function pick(options, value, onPick) {
+  const s = h('select', null, ...options.map(([v, t]) => { const o = h('option', null, t); o.value = v; return o; }));
+  s.value = value;
+  s.addEventListener('change', () => onPick(s.value));
+  return s;
+}
+
+function numIn(min, max, value, title, onSet) {
+  const i = h('input', 'num');
+  i.inputMode = 'numeric';
+  i.value = value;
+  i.title = title;
+  i.addEventListener('change', () => {
+    const v = Math.min(max, Math.max(min, parseInt(i.value, 10) || min));
+    i.value = v;
+    showEdit(() => onSet(v), false);
+  });
+  return i;
+}
+
+function textIn(value, title, onSet) {
+  const i = h('input', 'num name');
+  i.value = value;
+  i.title = title;
+  i.maxLength = 16;
+  i.addEventListener('input', () => showEdit(() => onSet(i.value), false));
+  return i;
+}
+
+function renderLights() {
+  if (!show || !scenes) return;
+  const patch = show.fixtures.map((f, i) => {
+    const t = ftype(f);
+    const types = Object.keys(FIXTURE_TYPES).map((k) => [k, k.replace('_', ' ')]);
+    if (t === 'custom') types.push(['custom', 'custom']);
+    const adr = numIn(1, 512, f.address, 'The first DMX channel, 1 to 512.', (v) => { f.address = v; renderLights(); });
+    adr.classList.toggle('bad', addressBad(i));
+    const del = h('button', null, '×');
+    del.title = 'Remove this light.';
+    del.addEventListener('click', () => showEdit(() => {
+      show.fixtures.splice(i, 1);
+      for (const g of show.groups) g.fixtures = g.fixtures.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));
+    }));
+    return h('div', 'lr', textIn(f.name, 'The name of the light.', (v) => { f.name = v; }),
+      pick(types, t, (v) => showEdit(() => { if (v !== 'custom') f.channels = [...FIXTURE_TYPES[v]]; })),
+      adr, h('span', 'hint', chanLen(f) + ' ch'), del);
+  });
+  $('ltpatch').replaceChildren(...patch);
+
+  $('ltgroups').replaceChildren(...show.groups.map((g, gi) => {
+    const del = h('button', null, '×');
+    del.title = 'Remove this group.';
+    del.addEventListener('click', () => showEdit(() => {
+      show.groups.splice(gi, 1);
+      for (const l of show.looks) {
+        if (!l) continue;
+        l.rows = l.rows.filter((r) => r.group !== gi);
+        for (const r of l.rows) if (r.group > gi) r.group--;
+      }
+    }));
+    const tg = h('span', 'seg tg', ...show.fixtures.map((f, i) => {
+      const b = h('button', g.fixtures.includes(i) ? 'on' : null, f.name || 'Light ' + (i + 1));
+      b.addEventListener('click', () => showEdit(() => {
+        g.fixtures = g.fixtures.includes(i) ? g.fixtures.filter((x) => x !== i) : [...g.fixtures, i].sort((a, b2) => a - b2);
+      }));
+      return b;
+    }));
+    return h('div', 'lr', textIn(g.name, 'The name of the group.', (v) => { g.name = v; }), tg, del);
+  }));
+
+  renderLook();
+  const withLook = [['', 'none'], ...show.looks.map((l, i) => (l ? [String(i), (i + 1) + ' ' + (scenes.labels[i] || '')] : null)).filter(Boolean)];
+  $('ltidle').replaceChildren(pick(withLook, show.idle === null ? '' : String(show.idle),
+    (v) => showEdit(() => { show.idle = v === '' ? null : +v; }, false)),
+  h('span', 'hint', ' The look that plays when no scene plays.'));
+}
+
+function renderLook() {
+  lookSel = Math.min(lookSel, scenes.count - 1);
+  const i = lookSel;
+  const look = show.looks[i] || null;
+  const own = () => {
+    while (show.looks.length <= i) show.looks.push(null);
+    return show.looks[i] || (show.looks[i] = { fade: 'cut', rows: [] });
+  };
+  const presets = Array.from({ length: scenes.count }, (_, k) => [String(k), (k + 1) + ' ' + (scenes.labels[k] || '') + (show.looks[k] ? ' ●' : '')]);
+  const test = h('button', null, 'Preview');
+  test.title = 'Send this preset to the lights, as a click on the preset does.';
+  test.addEventListener('click', () => send({ type: 'scene_test', preset: i }));
+  const clear = h('button', null, 'Clear look');
+  clear.title = 'Remove the look of this preset.';
+  clear.addEventListener('click', () => showEdit(() => {
+    show.looks[i] = null;
+    if (show.idle === i) show.idle = null;
+  }));
+  const head = h('div', 'lr', pick(presets, String(i), (v) => { lookSel = +v; renderLook(); }),
+    h('span', null, 'Fade'),
+    seg([['cut', 'Cut', 'The look changes at once.'], ['beat', '1 beat', 'The look fades in 1 beat.'], ['bar', '1 bar', 'The look fades in 1 bar.']],
+      look ? look.fade : null, (v) => showEdit(() => { own().fade = v; })),
+    test, clear);
+  const rows = show.groups.map((g, gi) => {
+    const r = look && look.rows.find((x) => x.group === gi);
+    const on = h('input');
+    on.type = 'checkbox';
+    on.checked = !!r;
+    on.title = 'Use this group in the look.';
+    on.addEventListener('change', () => showEdit(() => {
+      const l = own();
+      if (on.checked) l.rows.push({ group: gi, color: [255, 0, 0, 0], intensity: 255, effect: 'none', cooldown_s: 0 });
+      else l.rows = l.rows.filter((x) => x.group !== gi);
+    }));
+    const name = h('span', 'nm', g.name || 'Group ' + (gi + 1));
+    if (!r) return h('div', 'lr off', on, name);
+    return h('div', 'lr', on, name, ...lookRowCtl(r, g));
+  });
+  $('ltlook').replaceChildren(head, ...(show.groups.length ? rows : [h('span', 'hint', 'Add a group first.')]));
+}
+
+/** The controls of one row of a look. */
+function lookRowCtl(r, g) {
+  const rd = (f) => showEdit(f, false);
+  const hasWhite = g.fixtures.some((i) => show.fixtures[i] && show.fixtures[i].channels.includes('white'));
+  const sw = SWATCHES.map((c) => {
+    const b = h('button', 'swt' + (r.color[0] === c[0] && r.color[1] === c[1] && r.color[2] === c[2] ? ' on' : ''));
+    b.style.background = rgbHex(c);
+    b.title = rgbHex(c);
+    b.addEventListener('click', () => showEdit(() => { r.color = [...c, r.color[3]]; }));
+    return b;
+  });
+  const col = h('input');
+  col.type = 'color';
+  col.value = rgbHex(r.color);
+  col.title = 'Pick another colour.';
+  col.addEventListener('input', () => rd(() => {
+    r.color = [1, 3, 5].map((k) => parseInt(col.value.slice(k, k + 2), 16)).concat(r.color[3]);
+  }));
+  col.addEventListener('change', () => { renderLights(); renderScenes(); });
+  const out = [...sw, col];
+  const range = (min, max, v, title, set) => {
+    const s = h('input');
+    s.type = 'range'; s.min = min; s.max = max; s.value = v; s.title = title;
+    s.style.width = '90px';
+    s.addEventListener('input', () => rd(() => set(+s.value)));
+    return s;
+  };
+  if (hasWhite) out.push(h('label', null, 'White ', range(0, 255, r.color[3], 'The white level, 0 to 255.', (v) => { r.color[3] = v; })));
+  out.push(h('label', null, 'Level ', range(0, 255, r.intensity, 'The intensity, 0 to 255.', (v) => { r.intensity = v; })));
+  const kind = effKind(r);
+  out.push(pick(EFFECTS.map((k) => [k, k]), kind, (v) => showEdit(() => {
+    r.effect = { none: 'none', strobe: { strobe: { rate: 128, beats: 1 } }, fog: { fog: { ms: 1000 } } }[v] || { [v]: { every: 'beat' } };
+  })));
+  if (['flash', 'pulse', 'chase', 'random'].includes(kind)) {
+    out.push(h('label', null, 'every ', pick(EVERY, r.effect[kind].every, (v) => rd(() => { r.effect[kind].every = v; }))));
+  }
+  if (kind === 'strobe') {
+    out.push(h('label', null, 'rate ', numIn(0, 255, r.effect.strobe.rate, 'The strobe rate, 0 to 255.', (v) => { r.effect.strobe.rate = v; })),
+      h('label', null, 'beats ', numIn(1, 16, r.effect.strobe.beats, 'How many beats the strobe runs, 1 to 16.', (v) => { r.effect.strobe.beats = v; })));
+  }
+  if (kind === 'fog') {
+    out.push(h('label', null, 'ms ', numIn(100, 10000, r.effect.fog.ms, 'How long the fog runs, 100 to 10000 ms.', (v) => { r.effect.fog.ms = v; })));
+  }
+  if (kind === 'strobe' || kind === 'fog') {
+    out.push(h('label', null, 'cooldown s ', numIn(0, 600, r.cooldown_s, 'The seconds before the effect can start again, 0 to 600.', (v) => { r.cooldown_s = v; })));
+  }
+  return out;
+}
+
+/** The corner colour of a preset that has a look: the colour of its first row. */
+function lookColor(i) {
+  const l = show && show.looks[i];
+  if (!l) return null;
+  const c = l.rows[0] ? l.rows[0].color : [128, 128, 128];
+  return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+}
+
+function renderLayers() {
+  const names = dmxLast && scenes ? dmxLast.layers.map((i) => h('span', 'lay', h('b', null, String(i + 1)), scenes.labels[i] || '')) : [];
+  const key = dmxLast ? JSON.stringify(dmxLast.layers) + (scenes ? scenes.labels.join() : '') : '';
+  if (key !== layerKey) { layerKey = key; $('ltlayers').replaceChildren(h('span', null, names.length ? 'Playing: ' : 'No look plays'), ...names); }
+  $('ltstrobe').classList.toggle('on', !!(dmxLast && dmxLast.strobe_hold));
+}
+
+function liveSend(strobe) { strobeHeld = strobe; send({ type: 'dmx_live', master: +$('ltmaster').value, strobe }); }
+$('ltmaster').addEventListener('input', () => liveSend(strobeHeld));
+$('ltstrobe').addEventListener('pointerdown', (e) => { $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
+for (const t of ['pointerup', 'pointercancel']) $('ltstrobe').addEventListener(t, () => liveSend(false));
+$('ltfog').addEventListener('click', () => send({ type: 'dmx_fog' }));
+$('ltaddfx').addEventListener('click', () => {
+  if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
+  showEdit(() => show.fixtures.push({ name: 'Light ' + (show.fixtures.length + 1), address: nextAddress(), channels: [...FIXTURE_TYPES.rgb] }));
+});
+$('ltaddgr').addEventListener('click', () => {
+  if (!show || show.groups.length >= 8) return toast('8 groups is the maximum.');
+  showEdit(() => show.groups.push({ name: 'Group ' + (show.groups.length + 1), fixtures: [] }));
+});
 
 const handlers = { scenes: onScenes, hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => { otaDone(); toast(m.text); } };
 
