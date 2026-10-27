@@ -50,10 +50,10 @@ if [ "$esp32" = yes ]; then
   fi
   # export-esp.sh sets PATH and LIBCLANG_PATH for the esp toolchain.
   . "$HOME/export-esp.sh"
-  step "Firmware"
-  (cd esp32 && cargo build --release --locked)
+  step "Firmware without the DMX output"
+  (cd esp32 && cargo build --release --locked --no-default-features)
   step "Firmware with the DMX output"
-  (cd esp32 && cargo build --release --locked --features dmx)
+  (cd esp32 && cargo build --release --locked)
 else
   step "Firmware: skipped. The branch does not change esp32/, crates/ or webui/."
 fi
