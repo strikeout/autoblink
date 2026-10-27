@@ -268,22 +268,18 @@ pub struct ProgramConfig {
 /// MTC frame rate variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum MtcFrameRate {
     /// 24 fps (film/cinema).
     #[serde(alias = "24")]
     Fps24,
     /// 25 fps (PAL video).
     #[serde(alias = "25")]
+    #[default]
     Fps25,
     /// 30 fps non-drop (NTSC).
     #[serde(alias = "30")]
     Fps30,
-}
-
-impl Default for MtcFrameRate {
-    fn default() -> Self {
-        Self::Fps25
-    }
 }
 
 impl MtcFrameRate {
@@ -326,20 +322,12 @@ impl MtcFrameRate {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct MtcConfig {
     /// Enable MIDI Timecode output.
     pub enabled: bool,
     /// Frame rate for MTC generation.
     pub frame_rate: MtcFrameRate,
-}
-
-impl Default for MtcConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            frame_rate: MtcFrameRate::default(),
-        }
-    }
 }
 
 // ── Ableton Link config ───────────────────────────────────────────────────────

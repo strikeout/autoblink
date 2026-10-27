@@ -952,8 +952,8 @@ fn parse_pssi_tag_inner(data: &[u8]) -> anyhow::Result<SongStructure> {
             },
             TrackMood::Low => match kind_id {
                 1 => PhraseKind::Intro,
-                2 | 3 | 4 => PhraseKind::Verse1,
-                5 | 6 | 7 => PhraseKind::Verse2,
+                2..=4 => PhraseKind::Verse1,
+                5..=7 => PhraseKind::Verse2,
                 8 => PhraseKind::Bridge,
                 9 => PhraseKind::Chorus,
                 10 => PhraseKind::Outro,
@@ -1116,7 +1116,9 @@ async fn read_field(stream: &mut TcpStream) -> anyhow::Result<Field> {
 /// Decode UTF-16 big-endian bytes to a Rust String, stripping null terminators.
 fn decode_utf16be(data: &[u8]) -> String {
     let u16s: Vec<u16> = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_be_bytes([c[0], c[1]]))
         .collect();
     String::from_utf16_lossy(&u16s)

@@ -257,7 +257,7 @@ impl EmulatorState {
             return;
         }
 
-        if &data[..10] != autoblink_core_prolink::MAGIC {
+        if data[..10] != autoblink_core_prolink::MAGIC {
             return;
         }
 
@@ -380,7 +380,7 @@ impl EmulatorState {
                         self.last_note = self.midi_config.beat_note;
                         self.last_note_ch = self.midi_config.note_channel;
                         self.last_cc = self.midi_config.beat_phase_cc;
-                        self.last_cc_val = (beat.beat_in_bar * 31) as u8;
+                        self.last_cc_val = beat.beat_in_bar * 31;
                         self.last_cc_ch = self.midi_config.cc_channel;
                         self.last_note_at = Some(Instant::now());
                         self.last_cc_at = Some(Instant::now());
@@ -555,12 +555,12 @@ impl EmulatorState {
             let clocks_to_add = ((24.0 * master_bpm) / 600.0).round() as u64;
             if clocks_to_add > 0 {
                 self.midi_clock_count += clocks_to_add;
-            } else if self.tick % 5 == 0 {
+            } else if self.tick.is_multiple_of(5) {
                 self.midi_clock_count += 1;
             }
         }
 
-        if self.tick % 500 == 0 {
+        if self.tick.is_multiple_of(500) {
             self.add_log(0, "INFO", "MIDI clock: 24PPQ running");
         }
     }

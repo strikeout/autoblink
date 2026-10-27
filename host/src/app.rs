@@ -590,8 +590,8 @@ pub fn list_interfaces() -> anyhow::Result<()> {
 
     println!("Detected network interfaces:");
     println!(
-        "{:<6} {:<30} {:<18} {:<18} {}",
-        "Prio", "Name", "IPv4", "Broadcast", "MAC"
+        "{:<6} {:<30} {:<18} {:<18} MAC",
+        "Prio", "Name", "IPv4", "Broadcast"
     );
     println!("{}", "-".repeat(95));
 

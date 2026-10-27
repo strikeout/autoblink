@@ -535,7 +535,7 @@ fn handle_beat_event(
                         a.clock_wait_beats_seen = cs.wait_beats_seen;
                         a.clock_phrase_beat = cs.beat_count;
                         a.clock_pulse_index = cs.pulse_index;
-                        a.clock_timing_delta_ms = beat_timing_delta_ms(&cs, Instant::now());
+                        a.clock_timing_delta_ms = beat_timing_delta_ms(cs, Instant::now());
                     }
                 }
 
@@ -566,7 +566,7 @@ fn handle_beat_event(
                                 a.clock_wait_beats_seen = 0;
                                 a.clock_phrase_beat = cs.beat_count;
                                 a.clock_pulse_index = cs.pulse_index;
-                                a.clock_timing_delta_ms = beat_timing_delta_ms(&cs, Instant::now());
+                                a.clock_timing_delta_ms = beat_timing_delta_ms(cs, Instant::now());
                             }
                         }
                         cs.pulse_index = 0;
@@ -617,7 +617,7 @@ fn handle_beat_event(
                     a.clock_wait_beats_seen = cs.wait_beats_seen;
                     a.clock_phrase_beat = cs.beat_count;
                     a.clock_pulse_index = cs.pulse_index;
-                    a.clock_timing_delta_ms = beat_timing_delta_ms(&cs, Instant::now());
+                    a.clock_timing_delta_ms = beat_timing_delta_ms(cs, Instant::now());
                 }
             }
 
@@ -649,7 +649,7 @@ fn handle_beat_event(
                             a.clock_wait_beats_seen = 0;
                             a.clock_phrase_beat = cs.beat_count;
                             a.clock_pulse_index = cs.pulse_index;
-                            a.clock_timing_delta_ms = beat_timing_delta_ms(&cs, Instant::now());
+                            a.clock_timing_delta_ms = beat_timing_delta_ms(cs, Instant::now());
                         }
                     }
                     cs.pulse_index = 0;
@@ -682,19 +682,16 @@ fn drain_beat_events(
     smoothing_ms: u64,
     beat_rx: &mut broadcast::Receiver<BeatEvent>,
 ) {
-    loop {
-        match beat_rx.try_recv() {
-            Ok(evt) => handle_beat_event(
-                cs,
-                state,
-                midi,
-                activity,
-                resync_interval_bars,
-                smoothing_ms,
-                evt,
-            ),
-            Err(_) => break,
-        }
+    while let Ok(evt) = beat_rx.try_recv() {
+        handle_beat_event(
+            cs,
+            state,
+            midi,
+            activity,
+            resync_interval_bars,
+            smoothing_ms,
+            evt,
+        );
     }
 }
 
@@ -940,7 +937,7 @@ pub async fn run(
     let mut cached_is_playing = false;
     let mut last_master_key = {
         let st = state.read();
-        (st.master.source.clone(), st.master.device_number)
+        (st.master.source, st.master.device_number)
     };
     let mut last_connected = midi.is_connected();
 
@@ -993,7 +990,7 @@ pub async fn run(
 
         let current_master_key = {
             let st = state.read();
-            (st.master.source.clone(), st.master.device_number)
+            (st.master.source, st.master.device_number)
         };
 
         if clock_enabled && current_master_key != last_master_key {

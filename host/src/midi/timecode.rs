@@ -354,12 +354,13 @@ impl MtcScheduler {
 
         // Preferred: fresh, master-scoped AbsPosition measurement.
         let is_master_scoped = measurement.device_number == Some(master_device);
-        if is_master_scoped
-            && measurement.kind == MeasurementKind::ProLinkAbsPositionPacket
-            && measurement.playhead_ms.is_some()
-            && *age <= PLAYHEAD_MAX_AGE
-        {
-            let pos = measurement.playhead_ms.unwrap() as i64;
+        let fresh_playhead = measurement.playhead_ms.filter(|_| {
+            is_master_scoped
+                && measurement.kind == MeasurementKind::ProLinkAbsPositionPacket
+                && *age <= PLAYHEAD_MAX_AGE
+        });
+        if let Some(playhead_ms) = fresh_playhead {
+            let pos = playhead_ms as i64;
             let speed = speed_factor_from_master_pitch_pct(master_pitch_pct);
             match &mut self.osc {
                 Some(osc) => osc.retime(now, pos, speed),
@@ -380,6 +381,7 @@ impl MtcScheduler {
         Some((pos, false))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn on_wake(
         &mut self,
         now: Instant,
@@ -519,11 +521,7 @@ impl MtcScheduler {
             let frame = tc.total_frames(frame_rate.fps());
 
             if let Some(prev) = self.last_cycle_frame {
-                let diff = if frame >= prev {
-                    frame - prev
-                } else {
-                    prev - frame
-                };
+                let diff = frame.abs_diff(prev);
                 if diff > DISCONTINUITY_THRESHOLD_FRAMES {
                     // Exactly one full-frame resync, then restart QF cycle.
                     out.push(MtcOut::FullFrame(full_frame_sysex(&tc, &frame_rate)));
