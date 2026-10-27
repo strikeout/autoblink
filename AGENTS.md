@@ -267,6 +267,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 ## Constraints
 
 - **until 2027-01-11** — Keep the host app alive under every fault. A task must restart after a panic (`runtime::supervise`). A blocking call must not run on a tokio worker. An FFI callback must not capture Rust data, because the vendored `rusty_link` callback setters keep a dangling pointer.
+- **until 2027-01-25** — After each merge to `main`, build `main` on the local computer. Run `git checkout main && git pull`, then `sh scripts/check.sh --esp32 && cargo build --release --locked`. GitHub Actions runs only quick checks, because the account has a limit of free Actions minutes.
 
 ## graphify
 
