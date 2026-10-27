@@ -1,7 +1,8 @@
 //! Serves `webui/index.html` and speaks WebSocket protocol v1 (see `host/src/web/mod.rs`).
 //!
-//! The firmware sends the capabilities `beat`, `decks`, `output`, `settings`, `waveform` and
-//! `ota`. The page hides the sections of the other capabilities: `mixer`, `ports` and `logs`.
+//! The firmware sends the capabilities `beat`, `decks`, `output`, `settings`, `waveform`, `ota`
+//! and `scenes`. The page hides the sections of the other capabilities: `mixer`, `ports` and
+//! `logs`. Without `mixer`, the page also hides the mixer rows of the scenes.
 //! With `ota`, the page shows the System panel: the firmware update, the restart button and the
 //! WiFi settings. The page sends `reboot` for the restart button.
 //!
@@ -30,13 +31,15 @@ use crate::settings::Settings;
 use crate::tracks::TrackData;
 use crate::State;
 use autoblink_core_dbserver::{phrase_status, PhraseKind, TrackOverview};
+use autoblink_core_midi::scenes::{SceneStatus, ScenesConfig};
 use autoblink_core_prolink::{Deck, PlayState};
 
 /// The page, compressed with gzip by `build.rs`.
 const INDEX_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
 
 /// The firmware ignores a command that is longer than this.
-const MAX_COMMAND_LEN: usize = 512;
+/// The scenes command is the longest command, about 1.5 KB with 16 rows.
+const MAX_COMMAND_LEN: usize = 3072;
 
 /// The page gets the status this often.
 const STATUS_INTERVAL: Duration = Duration::from_millis(100);
@@ -130,8 +133,12 @@ pub fn start(
         });
         match overview {
             Some(o) => {
-                let mut resp =
-                    req.into_response(200, None, &[("Content-Type", "application/json")])?;
+                // A page from the computer of the developer reads the waveform too (see `dev_origin`).
+                let headers = [
+                    ("Content-Type", "application/json"),
+                    ("Access-Control-Allow-Origin", "*"),
+                ];
+                let mut resp = req.into_response(200, None, &headers)?;
                 write_waveform(&mut resp, &o)
             }
             None => req.into_status_response(404)?.write_all(b"no waveform"),
@@ -180,7 +187,7 @@ pub fn start(
                 "proto": 1,
                 "version": env!("CARGO_PKG_VERSION"),
                 "device": "esp32",
-                "caps": ["beat", "decks", "output", "settings", "waveform", "ota"],
+                "caps": ["beat", "decks", "output", "settings", "waveform", "ota", "scenes"],
             });
             ws.send(FrameType::Text(false), hello.to_string().as_bytes())?;
             // Only the HTTP server task sets the active page, so the check and the set cannot race.
@@ -189,6 +196,8 @@ pub fn start(
             }
             ws_active.set(ws.create_detached_sender()?);
             let msg = settings.lock().unwrap().message();
+            ws.send(FrameType::Text(false), msg.as_bytes())?;
+            let msg = settings.lock().unwrap().scenes_message();
             return ws.send(FrameType::Text(false), msg.as_bytes());
         }
         if ws.is_closed() {
@@ -208,6 +217,24 @@ pub fn start(
         // For a text frame, esp-idf-svc adds 1 to the length and puts a NUL byte at the end.
         // serde_json refuses that byte, so remove it.
         let text = buf.strip_suffix(&[0]).unwrap_or(&buf);
+        // A `Value` tree has a heap block for each field. The scenes are large, so they go
+        // into their struct at once.
+        #[derive(serde::Deserialize)]
+        struct Kind<'a> {
+            #[serde(rename = "type", borrow)]
+            kind: Cow<'a, str>,
+        }
+        if serde_json::from_slice::<Kind>(text).is_ok_and(|k| k.kind == "scenes_set") {
+            let reply = match serde_json::from_slice::<ScenesConfig>(text) {
+                Ok(scenes) => {
+                    let mut settings = settings.lock().unwrap();
+                    settings.set_scenes(scenes);
+                    settings.scenes_message()
+                }
+                Err(e) => error(&format!("The scenes are not valid: {e}")),
+            };
+            return ws.send(FrameType::Text(false), reply.as_bytes());
+        }
         let Ok(cmd) = serde_json::from_slice::<Value>(text) else {
             return ws.send(
                 FrameType::Text(false),
@@ -217,6 +244,8 @@ pub fn start(
         if cmd["type"] == "take_over" {
             take_over(ws, &ws_active)?;
             let msg = settings.lock().unwrap().message();
+            ws.send(FrameType::Text(false), msg.as_bytes())?;
+            let msg = settings.lock().unwrap().scenes_message();
             return ws.send(FrameType::Text(false), msg.as_bytes());
         }
         let reply = command(&cmd, &settings, &ws_state);
@@ -389,6 +418,16 @@ fn command(cmd: &Value, settings: &Mutex<Settings>, state: &Arc<State>) -> Strin
                 Err(text) => error(&text),
             }
         }
+        Some("scene_test") => match cmd["preset"].as_u64().and_then(|p| u8::try_from(p).ok()) {
+            // The MIDI thread sends the note. The reply is empty.
+            Some(p) if p < u8::MAX => {
+                state
+                    .scene_test
+                    .store(p, std::sync::atomic::Ordering::Relaxed);
+                r#"{"type":"scene_test"}"#.into()
+            }
+            _ => error("The command needs a preset"),
+        },
         Some("reboot") => match crate::restart_soon() {
             Ok(()) => {
                 log::info!("The page asked for a restart");
@@ -503,6 +542,7 @@ struct Status<'a> {
     link_active: bool,
     clock: ClockJson,
     output: OutputJson,
+    scene: SceneStatus,
     mixer: Option<()>,
     ota: OtaStatus,
     system: SystemJson,
@@ -642,7 +682,7 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
             }
         })
         .collect();
-    let (clock, output) = {
+    let (clock, output, scene) = {
         let midi = state.midi.lock().unwrap();
         let clock = ClockJson {
             out16: midi.out16,
@@ -672,7 +712,7 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
             mtc_qf: 0,
             mtc_full: 0,
         };
-        (clock, output)
+        (clock, output, midi.scene)
     };
     let mut ota = state.ota.lock().unwrap().clone();
     if ota.state.is_empty() {
@@ -698,6 +738,7 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
         link_active: false,
         clock,
         output,
+        scene,
         mixer: None,
         ota,
         // SAFETY: the two heap calls only read counters.
@@ -749,10 +790,24 @@ fn header(req: *mut sys::httpd_req_t, name: &str) -> Option<String> {
 /// The same rule as the host: no Origin passes. Otherwise the Origin must name the Host, and the
 /// Host must be an IP address, `localhost` or a `.local` name. A public name can resolve to this
 /// device (DNS rebinding), so it does not pass.
+/// Returns true for a page from `localhost` or `127.0.0.1`. A developer opens `webui/index.html`
+/// from the computer with `?box=<address>`, and the page then needs no flash for a change. Only
+/// a program on the computer of the user can serve such a page.
+fn dev_origin(origin: &str) -> bool {
+    origin
+        .strip_prefix("http://")
+        .map(|rest| rest.trim_end_matches('/'))
+        .map(|rest| rest.rsplit_once(':').map_or(rest, |(name, _)| name))
+        .is_some_and(|name| name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1")
+}
+
 fn origin_allowed(origin: Option<&str>, host: Option<&str>) -> bool {
     let Some(origin) = origin else {
         return true;
     };
+    if dev_origin(origin) {
+        return true;
+    }
     let Some(host) = host else {
         return false;
     };

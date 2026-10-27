@@ -137,6 +137,60 @@ input.num.text{width:150px;text-align:left}
 .port{text-align:left;display:flex;gap:8px}
 .port.active{border-color:var(--play)}
 .port .mark{width:10px;color:var(--play)}
+/* DMX scenes */
+#p-scenes .scfg{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;color:var(--muted);margin-bottom:12px}
+#p-scenes .scfg label{display:flex;gap:6px;align-items:center}
+#p-scenes .hint{color:var(--dim);font-size:11px;margin-left:auto}
+#p-scenes select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
+#p-scenes input.num{width:52px}
+.palette{display:flex;flex-wrap:wrap;gap:6px;padding:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
+.chip{display:inline-flex;flex-direction:column;align-items:flex-start;min-width:64px;padding:4px 8px 5px;border-radius:6px;background:#10303a;border:1px solid #0f5866;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;position:relative}
+.chip b{font-size:15px;color:var(--accent);line-height:1.1}
+.chip small{font-size:10px;color:var(--text);opacity:.85;white-space:nowrap;min-height:1.2em}
+.chip i{position:absolute;top:3px;right:6px;font-style:normal;font-size:9px;color:var(--dim)}
+.chip.extra{background:#24163a;border-color:#5b3a8a}
+.chip.extra b{color:#c9a0ff}
+.addnote{display:inline-flex;gap:4px;align-items:center;padding:4px 6px;border:1px dashed var(--dim);border-radius:6px}
+.addnote input.num{width:46px}
+.addnote input.name{width:90px;text-align:left}
+.addnote .err{color:var(--danger);font-size:11px}
+.chip.sel{outline:2px solid var(--flash);outline-offset:1px}
+.chip.mini{min-width:0;flex-direction:row;gap:5px;align-items:baseline;padding:3px 7px}
+.chip.mini b{font-size:13px}
+.chip.mini small{min-height:0}
+.chip .x{font-style:normal;color:var(--dim);font-size:12px;margin-left:2px;cursor:pointer;padding:0 2px}
+.chip.live{background:var(--flash);border-color:var(--flash)}
+.chip.live b,.chip.live small,.chip.live .x{color:#000}
+.chip.next{border:1px dashed var(--flash)}
+.ghost{position:fixed;z-index:10;pointer-events:none;display:flex;gap:4px;transform:rotate(-4deg);box-shadow:0 6px 18px rgba(0,0,0,.6)}
+.slots{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:6px 12px;align-items:center}
+.grp{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;margin:12px 0 2px;padding-bottom:4px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:var(--text);cursor:pointer;user-select:none}
+.grp:first-child{margin-top:0}
+.grp::before{content:'▾';color:var(--dim)}
+.grp.closed::before{content:'▸'}
+.grp span{font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim)}
+.ev{padding-left:14px;font-size:11px;text-transform:uppercase;letter-spacing:1.1px;color:var(--muted);font-weight:600}
+.ev small{display:block;font-size:9px;font-weight:400;letter-spacing:.3px;text-transform:none;color:var(--dim);margin-top:1px}
+.ev.on{color:var(--flash)}
+.ev{border-radius:4px;padding:3px 6px 3px 14px}
+.ev.hit{animation:evhit .35s ease-out}
+@keyframes evhit{from{color:var(--flash);text-shadow:0 0 8px var(--flash)}}
+.ev.cur{background:rgba(255,208,0,.16);color:var(--flash);box-shadow:inset 3px 0 0 var(--flash)}
+.ev.cur small{color:var(--muted)}
+.drop{display:flex;flex-wrap:wrap;gap:5px;min-height:34px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:#0d0d16;align-items:center}
+.drop.empty::after{content:'drop a preset';color:var(--dim);font-size:11px}
+.drop.active{border-color:var(--flash);box-shadow:0 0 10px rgba(255,208,0,.35)}
+.drop.target{border:1px dashed var(--accent);background:#0c1d24}
+.drop .info{color:var(--dim);font-size:11px}
+.ctl{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:12px;white-space:nowrap}
+.ctl.dim{opacity:.4}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:5px;overflow:hidden}
+.seg button{border:0;border-radius:0;border-right:1px solid var(--border);color:var(--muted)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:#0a5a6a;color:var(--text)}
+.ctl .sep{width:1px;height:16px;background:var(--border)}
+.legend{margin-top:12px;display:flex;flex-wrap:wrap;gap:4px 20px;color:var(--dim);font-size:11px}
+.legend b{color:var(--muted);font-weight:500}
 /* logs */
 .log{background:#08080d;border-radius:6px;padding:8px;height:200px;overflow-y:auto;font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-all}
 .log .ERROR{color:var(--danger)}.log .WARN{color:var(--warn)}.log .DEBUG,.log .TRACE{color:var(--dim)}
@@ -205,6 +259,28 @@ input.num.text{width:150px;text-align:left}
     <div id="decks" class="decks"></div>
   </section>
 
+  <details id="p-scenes" class="panel wide" data-cap="scenes" open>
+    <summary><h2>DMX Scenes</h2></summary>
+    <div class="scfg">
+      <label>Scenes <button id="scon" class="sw"></button></label>
+      <label title="The MIDI channel of the DMX controller.">Channel <input id="scch" class="num" inputmode="numeric"></label>
+      <label title="The note of preset 1. Preset 2 is the next note.">First note <input id="scfirst" class="num" inputmode="numeric"></label>
+      <label title="The number of presets, 1 to 32.">Presets <input id="sccount" class="num" inputmode="numeric"></label>
+      <label title="On: the controller shows one preset at a time, and a note off can end the preset that shows. A flash then ends before the next note, and the held scene comes back after a flash or a pulse. Off: the presets are layers, and each flash keeps its full decay.">One preset at a time <button id="scone" class="sw"></button></label>
+      <span class="hint">Drag a preset onto an event · Shift-click for a range · Click a preset to test it · Double-click to rename · Add a note outside the range at the end of the presets</span>
+    </div>
+    <div id="palette" class="palette"></div>
+    <div id="slots" class="slots"></div>
+    <div class="legend">
+      <span><b>on trigger</b> next preset each time the event fires</span>
+      <span><b>every N bars</b> next preset every N bars while the scene is on</span>
+      <span><b>↑ ⇄ 🎲</b> up · ping-pong · random</span>
+      <span><b>pulse</b> note on and off at once</span>
+      <span><b>hold</b> note stays on until the next scene</span>
+      <span><b>flash</b> note goes off after the decay</span>
+    </div>
+  </details>
+
   <details id="p-settings" class="panel wide" data-cap="settings" open>
     <summary><h2>Settings</h2></summary>
     <div id="sgrid" class="sgrid">
@@ -252,6 +328,11 @@ function h(tag, cls, ...children) {
 }
 const set = (id, text) => { const e = $(id); if (e.textContent !== text) e.textContent = text; };
 const pad2 = (n) => String(n).padStart(2, '0');
+
+// A page from the computer of a developer shows a box with "?box=<address>". A change to this
+// file then needs only a reload, not a flash.
+const BOX = new URLSearchParams(location.search).get('box');
+const BASE = BOX ? 'http://' + BOX : '';
 
 let ws = null, backoff = 500, caps = null, status = null, beatCap = false, lastBeat = 0, toastTimer = 0;
 
@@ -302,6 +383,7 @@ function onStatus(s) {
   }
 
   if (s.output) renderOutput(s.output);
+  if (scenes) renderSceneLive(s.scene);
   if (s.decks) renderDecks(s);
   if (s.ota) renderOta(s.ota);
   const up = s.system && s.system.uptime_s;
@@ -364,7 +446,7 @@ function renderPhrase(s) {
   const m = s.master;
   const d = (s.decks || []).find((x) => x.num === m.device);
   const p = d && d.phrase;
-  set('pkind', p ? p.kind : (d && d.phrase_note) || (m.device ? 'no phrase info' : '—'));
+  set('pkind', p ? bucket(p.kind) : (d && d.phrase_note) || (m.device ? 'no phrase info' : '—'));
   $('pkind').classList.toggle('none', !p);
   $('pfill').hidden = !(p && p.fill);
   $('pprog').style.width = (p ? p.progress * 100 : 0) + '%';
@@ -441,7 +523,7 @@ function renderDecks(s) {
     let phrase = null;
     if (d.phrase) {
       const bar = h('i'); bar.style.width = (d.phrase.progress * 100) + '%';
-      phrase = h('div', 'phrase', bar, h('span', 'num', d.phrase.kind + ' ' + Math.floor(d.phrase.progress * 100) + '%' + (d.phrase.fill ? ' [FILL]' : '')));
+      phrase = h('div', 'phrase', bar, h('span', 'num', bucket(d.phrase.kind) + ' ' + Math.floor(d.phrase.progress * 100) + '%' + (d.phrase.fill ? ' [FILL]' : '')));
     }
     const w = caps && caps.has('waveform') && (d.wave != null || d.track_len_ms != null) ? waveFor(d) : null;
     return h('div', 'deck' + (d.master ? ' master' : d.virtual_master ? ' vmaster' : ''),
@@ -472,8 +554,11 @@ function renderDecks(s) {
 
 // The waveform of each deck: {canvas, id, img, cues, phrases}. `id` is the rekordbox ID of `img`.
 const waves = new Map();
-// The phrase lane colours, by the first word of the phrase kind.
-const PHRASE_COLOURS = { INTRO: '#3f6ea8', VERSE: '#7357a8', BRIDGE: '#a8853a', CHORUS: '#b5425a', UP: '#38996d', DOWN: '#357fa3', OUTRO: '#3f6ea8' };
+// The page shows the rekordbox phrase kinds as the buckets of the DMX scenes (`Event::bucket`).
+const BUCKETS = { INTRO: 'INTRO', VERSE: 'GROOVE', BRIDGE: 'BUILD', UP: 'BUILD', CHORUS: 'DROP', DOWN: 'BREAK', OUTRO: 'OUTRO' };
+const bucket = (kind) => BUCKETS[kind.split(' ')[0]] || kind;
+// The phrase lane colours, by bucket.
+const PHRASE_COLOURS = { INTRO: '#3f6ea8', GROOVE: '#7357a8', BUILD: '#a8853a', DROP: '#b5425a', BREAK: '#357fa3', OUTRO: '#3f6ea8' };
 
 function waveFor(d) {
   let w = waves.get(d.num);
@@ -483,7 +568,7 @@ function waveFor(d) {
     w.canvas.classList.remove('lane');
     if (w.id != null) {
       const want = w.id;
-      fetch('/waveform/' + d.num).then((r) => (r.ok ? r.json() : null)).then((j) => {
+      fetch(BASE + '/waveform/' + d.num).then((r) => (r.ok ? r.json() : null)).then((j) => {
         if (!j || j.rekordbox_id !== want || w.id !== want) return;
         w.img = j.preview && j.preview.length ? renderPreview(j.preview) : null;
         w.cues = j.cues || [];
@@ -526,11 +611,11 @@ function drawPhrases(g, phrases, x, y, hgt, dpr, playhead) {
     const x0 = x(p.start), x1 = x(p.end), wd = Math.max(x1 - x0 - dpr, 1);
     const now = playhead != null && playhead >= p.start && playhead < p.end;
     g.globalAlpha = now ? 1 : 0.6;
-    g.fillStyle = PHRASE_COLOURS[p.kind.split(' ')[0]] || '#555';
+    const label = bucket(p.kind);
+    g.fillStyle = PHRASE_COLOURS[label] || '#555';
     g.fillRect(x0, y + dpr, wd, hgt - dpr);
     if (p.fill != null) { g.fillStyle = 'rgba(255,255,255,.25)'; g.fillRect(x(p.fill), y + dpr, Math.max(x1 - x(p.fill) - dpr, 1), hgt - dpr); }
     g.globalAlpha = 1;
-    const label = p.kind.replace('VERSE ', 'V');
     if (g.measureText(label).width + 6 * dpr < wd) { g.fillStyle = '#fff'; g.fillText(label, x0 + 3 * dpr, y + hgt / 2 + dpr / 2); }
   }
 }
@@ -662,6 +747,7 @@ const HELP = {
   'Phrase Kind CC': 'The phrase kind of the master deck times 10: Intro 0, Verse 10–60, Bridge 70, Chorus 80, Up 90, Down 100, Outro 110.',
   'Phrase Progress CC': 'The position in the current phrase of the master deck: 0 at the start, 127 at the end.',
   'Beats Left CC': 'The number of beats to the end of the current phrase of the master deck. The maximum is 127.',
+  'Note Off Velocity 0': 'Sends each note off as a note on with velocity 0. MIDI makes the two the same, but some DMX controllers ignore the 0x80 note off. This applies to the MIDI notes and the DMX scenes. The test click of a DMX preset always uses 0x80.',
   'MTC Enabled': 'Sends MIDI Timecode on the output port.',
   'MTC Frame Rate': 'The MTC frame rate: 24, 25 or 30 fps. The receiver must use the same rate.',
   'OSC Enabled': 'Sends OSC messages to the targets below.',
@@ -674,6 +760,9 @@ const HELP = {
 // Settings rows are built once per index, then updated in place, so that an input keeps its focus.
 // Each section is a group that the columns of #sgrid do not split.
 const setRows = new Map();
+// A row with a section goes into the group of that section. Thus a row that the server adds at
+// the end of its table (index 33) can join an earlier group.
+const setGroups = new Map();
 let group = null, groupName = null;
 function onSettings(m) {
   for (const it of m.items) {
@@ -685,10 +774,14 @@ function onSettings(m) {
       else if (it.idx >= MIDI_SETTINGS_START) {
         if (!group || (it.section && it.section !== groupName)) {
           groupName = it.section || 'MIDI';
-          const head = h('div', 'section', groupName);
-          head.title = HELP[groupName] || '';
-          group = h('div', 'group', head);
-          $('sgrid').append(group);
+          group = setGroups.get(groupName);
+          if (!group) {
+            const head = h('div', 'section', groupName);
+            head.title = HELP[groupName] || '';
+            group = h('div', 'group', head);
+            setGroups.set(groupName, group);
+            $('sgrid').append(group);
+          }
         }
         parent = group;
       }
@@ -804,11 +897,424 @@ function onBusy() {
   set('conn', 'waiting');
 }
 
-const handlers = { hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => { otaDone(); toast(m.text); } };
+// ── DMX scenes ──────────────────────────────────────────────────────────────
+// The server sends the scene settings as "scenes" and the current scene in the "scene" field of
+// the status. Each edit sends the full settings back as "scenes_set". The server drops the rows
+// without presets, so the page keeps the settings of an empty row itself.
+const SCENE_GROUPS = [
+  ['Phrases', 'rekordbox phrase analysis in 6 buckets · fires at the phrase start', null, [
+    ['intro', 'Intro', 'rekordbox Intro'], ['groove', 'Groove', 'Verse 1–6'], ['build', 'Build', 'Up, Bridge'],
+    ['drop', 'Drop', 'Chorus'], ['break', 'Break', 'Down'], ['outro', 'Outro', 'rekordbox Outro']]],
+  ['Rhythm', 'beat grid of the master deck · one per beat: Fill-in › Phrase change › Downbeat › Beat', null, [
+    ['beat', 'Beat', 'every beat'], ['downbeat', 'Downbeat', 'beat 1 of each bar'],
+    ['phrase_change', 'Phrase change', 'any new phrase'], ['fill', 'Fill-in', 'end of a phrase']]],
+  ['Transport', 'master deck state', null, [
+    ['stop', 'Stop', 'master stops'], ['play', 'Play', 'master starts'],
+    ['track_load', 'Track load', 'new track on master'], ['master_change', 'Master change', 'other deck is master']]],
+  ['Mixer', 'XDJ-AZ mixer, USB MIDI', 'mixer', [
+    ['bass_cut', 'Bass cut', 'low EQ down on all live channels'], ['bass_return', 'Bass return', 'low EQ back up']]],
+];
+const ADVANCE = [1, 2, 4, 8, 16, 32];
+// The order of the "events" counters in the status (`Event::ALL` in autoblink-core-midi).
+// The first 6 are the phrase buckets. They do not blink: the row of the current phrase is lit.
+const SCENE_EVENTS = ['intro', 'groove', 'build', 'drop', 'break', 'outro', 'beat', 'downbeat', 'phrase_change',
+  'fill', 'stop', 'play', 'track_load', 'master_change', 'bass_cut', 'bass_return'];
+let sceneEvents = null;
+const DECAY_BEATS = [[0.25, '¼'], [0.5, '½'], [1, '1'], [2, '2'], [4, '4'], [8, '8']];
+const ROW_MAX = 16;
+const EXTRA_BASE = 32; // a row entry of 32 and up is scenes.extra[entry - 32]
+let scenes = null, sceneSel = new Set(), sceneAnchor = null, scenePending = false;
+const sceneDraft = {}; // the settings of the rows without presets
+const sceneRowEls = new Map();
+
+const SCENE_RHYTHM = ['beat', 'downbeat', 'phrase_change', 'fill'];
+
+/** The defaults of a new row: a phrase row steps every 2 bars, a rhythm row holds its note. */
+function sceneRow(ev) {
+  const phrase = SCENE_EVENTS.indexOf(ev) < 6;
+  return scenes.rows.find((r) => r.event === ev)
+    || sceneDraft[ev] || (sceneDraft[ev] = {
+      event: ev, presets: [], advance: phrase ? 2 : 0, order: 'up',
+      gate: SCENE_RHYTHM.includes(ev) ? 'hold' : 'pulse', decay: { beats: 0.5 } });
+}
+
+function sceneSave() {
+  scenes.rows = SCENE_GROUPS.flatMap((g) => g[3]).map(([ev]) => sceneRow(ev)).filter((r) => r.presets.length);
+  send(Object.assign({ type: 'scenes_set' }, scenes));
+  renderScenes();
+}
+
+/** Changes a row. A row that gets presets moves from the draft into the settings. */
+function sceneEdit(ev, f) {
+  const r = sceneRow(ev);
+  f(r);
+  r.presets = r.presets.slice(0, ROW_MAX);
+  if (r.presets.length && !scenes.rows.includes(r)) { scenes.rows.push(r); delete sceneDraft[ev]; }
+  if (!r.presets.length) { scenes.rows = scenes.rows.filter((x) => x !== r); sceneDraft[ev] = r; }
+  sceneSave();
+}
+
+function onScenes(m) {
+  delete m.type;
+  scenes = m;
+  // Do not rebuild under an input that has the focus.
+  if ($('p-scenes').contains(document.activeElement) && document.activeElement.tagName === 'INPUT') scenePending = true;
+  else renderScenes();
+}
+
+function sceneChip(i, mini) {
+  const x = i >= EXTRA_BASE ? scenes.extra[i - EXTRA_BASE] : null;
+  const note = x ? x.note : scenes.first_note + i;
+  const label = x ? x.label : (scenes.labels[i] || '');
+  return h('span', 'chip' + (mini ? ' mini' : '') + (x ? ' extra' : ''),
+    !mini && h('i', null, 'n' + note), h('b', null, x ? '♪' + note : String(i + 1)), h('small', null, label));
+}
+
+/** The form at the end of the palette: a note outside the range, with an optional name. */
+function sceneAddForm() {
+  const note = h('input', 'num');
+  note.inputMode = 'numeric';
+  note.placeholder = 'note';
+  note.title = 'A MIDI note from 0 to 127.';
+  const name = h('input', 'num name');
+  name.placeholder = 'name';
+  name.maxLength = 12;
+  const err = h('span', 'err');
+  const add = h('button', null, '+ Note');
+  add.title = 'Add a MIDI note outside the range of the presets.';
+  const commit = () => {
+    const v = note.value.trim();
+    const n = /^\d{1,3}$/.test(v) ? +v : -1;
+    if (n < 0 || n > 127) { note.classList.add('bad'); err.textContent = 'note 0–127'; note.focus(); return; }
+    if (scenes.extra.length >= 16) { err.textContent = '16 notes is the maximum'; return; }
+    scenes.extra.push({ note: n, label: name.value.trim().slice(0, 12) });
+    note.blur(); name.blur();
+    sceneSave();
+  };
+  add.addEventListener('click', commit);
+  for (const i of [note, name]) {
+    i.addEventListener('keydown', (e) => { if (e.key === 'Enter') commit(); });
+    i.addEventListener('input', () => { note.classList.remove('bad'); err.textContent = ''; });
+  }
+  return h('span', 'addnote', note, name, add, err);
+}
+
+/** Removes an extra note, and moves the row entries of the extra notes after it. */
+function sceneRemoveExtra(k) {
+  const gone = EXTRA_BASE + k;
+  for (const r of [...scenes.rows, ...Object.values(sceneDraft)]) {
+    r.presets = r.presets.filter((p) => p !== gone).map((p) => (p > gone ? p - 1 : p));
+  }
+  scenes.extra.splice(k, 1);
+  sceneSave();
+}
+
+function seg(options, value, onPick) {
+  return h('span', 'seg', ...options.map(([v, text, title]) => {
+    const b = h('button', v === value ? 'on' : null, text);
+    if (title) b.title = title;
+    b.addEventListener('click', () => onPick(v));
+    return b;
+  }));
+}
+
+function renderScenes() {
+  if (!scenes) return;
+  scenePending = false;
+  set('scon', scenes.enabled ? 'ON' : 'OFF');
+  $('scon').style.color = scenes.enabled ? 'var(--play)' : 'var(--danger)';
+  set('scone', scenes.one_at_a_time ? 'ON' : 'OFF');
+  $('scone').style.color = scenes.one_at_a_time ? 'var(--play)' : 'var(--muted)';
+  for (const [id, v] of [['scch', scenes.channel + 1], ['scfirst', scenes.first_note], ['sccount', scenes.count]]) {
+    if (document.activeElement !== $(id)) $(id).value = v;
+  }
+  scenes.extra = scenes.extra || [];
+  for (const i of [...sceneSel]) if (i >= scenes.count && i - EXTRA_BASE >= scenes.extra.length) sceneSel.delete(i);
+
+  const chips = [];
+  for (let i = 0; i < scenes.count; i++) {
+    const c = sceneChip(i, false);
+    c.classList.toggle('sel', sceneSel.has(i));
+    c.title = 'Note ' + (scenes.first_note + i) + '. Click to test it.';
+    sceneDrag(c, { from: 'palette', idx: i });
+    chips.push(c);
+  }
+  scenes.extra.forEach((x, k) => {
+    const c = sceneChip(EXTRA_BASE + k, false);
+    c.classList.toggle('sel', sceneSel.has(EXTRA_BASE + k));
+    c.title = 'Note ' + x.note + '. Click to test it.';
+    const del = h('em', 'x', '×');
+    del.title = 'Remove this note';
+    del.style.position = 'absolute'; del.style.bottom = '2px'; del.style.right = '4px';
+    del.addEventListener('pointerdown', (e) => e.stopPropagation());
+    del.addEventListener('click', () => sceneRemoveExtra(k));
+    c.append(del);
+    sceneDrag(c, { from: 'palette', idx: EXTRA_BASE + k });
+    chips.push(c);
+  });
+  chips.push(sceneAddForm());
+  $('palette').replaceChildren(...chips);
+
+  const closed = sceneClosed();
+  const out = [];
+  sceneRowEls.clear();
+  for (const [name, note, cap, events] of SCENE_GROUPS) {
+    if (cap && caps && !caps.has(cap)) continue;
+    const head = h('div', 'grp' + (closed.has(name) ? ' closed' : ''), name, h('span', null, note));
+    head.addEventListener('click', () => {
+      closed.has(name) ? closed.delete(name) : closed.add(name);
+      try { localStorage.setItem('autoblink.scenes.closed', JSON.stringify([...closed])); } catch { /* ignore */ }
+      renderScenes();
+    });
+    out.push(head);
+    if (closed.has(name)) continue;
+    for (const [ev, label, sub] of events) out.push(...sceneRowView(ev, label, sub));
+  }
+  $('slots').replaceChildren(...out);
+  if (status) renderSceneLive(status.scene);
+}
+
+function sceneClosed() {
+  try {
+    const saved = localStorage.getItem('autoblink.scenes.closed');
+    if (saved) return new Set(JSON.parse(saved));
+  } catch { /* storage blocked */ }
+  return new Set(['Mixer']);
+}
+
+function sceneRowView(ev, label, sub) {
+  const r = sceneRow(ev);
+  const name = h('div', 'ev', label, h('small', null, sub));
+  const drop = h('div', 'drop' + (r.presets.length ? '' : ' empty'));
+  drop.dataset.ev = ev;
+  r.presets.forEach((p, pos) => {
+    const c = sceneChip(p, true);
+    const x = h('em', 'x', '×');
+    x.title = 'Remove';
+    x.addEventListener('pointerdown', (e) => e.stopPropagation());
+    x.addEventListener('click', () => sceneEdit(ev, (r) => r.presets.splice(pos, 1)));
+    c.append(x);
+    sceneDrag(c, { from: 'row', ev, pos });
+    drop.append(c);
+  });
+  const info = h('span', 'info');
+  drop.append(info);
+  // Tap fallback: with a selection in the palette, a click on a row adds it.
+  drop.addEventListener('click', (e) => {
+    if (e.target !== drop || !sceneSel.size) return;
+    const add = [...sceneSel].sort((a, b) => a - b);
+    sceneSel.clear();
+    sceneEdit(ev, (r) => r.presets.push(...add));
+  });
+
+  const parts = [seg([[false, 'on trigger', 'The next preset each time the event fires.'], [true, 'every', 'The next preset every N bars.']],
+    r.advance > 0, (every) => sceneEdit(ev, (r) => { r.advance = every ? (r.advance || 4) : 0; }))];
+  if (r.advance > 0) {
+    const sel = h('select', null, ...ADVANCE.map((n) => h('option', null, n + (n === 1 ? ' bar' : ' bars'))));
+    sel.selectedIndex = Math.max(0, ADVANCE.indexOf(r.advance));
+    sel.addEventListener('change', () => sceneEdit(ev, (r) => { r.advance = ADVANCE[sel.selectedIndex]; }));
+    parts.push(sel);
+  }
+  if (r.presets.length > 1) {
+    parts.push(seg([['up', '↑', 'Up'], ['ping_pong', '⇄', 'Ping-pong'], ['random', '🎲', 'Random']], r.order,
+      (o) => sceneEdit(ev, (r) => { r.order = o; })));
+  }
+  parts.push(h('span', 'sep'));
+  const gates = SCENE_RHYTHM.includes(ev) ? [['hold', 'hold'], ['pulse', 'pulse'], ['flash', 'flash']]
+    : [['pulse', 'pulse'], ['hold', 'hold'], ['flash', 'flash']];
+  parts.push(seg(gates, r.gate, (g) => sceneEdit(ev, (r) => {
+    r.gate = g;
+    // A flash starts with half a beat. The old default of 250 ms changes too.
+    if (g === 'flash' && r.decay.ms === 250) r.decay = { beats: 0.5 };
+  })));
+  if (r.gate === 'flash') parts.push(...sceneDecay(ev, r));
+  const ctl = h('div', 'ctl' + (r.presets.length ? '' : ' dim'), ...parts);
+  sceneRowEls.set(ev, { name, drop, info });
+  return [name, drop, ctl];
+}
+
+/** The decay of a flash: milliseconds in an input, or beats in a list. */
+function sceneDecay(ev, r) {
+  const beats = 'beats' in r.decay;
+  const unit = h('select', null, h('option', null, 'ms'), h('option', null, 'beat'));
+  unit.selectedIndex = beats ? 1 : 0;
+  unit.addEventListener('change', () => sceneEdit(ev, (r) => { r.decay = unit.selectedIndex ? { beats: 0.5 } : { ms: 250 }; }));
+  if (beats) {
+    const v = h('select', null, ...DECAY_BEATS.map(([, t]) => h('option', null, t)));
+    v.selectedIndex = Math.max(0, DECAY_BEATS.findIndex(([b]) => b === r.decay.beats));
+    v.addEventListener('change', () => sceneEdit(ev, (r) => { r.decay = { beats: DECAY_BEATS[v.selectedIndex][0] }; }));
+    return [v, unit];
+  }
+  const v = h('input', 'num');
+  v.inputMode = 'numeric';
+  v.value = r.decay.ms;
+  v.addEventListener('change', () => {
+    const ms = parseInt(v.value, 10);
+    if (ms > 0) sceneEdit(ev, (r) => { r.decay = { ms }; });
+  });
+  return [v, unit];
+}
+
+/** Shows the current scene: the row, the preset that is on and the next preset. */
+function renderSceneLive(sc) {
+  // The title of a row blinks when its event occurs, with or without presets in the row.
+  const events = sc && sc.events;
+  if (events && sceneEvents) {
+    SCENE_EVENTS.forEach((ev, i) => {
+      const el = sceneRowEls.get(ev);
+      if (i < 6 || !el || events[i] === sceneEvents[i]) return;
+      el.name.classList.remove('hit');
+      void el.name.offsetWidth; // restart the animation
+      el.name.classList.add('hit');
+    });
+  }
+  sceneEvents = events || null;
+  for (const ev of SCENE_EVENTS.slice(0, 6)) {
+    const el = sceneRowEls.get(ev);
+    if (el) el.name.classList.toggle('cur', !!sc && sc.phrase === ev);
+  }
+  for (const [ev, el] of sceneRowEls) {
+    const on = !!sc && sc.row === ev && scenes.enabled;
+    el.name.classList.toggle('on', on);
+    el.drop.classList.toggle('active', on);
+    // Each row shows the preset that it sent last. The current scene also shows the next one.
+    const last = sc && sc.last ? sc.last[SCENE_EVENTS.indexOf(ev)] : null;
+    [...el.drop.querySelectorAll('.chip')].forEach((c, i) => {
+      c.classList.toggle('live', scenes.enabled && (on ? sc.step === i : last === i));
+      c.classList.toggle('next', on && sc.next === i && sc.next !== sc.step);
+    });
+    const r = sceneRow(ev);
+    const text = on && r.presets.length > 1
+      ? '↻ step ' + (sc.step + 1) + '/' + r.presets.length + (sc.bars_left != null ? ' · next in ' + sc.bars_left + (sc.bars_left === 1 ? ' bar' : ' bars') : '')
+      : '';
+    if (el.info.textContent !== text) el.info.textContent = text;
+  }
+}
+
+/** Drag with pointer events, so that a touch screen works too. A click without a move is a click. */
+function sceneDrag(chip, src) {
+  chip.addEventListener('pointerdown', (down) => {
+    if (down.button !== 0) return;
+    let ghost = null, target = null;
+    const move = (e) => {
+      if (!ghost && Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) < 6) return;
+      if (!ghost) {
+        const list = src.from === 'palette'
+          ? (sceneSel.has(src.idx) ? [...sceneSel].sort((a, b) => a - b) : [src.idx])
+          : [sceneRow(src.ev).presets[src.pos]];
+        src.presets = list;
+        ghost = h('div', 'ghost', ...list.map((i) => { const c = sceneChip(i, true); c.classList.add('sel'); return c; }));
+        document.body.append(ghost);
+      }
+      ghost.style.left = (e.clientX + 8) + 'px';
+      ghost.style.top = (e.clientY + 8) + 'px';
+      const t = document.elementFromPoint(e.clientX, e.clientY);
+      const d = t && t.closest('.drop');
+      if (target !== d) { if (target) target.classList.remove('target'); target = d; if (d) d.classList.add('target'); }
+    };
+    const up = (e) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      if (target) target.classList.remove('target');
+      if (!ghost) { if (e.type === 'pointerup') sceneClick(src, e); return; }
+      ghost.remove();
+      sceneDrop(src, target, e);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
+}
+
+function sceneRename(i) {
+  const x = i >= EXTRA_BASE ? scenes.extra[i - EXTRA_BASE] : null;
+  const name = prompt(x ? 'Name of note ' + x.note : 'Name of preset ' + (i + 1), x ? x.label : scenes.labels[i] || '');
+  if (name === null) return;
+  if (x) { x.label = name.trim().slice(0, 12); sceneSave(); return; }
+  while (scenes.labels.length <= i) scenes.labels.push('');
+  scenes.labels[i] = name.trim().slice(0, 12);
+  sceneSave();
+}
+
+// A click rebuilds the palette, so the browser sees no "dblclick". The page finds it itself.
+let sceneLastClick = null;
+
+function sceneClick(src, e) {
+  if (src.from !== 'palette') return;
+  const i = src.idx;
+  const now = Date.now();
+  if (!e.shiftKey && sceneLastClick && sceneLastClick.i === i && now - sceneLastClick.t < 400) {
+    sceneLastClick = null;
+    sceneRename(i);
+    return;
+  }
+  sceneLastClick = { i, t: now };
+  if (e.shiftKey && sceneAnchor !== null && (sceneAnchor < EXTRA_BASE) === (i < EXTRA_BASE)) {
+    sceneSel.clear();
+    for (let k = Math.min(sceneAnchor, i); k <= Math.max(sceneAnchor, i); k++) sceneSel.add(k);
+  } else if (e.metaKey || e.ctrlKey) {
+    sceneSel.has(i) ? sceneSel.delete(i) : sceneSel.add(i);
+    sceneAnchor = i;
+  } else {
+    sceneSel = new Set(sceneSel.size === 1 && sceneSel.has(i) ? [] : [i]);
+    sceneAnchor = i;
+    send({ type: 'scene_test', preset: i });
+  }
+  renderScenes();
+}
+
+function sceneDrop(src, target, e) {
+  const to = target && target.dataset.ev;
+  if (src.from === 'palette') {
+    if (!to) return;
+    sceneSel.clear();
+    sceneEdit(to, (r) => r.presets.push(...src.presets));
+    return;
+  }
+  const preset = sceneRow(src.ev).presets[src.pos];
+  if (to === src.ev) {
+    // Reorder: put the chip before the chip under the pointer, or at the end.
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    const chip = under && under.closest('.drop .chip');
+    const chips = [...target.querySelectorAll('.chip')];
+    sceneEdit(to, (r) => {
+      r.presets.splice(src.pos, 1);
+      let at = chip ? chips.indexOf(chip) : r.presets.length;
+      if (chip && at > src.pos) at -= 1;
+      r.presets.splice(at, 0, preset);
+    });
+    return;
+  }
+  // A chip that leaves its row moves to the other row, or goes away when it lands outside a row.
+  sceneEdit(src.ev, (r) => r.presets.splice(src.pos, 1));
+  if (to) sceneEdit(to, (r) => r.presets.push(preset));
+}
+
+$('scon').addEventListener('click', () => { if (scenes) { scenes.enabled = !scenes.enabled; sceneSave(); } });
+$('scone').addEventListener('click', () => { if (scenes) { scenes.one_at_a_time = !scenes.one_at_a_time; sceneSave(); } });
+for (const [id, apply] of [
+  ['scch', (v) => { scenes.channel = v - 1; }],
+  ['scfirst', (v) => { scenes.first_note = v; }],
+  ['sccount', (v) => { scenes.count = v; }],
+]) {
+  const input = $(id);
+  const commit = () => {
+    const v = parseInt(input.value, 10);
+    if (!scenes || Number.isNaN(v)) return;
+    apply(v);
+    sceneSave();
+  };
+  input.addEventListener('change', commit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+}
+$('p-scenes').addEventListener('focusout', () => setTimeout(() => { if (scenePending) renderScenes(); }));
+
+const handlers = { scenes: onScenes, hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => { otaDone(); toast(m.text); } };
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-  ws = new WebSocket(proto + location.host + '/ws');
+  ws = new WebSocket(BOX ? 'ws://' + BOX + '/ws' : proto + location.host + '/ws');
   ws.onopen = () => {
     backoff = 500;
     $('dot').classList.add('on');

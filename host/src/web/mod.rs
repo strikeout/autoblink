@@ -11,6 +11,8 @@
 //! - `ports`: `{ports, active, connected}`, after each change.
 //! - `log`: `{lines}`, the new log lines.
 //! - `error`: `{text}`, when a command fails.
+//! - `scenes`: the DMX scene settings (`autoblink_core_midi::scenes::ScenesConfig`), after each
+//!   change. The `scene` field of the status names the current scene.
 //! - `busy`: `{}`, only from the ESP32. The ESP32 sends the status to one page at a time, and
 //!   another page has it. The page then shows a button that sends `take_over`.
 //!
@@ -19,6 +21,9 @@
 //!   with `on`, it flips the switch.
 //! - `{type: "set", idx, value}` stores a numeric or text setting.
 //! - `{type: "port", name}` switches the MIDI output port.
+//! - `{type: "scenes_set", ...}` stores the full DMX scene settings. The server makes them
+//!   valid first (`ScenesConfig::sanitize`).
+//! - `{type: "scene_test", preset}` sends the note of a preset (0-based) one time.
 //! - `{type: "rescan"}` lists the MIDI ports and network interfaces again.
 //! - `{type: "take_over"}`, only to the ESP32: this page gets the status. The ESP32 closes the
 //!   connection of the page that had it, and replies with `settings`.
@@ -56,6 +61,7 @@ use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::discovery::DeviceTable;
 use crate::settings::{self, NetworkIfaceInfo, SettingKind, SETTINGS};
 use crate::state::SharedState;
+use autoblink_core_midi::scenes::ScenesConfig;
 
 /// The page. The host, the emulator and the ESP32 serve the same file.
 pub const PAGE: &str = include_str!("../../../webui/index.html");
@@ -89,6 +95,7 @@ struct Shared {
     status_tx: watch::Sender<Arc<str>>,
     settings_tx: watch::Sender<Arc<str>>,
     ports_tx: watch::Sender<Arc<str>>,
+    scenes_tx: watch::Sender<Arc<str>>,
     rescan: Notify,
 }
 
@@ -181,7 +188,8 @@ fn start(ctx: WebCtx) -> Arc<Shared> {
         ports: RwLock::new(Vec::new()),
         status_tx: watch::channel(empty.clone()).0,
         settings_tx: watch::channel(empty.clone()).0,
-        ports_tx: watch::channel(empty).0,
+        ports_tx: watch::channel(empty.clone()).0,
+        scenes_tx: watch::channel(empty).0,
         rescan: Notify::new(),
     });
     let s = Arc::clone(&shared);
@@ -282,6 +290,8 @@ fn produce_once(shared: &Shared) {
         &shared.settings_tx,
         tagged("settings", &json!({ "items": items })),
     );
+
+    send_if_changed(&shared.scenes_tx, tagged("scenes", &cfg.scenes));
 
     let ports = shared.ports.read().clone();
     send_if_changed(
@@ -485,6 +495,12 @@ enum Command {
         index: Option<usize>,
     },
     Rescan,
+    #[serde(rename = "scenes_set")]
+    ScenesSet(ScenesConfig),
+    #[serde(rename = "scene_test")]
+    SceneTest {
+        preset: u8,
+    },
 }
 
 async fn send(socket: &mut WebSocket, msg: &str) -> bool {
@@ -500,7 +516,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
         "proto": 1,
         "version": env!("CARGO_PKG_VERSION"),
         "device": "host",
-        "caps": ["beat", "decks", "mixer", "output", "settings", "ports", "logs", "waveform"],
+        "caps": ["beat", "decks", "mixer", "output", "settings", "ports", "logs", "waveform", "scenes"],
     });
     if !send(&mut socket, &hello.to_string()).await {
         return;
@@ -509,12 +525,13 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
     let mut status_rx = shared.status_tx.subscribe();
     let mut settings_rx = shared.settings_tx.subscribe();
     let mut ports_rx = shared.ports_tx.subscribe();
+    let mut scenes_rx = shared.scenes_tx.subscribe();
     let mut beat_rx = shared.ctx.beat_tx.subscribe();
     let mut log_seq = 0;
 
     // The producer skips its work while no client is connected, so build fresh messages now.
     produce_once(&shared);
-    for rx in [&mut settings_rx, &mut ports_rx] {
+    for rx in [&mut settings_rx, &mut ports_rx, &mut scenes_rx] {
         let msg = rx.borrow_and_update().clone();
         if !send(&mut socket, &msg).await {
             return;
@@ -548,6 +565,12 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
                     return;
                 }
                 ports_rx.borrow_and_update().clone()
+            }
+            r = scenes_rx.changed() => {
+                if r.is_err() {
+                    return;
+                }
+                scenes_rx.borrow_and_update().clone()
             }
             beat = beat_rx.recv() => {
                 let (device, beat) = match beat {
@@ -607,6 +630,36 @@ async fn handle_command(shared: &Shared, text: &str) -> Option<String> {
         }
         Command::Rescan => {
             shared.rescan.notify_one();
+            None
+        }
+        Command::ScenesSet(mut scenes) => {
+            scenes.sanitize();
+            let path = {
+                let mut cfg = ctx.cfg.write();
+                cfg.scenes = scenes.clone();
+                cfg.scenes_path.clone()
+            };
+            let path = path?;
+            // The file write is a blocking call.
+            let saved =
+                tokio::task::spawn_blocking(move || crate::config::save_scenes(&path, &scenes))
+                    .await;
+            match saved {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(format!("Cannot store the scenes: {e}")),
+                Err(e) => Some(format!("Cannot store the scenes: {e}")),
+            }
+        }
+        Command::SceneTest { preset } => {
+            let (ch, note) = {
+                let cfg = ctx.cfg.read();
+                (cfg.scenes.channel, cfg.scenes.note(preset))
+            };
+            use crate::midi::MidiTransport;
+            let _ = ctx.midi_out.send_message(&[0x90 | ch, note, 127]);
+            // The test uses the 0x80 note off, not the velocity 0 of the scenes. A DMX controller
+            // that ignores 0x80 then keeps the preset on, so that the user sees it.
+            let _ = ctx.midi_out.send_message(&[0x80 | ch, note, 0]);
             None
         }
     }
@@ -816,6 +869,39 @@ mod tests {
         let beat = next_of_type(&mut ws, "beat").await;
         assert_eq!(beat["device"], 0);
         assert_eq!(beat["beat"], 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scenes_set_stores_valid_scenes_in_the_file() {
+        let ctx = ctx();
+        let cfg = Arc::clone(&ctx.cfg);
+        let dir = std::env::temp_dir().join(format!("xdj-scenes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scenes.json");
+        cfg.write().scenes_path = Some(path.clone());
+        let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+            .await
+            .unwrap();
+        let hello = next_of_type(&mut ws, "hello").await;
+        assert!(hello["caps"].as_array().unwrap().contains(&"scenes".into()));
+        let scenes = next_of_type(&mut ws, "scenes").await;
+        assert_eq!(scenes["enabled"], false);
+
+        ws.send(WsMessage::Text(
+            r#"{"type":"scenes_set","enabled":true,"count":15,"labels":["Strobe"],
+                "rows":[{"event":"drop","presets":[4,40],"gate":"hold"}]}"#
+                .into(),
+        ))
+        .await
+        .unwrap();
+        wait_for(&mut ws, "scenes", |v| v["enabled"] == true).await;
+        let stored = crate::config::load_scenes(&path);
+        assert_eq!(stored.rows[0].presets, [4]);
+        assert_eq!(cfg.read().scenes, stored);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

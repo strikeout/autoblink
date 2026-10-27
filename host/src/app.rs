@@ -209,6 +209,9 @@ pub fn init() -> anyhow::Result<AppContext> {
 
     // ── Config ───────────────────────────────────────────────────────────────
     let mut initial_cfg = config::load(&cli.config)?;
+    let scenes_path = config::scenes_path(&cli.config);
+    initial_cfg.scenes = config::load_scenes(&scenes_path);
+    initial_cfg.scenes_path = Some(scenes_path);
     if let Some(iface) = &cli.interface {
         initial_cfg.interface = iface.clone();
     }

@@ -44,6 +44,9 @@ pub struct MidiActivity {
 
     /// Latest beat timing delta in milliseconds.
     pub clock_timing_delta_ms: Option<f64>,
+
+    /// The current DMX scene, for the page.
+    pub scene: autoblink_core_midi::scenes::SceneStatus,
 }
 
 #[cfg(test)]

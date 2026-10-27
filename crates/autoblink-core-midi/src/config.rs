@@ -37,6 +37,9 @@ pub struct MidiConfig {
     /// The first note of the phrase kinds. The note is this value plus the kind code (0 to 11).
     pub phrase_base_note: u8,
     pub send_phrase_kind: bool,
+    /// Sends each note off as a note on with velocity 0, not as 0x80. Some DMX controllers
+    /// ignore the 0x80 note off. Host index 33.
+    pub off_vel0: bool,
     pub cc_enabled: bool,
     /// 0-based. The page shows 1 to 16.
     pub cc_channel: u8,
@@ -76,6 +79,7 @@ impl Default for MidiConfig {
             send_phrase_change: true,
             phrase_base_note: 40,
             send_phrase_kind: true,
+            off_vel0: true,
             cc_enabled: true,
             cc_channel: 0,
             ccs: default_ccs(),

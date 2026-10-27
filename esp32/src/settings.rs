@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use autoblink_core_midi::scenes::ScenesConfig;
 use autoblink_core_midi::{settings as midi_settings, MidiConfig, SettingItem};
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 
@@ -19,7 +20,7 @@ const IDX_PASSWORD: usize = 101;
 const IDX_JOIN_SSID: usize = 102;
 const IDX_JOIN_PASSWORD: usize = 103;
 const DEFAULT_PASSWORD: &str = "autoblink123";
-/// The MIDI configuration goes to NVS when it has not changed for this time.
+/// The MIDI configuration and the scenes go to NVS when they have not changed for this time.
 const SAVE_DELAY: Duration = Duration::from_secs(2);
 
 pub struct Settings {
@@ -31,18 +32,30 @@ pub struct Settings {
     pub device_number: Arc<AtomicU8>,
     /// The time of the last MIDI change that is not in NVS yet.
     midi_changed: Option<Instant>,
+    /// The DMX scenes. The MIDI thread reads them.
+    pub scenes: Arc<Mutex<ScenesConfig>>,
+    /// The time of the last scene change that is not in NVS yet.
+    scenes_changed: Option<Instant>,
 }
 
 impl Settings {
     pub fn new(partition: EspDefaultNvsPartition, default_ssid: String) -> anyhow::Result<Self> {
         let nvs = EspNvs::new(partition, "xdj", true)?;
-        let mut buf = vec![0u8; 2048];
+        // The scenes need more than the MIDI configuration: up to about 3 KB.
+        let mut buf = vec![0u8; 4096];
         let midi = nvs
             .get_str("midi", &mut buf)
             .ok()
             .flatten()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
+        let mut scenes: ScenesConfig = nvs
+            .get_str("scenes", &mut buf)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        scenes.sanitize();
         let device = nvs
             .get_u8("devnum")
             .ok()
@@ -54,6 +67,8 @@ impl Settings {
             midi: Arc::new(Mutex::new(midi)),
             device_number: Arc::new(AtomicU8::new(device.unwrap_or(DEFAULT_DEVICE))),
             midi_changed: None,
+            scenes: Arc::new(Mutex::new(scenes)),
+            scenes_changed: None,
         })
     }
 
@@ -208,20 +223,54 @@ impl Settings {
         Ok(())
     }
 
-    /// Writes the MIDI configuration to NVS when it has not changed for `SAVE_DELAY`. The main
-    /// loop calls this each second.
-    pub fn save_midi(&mut self) {
-        if !self.midi_changed.is_some_and(|t| t.elapsed() >= SAVE_DELAY) {
-            return;
+    /// Builds the protocol v1 scenes message as JSON text.
+    pub fn scenes_message(&self) -> String {
+        #[derive(serde::Serialize)]
+        struct Message<'a> {
+            #[serde(rename = "type")]
+            kind: &'static str,
+            #[serde(flatten)]
+            scenes: &'a ScenesConfig,
         }
-        self.midi_changed = None;
-        let json = serde_json::to_string(&*self.midi.lock().unwrap());
+        serde_json::to_string(&Message {
+            kind: "scenes",
+            scenes: &self.scenes.lock().unwrap(),
+        })
+        .unwrap_or_default()
+    }
+
+    /// Makes the scenes valid and uses them. `save` writes them to NVS later.
+    pub fn set_scenes(&mut self, mut scenes: ScenesConfig) {
+        scenes.sanitize();
+        *self.scenes.lock().unwrap() = scenes;
+        self.scenes_changed = Some(Instant::now());
+    }
+
+    /// Writes the MIDI configuration and the scenes to NVS when they have not changed for
+    /// `SAVE_DELAY`. The main loop calls this each second.
+    pub fn save(&mut self) {
+        if self.midi_changed.is_some_and(|t| t.elapsed() >= SAVE_DELAY) {
+            self.midi_changed = None;
+            let json = serde_json::to_string(&*self.midi.lock().unwrap());
+            self.save_json("midi", json, "MIDI settings");
+        }
+        if self
+            .scenes_changed
+            .is_some_and(|t| t.elapsed() >= SAVE_DELAY)
+        {
+            self.scenes_changed = None;
+            let json = serde_json::to_string(&*self.scenes.lock().unwrap());
+            self.save_json("scenes", json, "scenes");
+        }
+    }
+
+    fn save_json(&self, key: &str, json: serde_json::Result<String>, what: &str) {
         match json
             .map_err(anyhow::Error::from)
-            .and_then(|j| Ok(self.nvs.set_str("midi", &j)?))
+            .and_then(|j| Ok(self.nvs.set_str(key, &j)?))
         {
-            Ok(()) => log::info!("The MIDI settings are saved"),
-            Err(e) => log::warn!("Cannot save the MIDI settings: {e}"),
+            Ok(()) => log::info!("The {what} are saved"),
+            Err(e) => log::warn!("Cannot save the {what}: {e}"),
         }
     }
 

@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+use autoblink_core_midi::scenes::ScenesConfig;
 use parking_lot::RwLock;
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ── Beat source selector ──────────────────────────────────────────────────────
 
@@ -32,6 +33,12 @@ pub struct Config {
     pub link: LinkConfig,
     pub web: WebConfig,
     pub osc: OscConfig,
+    /// The DMX scenes. The page changes them, and the app stores them in `scenes_path`.
+    #[serde(skip)]
+    pub scenes: ScenesConfig,
+    /// The JSON file of the scenes, next to the config file. `None` stores nothing.
+    #[serde(skip)]
+    pub scenes_path: Option<PathBuf>,
 }
 
 pub type SharedConfig = Arc<RwLock<Config>>;
@@ -51,6 +58,8 @@ impl Default for Config {
             link: LinkConfig::default(),
             web: WebConfig::default(),
             osc: OscConfig::default(),
+            scenes: ScenesConfig::default(),
+            scenes_path: None,
         }
     }
 }
@@ -129,6 +138,9 @@ pub struct NoteConfig {
     pub no_bass: u8,
     /// The switch of each note. A note that is off is not sent.
     pub send: NoteSend,
+    /// Sends each note off as a note on with velocity 0, not as 0x80. Some DMX controllers
+    /// ignore the 0x80 note off. This applies to the MIDI notes and the DMX scenes.
+    pub off_vel0: bool,
 }
 
 /// One switch for each note of [`NoteConfig`].
@@ -165,6 +177,7 @@ impl Default for NoteConfig {
             phrase_base: 40,
             no_bass: 39,
             send: NoteSend::default(),
+            off_vel0: true,
         }
     }
 }
@@ -390,6 +403,32 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
     let cfg: Config = toml::from_str(&text)?;
     validate(&cfg)?;
     Ok(cfg)
+}
+
+/// Returns the path of the scenes file: `scenes.json` in the folder of the config file.
+pub fn scenes_path(config_path: &Path) -> PathBuf {
+    config_path.with_file_name("scenes.json")
+}
+
+/// Reads the scenes file. A missing or bad file gives the default scenes.
+pub fn load_scenes(path: &Path) -> ScenesConfig {
+    let mut scenes = match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+            tracing::warn!("The scenes file {path:?} is not valid, using defaults: {e}");
+            ScenesConfig::default()
+        }),
+        Err(_) => ScenesConfig::default(),
+    };
+    scenes.sanitize();
+    scenes
+}
+
+/// Writes the scenes file. This is a blocking call.
+pub fn save_scenes(path: &Path, scenes: &ScenesConfig) -> anyhow::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(scenes)?)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 pub(crate) fn validate(cfg: &Config) -> anyhow::Result<()> {
