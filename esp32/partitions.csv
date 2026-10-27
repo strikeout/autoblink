@@ -8,3 +8,5 @@ ota_0,    app,  ota_0,   0x20000,  0x1E0000
 ota_1,    app,  ota_1,   0x200000, 0x1E0000
 # The panic handler writes a core dump here. The firmware logs it after the restart (logring.rs).
 coredump, data, coredump, 0x3E0000, 0x10000
+# The DMX show is here as JSON (show.rs). OTA does not change this table, so flash a box over USB to add it.
+show,     data, 0x40,    0x3F0000, 0x10000

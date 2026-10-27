@@ -18,6 +18,7 @@ mod net;
 mod ota;
 mod prolink;
 mod settings;
+mod show;
 mod tracks;
 mod webui;
 

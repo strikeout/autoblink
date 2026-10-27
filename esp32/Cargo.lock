@@ -61,6 +61,15 @@ name = "autoblink-core-dbserver"
 version = "1.23.3"
 
 [[package]]
+name = "autoblink-core-dmx"
+version = "1.23.3"
+dependencies = [
+ "autoblink-core-midi",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "autoblink-core-midi"
 version = "1.23.3"
 dependencies = [
@@ -77,6 +86,7 @@ version = "1.23.3"
 dependencies = [
  "anyhow",
  "autoblink-core-dbserver",
+ "autoblink-core-dmx",
  "autoblink-core-midi",
  "autoblink-core-prolink",
  "embuild",
