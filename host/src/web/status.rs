@@ -37,6 +37,8 @@ pub struct Status {
     /// The IP address of an AUTOBLINK box on the Pro DJ Link network, or `None`.
     #[serde(rename = "box")]
     pub box_ip: Option<String>,
+    /// The layers and the live controls of the DMX engine, or `None` when the engine does not run.
+    pub dmx: Option<crate::dmx::DmxStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -154,6 +156,7 @@ pub fn snapshot(
     activity: &Mutex<MidiActivity>,
     interfaces: &[NetworkIfaceInfo],
     out_link: OutputLink,
+    dmx: Option<&Mutex<crate::dmx::DmxStatus>>,
 ) -> Status {
     let cfg = cfg.read().clone();
     let (master, mixer, link_peers, mut dev_states) = {
@@ -166,6 +169,7 @@ pub fn snapshot(
         )
     };
     let act = activity.lock().clone();
+    let dmx = dmx.map(|d| d.lock().clone());
     let (mut devices, box_ip): (Vec<_>, _) = {
         let table = device_table.lock();
         (
@@ -328,6 +332,7 @@ pub fn snapshot(
         mixer,
         scene: act.scene,
         box_ip: box_ip.map(|ip| ip.to_string()),
+        dmx,
         output: Output {
             port: cfg.midi.output.clone(),
             connected: out_link.connected,
@@ -441,6 +446,7 @@ mod tests {
                 connected: false,
                 dropped: 0,
             },
+            None,
         );
 
         let nums: Vec<u8> = st.decks.iter().map(|d| d.num).collect();
@@ -474,6 +480,7 @@ mod tests {
                 connected: true,
                 dropped: 0,
             },
+            None,
         );
         assert!(st.no_devices);
         assert!(st.mixer.is_none());

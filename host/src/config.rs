@@ -409,6 +409,10 @@ impl Default for OscConfig {
 pub struct DmxConfig {
     /// The Art-Net node as "IP" or "IP:port". The default port is 6454. A broadcast address is
     /// permitted. Without a target, the host starts no DMX engine.
+    ///
+    /// The engine stops while a device with the name "autoblink" and another device number is on
+    /// the network. Two hosts with the default `device_name` thus see each other as a box, and
+    /// neither host sends Art-Net.
     pub artnet_target: Option<String>,
     /// The Art-Net universe (Net << 8 | SubUni), 0 to 32767.
     pub universe: u16,

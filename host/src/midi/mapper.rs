@@ -1060,7 +1060,7 @@ async fn run_with_midi(
 
             evt = beat_rx.recv() => {
                 match evt {
-                    Ok(BeatEvent::Beat { packet: bp, .. }) => {
+                    Ok(BeatEvent::Beat { packet: bp, received_at }) => {
                         // Only trigger notes / CCs for the master deck of the active source.
                         let (master_num, master_source) = {
                             let st = state.read();
@@ -1079,7 +1079,7 @@ async fn run_with_midi(
                         dmx_send(dmx, DmxMsg::Beat {
                             beat_in_bar: bp.beat_in_bar,
                             bpm: bp.effective_bpm,
-                            at: Instant::now(),
+                            at: received_at,
                         });
                         scenes.beat(&scene_cfg, now_ms(), bp.beat_in_bar, &mut |o| {
                             send_scene(midi.as_ref(), o, &activity, vel0);
@@ -1097,7 +1097,7 @@ async fn run_with_midi(
                     Ok(BeatEvent::AbsPosition { .. }) => {
                         // Phase updates handled via shared state CCs below.
                     }
-                    Ok(BeatEvent::LinkBeat { bpm, beat_in_bar, .. }) => {
+                    Ok(BeatEvent::LinkBeat { bpm, beat_in_bar, received_at, .. }) => {
                         if !link_beat_allowed(state.read().master.source) {
                             continue;
                         }
@@ -1107,7 +1107,7 @@ async fn run_with_midi(
                             let c = cfg.read();
                             (c.scenes.clone(), c.midi.notes.off_vel0)
                         };
-                        dmx_send(dmx, DmxMsg::Beat { beat_in_bar, bpm, at: Instant::now() });
+                        dmx_send(dmx, DmxMsg::Beat { beat_in_bar, bpm, at: received_at });
                         scenes.beat(&scene_cfg, now_ms(), beat_in_bar, &mut |o| {
                             send_scene(midi.as_ref(), o, &activity, vel0);
                             scene_to_dmx(dmx, &scene_cfg, o);

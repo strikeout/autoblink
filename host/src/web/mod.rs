@@ -25,6 +25,10 @@
 //!   valid first (`ScenesConfig::sanitize`).
 //! - `{type: "scene_test", preset}` sends the note of a preset (0-based) one time.
 //! - `{type: "rescan"}` lists the MIDI ports and network interfaces again.
+//! - `{type: "dmx_live", master, strobe}` sets the live master (0 to 255) and the strobe hold of
+//!   the DMX engine. `{type: "dmx_fog"}` starts the fog. `{type: "dmx_aim", fixture, pan, tilt}`
+//!   aims a head (fixture 0 to 31). These commands get no reply. Without a DMX engine, they give
+//!   an `error`. `scene_test` also shows the look of the preset on the engine.
 //! - `{type: "take_over"}`, only to the ESP32: this page gets the status. The ESP32 closes the
 //!   connection of the page that had it, and replies with `settings`.
 //!
@@ -99,6 +103,8 @@ pub struct WebCtx {
     pub cfg_change_tx: watch::Sender<()>,
     /// The DMX show of the host. The DMX engine reads it.
     pub show: crate::dmx::SharedShow,
+    /// The DMX engine, or `None` when it does not run.
+    pub dmx: Option<crate::dmx::DmxHandle>,
 }
 
 struct Shared {
@@ -280,6 +286,7 @@ fn produce_once(shared: &Shared) {
             connected: ctx.midi_out.is_connected(),
             dropped: ctx.midi_out.dropped_messages(),
         },
+        ctx.dmx.as_ref().map(|d| &*d.status),
     );
     shared.status_tx.send_replace(tagged("status", &st));
 
@@ -584,6 +591,21 @@ enum Command {
     SceneTest {
         preset: u8,
     },
+    #[serde(rename = "dmx_live")]
+    DmxLive {
+        master: f64,
+        strobe: bool,
+    },
+    #[serde(rename = "dmx_fog")]
+    DmxFog,
+    #[serde(rename = "dmx_aim")]
+    DmxAim {
+        fixture: u8,
+        #[serde(default)]
+        pan: u64,
+        #[serde(default)]
+        tilt: u64,
+    },
 }
 
 async fn send(socket: &mut WebSocket, msg: &str) -> bool {
@@ -750,10 +772,51 @@ async fn handle_command(shared: &Shared, text: &str) -> Option<String> {
             // The test uses the 0x80 note off, not the velocity 0 of the scenes. A DMX controller
             // that ignores 0x80 then keeps the preset on, so that the user sees it.
             let _ = ctx.midi_out.send_message(&[0x80 | ch, note, 0]);
+            // A full channel drops the test. The page can send it again.
+            if let Some(dmx) = &ctx.dmx {
+                let _ = dmx.tx.try_send(crate::dmx::DmxMsg::Test(preset));
+            }
+            None
+        }
+        Command::DmxLive { master, strobe } => {
+            let Some(dmx) = &ctx.dmx else {
+                return Some(NO_DMX.into());
+            };
+            use std::sync::atomic::Ordering::Relaxed;
+            dmx.live
+                .master
+                .store(master.clamp(0.0, 255.0) as u8, Relaxed);
+            dmx.live.strobe_hold.store(strobe, Relaxed);
+            None
+        }
+        // A full channel drops the fog. The page can send it again.
+        Command::DmxFog => {
+            let Some(dmx) = &ctx.dmx else {
+                return Some(NO_DMX.into());
+            };
+            let _ = dmx.tx.try_send(crate::dmx::DmxMsg::Fog);
+            None
+        }
+        // A full channel drops the aim. The page sends the next aim soon.
+        Command::DmxAim { fixture, pan, tilt } => {
+            let Some(dmx) = &ctx.dmx else {
+                return Some(NO_DMX.into());
+            };
+            if usize::from(fixture) >= autoblink_core_dmx::MAX_FIXTURES {
+                return Some("The command needs a fixture below 32".into());
+            }
+            let _ = dmx.tx.try_send(crate::dmx::DmxMsg::Aim {
+                fixture,
+                pan: pan.min(65535) as u16,
+                tilt: tilt.min(65535) as u16,
+            });
             None
         }
     }
 }
+
+/// The error of a DMX command when the host has no DMX engine.
+const NO_DMX: &str = "The host has no DMX engine. Set [dmx] artnet_target in the config.";
 
 async fn switch_port(
     ctx: &WebCtx,
@@ -808,6 +871,7 @@ mod tests {
             midi_out: MidiOutHandle::start(16, None),
             cfg_change_tx: watch::channel(()).0,
             show: crate::dmx::SharedShow::default(),
+            dmx: None,
         }
     }
 
@@ -1182,5 +1246,90 @@ mod tests {
             },
         );
         wait_for(&mut ws, "status", |v| v["box"] == "192.168.2.50").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dmx_commands_drive_the_engine() {
+        let node = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut ctx = ctx();
+        let dmx_cfg = crate::config::DmxConfig {
+            artnet_target: Some(node.local_addr().unwrap().to_string()),
+            universe: 0,
+        };
+        ctx.cfg.write().dmx = dmx_cfg.clone();
+        *ctx.show.write() = autoblink_core_dmx::Show::from_json(
+            json!({
+                "fixtures": [{"name": "par", "address": 1, "channels": ["dimmer"]}],
+                "groups": [{"name": "all", "fixtures": [0]}],
+                "looks": [{"rows": [{"group": 0, "color": [255, 255, 255, 255], "intensity": 255}]}],
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        let dmx = crate::dmx::start(
+            &dmx_cfg,
+            ctx.show.clone(),
+            Arc::clone(&ctx.dj_state),
+            Arc::clone(&ctx.cfg),
+            ctx.device_table.clone(),
+        )
+        .unwrap();
+        ctx.dmx = Some(dmx.clone());
+        let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+            .await
+            .unwrap();
+        let hello = next_of_type(&mut ws, "hello").await;
+        assert!(hello["caps"].as_array().unwrap().contains(&"dmx".into()));
+        let status = next_of_type(&mut ws, "status").await;
+        assert_eq!(status["dmx"]["master"], 255);
+
+        ws.send(WsMessage::Text(
+            r#"{"type":"dmx_live","master":40,"strobe":true}"#.into(),
+        ))
+        .await
+        .unwrap();
+        wait_for(&mut ws, "status", |v| {
+            v["dmx"]["master"] == 40 && v["dmx"]["strobe_hold"] == true
+        })
+        .await;
+
+        // The test of a preset shows its look on the engine.
+        ws.send(WsMessage::Text(
+            r#"{"type":"scene_test","preset":0}"#.into(),
+        ))
+        .await
+        .unwrap();
+        wait_for(&mut ws, "status", |v| v["dmx"]["layers"] == json!([0])).await;
+
+        ws.send(WsMessage::Text(r#"{"type":"dmx_fog"}"#.into()))
+            .await
+            .unwrap();
+        ws.send(WsMessage::Text(
+            r#"{"type":"dmx_aim","fixture":40,"pan":1,"tilt":2}"#.into(),
+        ))
+        .await
+        .unwrap();
+        let err = next_of_type(&mut ws, "error").await;
+        assert!(err["text"].as_str().unwrap().contains("below 32"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dmx_commands_without_an_engine_give_an_error() {
+        let addr = spawn(ctx(), SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+            .await
+            .unwrap();
+        let status = next_of_type(&mut ws, "status").await;
+        assert!(status["dmx"].is_null());
+        ws.send(WsMessage::Text(r#"{"type":"dmx_fog"}"#.into()))
+            .await
+            .unwrap();
+        let err = next_of_type(&mut ws, "error").await;
+        assert!(err["text"].as_str().unwrap().contains("DMX"), "{err}");
     }
 }

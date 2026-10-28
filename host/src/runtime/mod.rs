@@ -146,7 +146,7 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
     };
 
     // The engine starts only with `[dmx] artnet_target`. It restarts after a panic.
-    let dmx_tx = crate::dmx::start(
+    let dmx = crate::dmx::start(
         &startup_cfg.dmx,
         Arc::clone(&show),
         Arc::clone(&dj_state),
@@ -164,7 +164,7 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         vcdjready_tx: vcdjready_tx.clone(),
         midi_out: midi_out.clone(),
         midi_activity: Arc::clone(&midi_activity),
-        dmx_tx,
+        dmx_tx: dmx.as_ref().map(|d| d.tx.clone()),
     };
 
     dj_state.write().set_source_mode(startup_cfg.source.clone());
@@ -238,6 +238,7 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
             midi_out: midi_out.clone(),
             cfg_change_tx: cfg_change_tx.clone(),
             show,
+            dmx,
         },
         web_addr,
     )
