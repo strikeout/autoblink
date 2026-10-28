@@ -163,7 +163,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.27.0 uses 85 % (1 667 440 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.28.0 uses 85 % (1 672 752 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
 ### Web page without a flash
@@ -190,6 +190,12 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - An entry with a hold sends its note off after the hold, whatever the gate of the row. During the hold, the triggers of the row wait in one pending trigger. When the hold ends, the next entry fires at once. A scene row drops its pending trigger when another row has become the current scene.
 - After a flash or a pulse, `restore_held` sends the note of the newest held entry again (with `one_at_a_time`). The light can then show the entry of an older scene row while the page shows the newer scene.
 - The status field `scene.events` counts each event in the order of `Event::ALL`, also without presets and while the scenes are off. The page keeps the same order in `SCENE_EVENTS`.
+- The drop guess (`autoblink_core_midi::guess::DropGuess`) gives a bucket (Intro, Groove, Build, Drop, Break, Outro) to a track without rekordbox phrases. The engine uses it only when `SceneInput::phrase` is `None`. Phrases always win.
+- The profile is the sum of the 6 PWV4 bytes of a column divided by 6. It is folded to at most 600 columns (`u8`) and smoothed with a moving average of 4 columns on each side. The page does not receive it.
+- The thresholds come from the profile of the track: `hi` is the 70th percentile, `lo` is the 30th percentile, and `mid` is the median. Before the first column and after the last column at or above `mid`, the bucket is Intro or Outro. Drop is at or above `hi`. Break is at or below `lo`. Build is a column below `hi` where the next 2 % of the track reaches `hi`. The rest is Groove. A Drop or a Break stays while the energy is within 8 of its threshold (hysteresis). When `hi - lo` is below 24, the track gives only Intro, Groove and Outro. A loudly mastered track therefore gives no Drop guess.
+- The engine fires the guessed bucket only at a block start: `phrase16 == 1` after a value other than 1. It fires only when the bucket differs from the last bucket that the guess fired for this track. A new track or a new master deck resets it. Play without a Play row fires the guess again at once.
+- The page shows "(guess)" at the row of the current bucket when the status field `scene.guessed` is true.
+- The guess is built once for each track. The box builds it in the `dbserver` thread before it takes the lock (about 4 KB of heap for a short time, `tracks.rs`). The host builds it in `set_overview` (`host/src/state/dj_state.rs`). Without a preview of 32 columns, there is no guess.
 
 ### DMX show
 
