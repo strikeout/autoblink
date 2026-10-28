@@ -179,6 +179,16 @@ input.num.text{width:150px;text-align:left}
 #p-setup>summary h2 .sum{text-transform:none;letter-spacing:0;color:var(--dim);font-size:12px}
 #p-setup .cardrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:flex-start}
 #p-setup .fxc{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
+#p-setup .oflbox{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
+#p-setup .oflbox[hidden],#p-setup .ofldet[hidden]{display:none}
+#p-setup .oflbox .line,#p-setup .ofldet .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+#p-setup #oflq{width:240px;text-align:left}
+#p-setup .oflres{display:flex;flex-direction:column;max-height:180px;overflow:auto}
+#p-setup .oflres button{text-align:left;border:0;background:none;color:var(--text);padding:2px 4px}
+#p-setup .oflres button:hover{background:#1c1c2a}
+#p-setup .ofldet{display:flex;flex-direction:column;gap:6px}
+#p-setup .ofldet .chs{color:var(--text);word-break:break-word}
+#p-setup button:disabled{opacity:.4;cursor:default}
 #p-setup .fxc.bad{border-color:var(--danger)}
 #p-setup .fxc .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
 #p-setup .fxc .rng.bad{color:var(--danger);font-weight:700}
@@ -349,7 +359,12 @@ input.num.text{width:150px;text-align:left}
 
   <details id="p-setup" class="panel wide" data-cap="dmx" hidden>
     <summary><h2>Lights setup <span id="stsum" class="sum"></span></h2></summary>
-    <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button></div>
+    <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button></div>
+    <div id="ltofl" class="oflbox" hidden>
+      <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span></div>
+      <div id="oflres" class="oflres"></div>
+      <div id="ofldet" class="ofldet" hidden></div>
+    </div>
     <div id="ltpatch" class="cardrow"></div>
     <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
     <div id="ltgroups" class="cardrow"></div>
@@ -1606,8 +1621,9 @@ function renderLights() {
     }));
     return h('div', 'fxc' + (bad ? ' bad' : ''),
       h('div', 'line', textIn(f.name, 'The name of the light.', (v) => { f.name = v; }), del),
-      h('div', 'line', pick(types, t, (v) => showEdit(() => { if (v !== 'custom') f.channels = [...FIXTURE_TYPES[v]]; })), adr),
-      h('div', 'line', range, h('span', null, chanLen(f) + ' ch'), bad && h('span', 'rng bad', 'overlap')));
+      h('div', 'line', pick(types, t, (v) => showEdit(() => { if (v !== 'custom') { f.channels = [...FIXTURE_TYPES[v]]; delete f.ofl; } })), adr),
+      h('div', 'line', range, h('span', null, chanLen(f) + ' ch'), bad && h('span', 'rng bad', 'overlap')),
+      f.ofl && h('div', 'line', h('span', null, 'OFL ' + f.ofl.replace('#', ' · '))));
   });
   $('ltpatch').replaceChildren(...patch);
 
@@ -1762,7 +1778,11 @@ function renderLayers() {
 }
 
 function strobeClass() {
-  $('ltstrobe').classList.toggle('on', strobeHeld || !!(dmxLast && dmxLast.strobe_hold));
+  const held = strobeHeld || !!(dmxLast && dmxLast.strobe_hold);
+  $('ltstrobe').classList.toggle('on', held);
+  // A library fetch blocks the web server of the box, so the release of the strobe could not arrive.
+  $('ltlib').disabled = held;
+  if (held) $('ltofl').hidden = true;
 }
 
 const masterPct = () => set('ltpct', Math.round(+$('ltmaster').value / 2.55) + '%');
@@ -1786,6 +1806,143 @@ $('ltaddgr').addEventListener('click', () => {
   if (!show || show.groups.length >= 8) return toast('8 groups is the maximum.');
   showEdit(() => show.groups.push({ name: 'Group ' + (show.groups.length + 1), fixtures: [] }));
 });
+
+// ---- Add a light from the Open Fixture Library ----
+const OFL_COLORS = { Red: 'red', Green: 'green', Blue: 'blue', White: 'white', 'Warm White': 'white', 'Cold White': 'white', Amber: 'amber', UV: 'uv' };
+const OFL_RES = { '8bit': 0, '16bit': 1, '24bit': 2 };
+
+/** The default value of an OFL channel as one DMX byte. The value is in the resolution of the channel. */
+function oflDefault(c) {
+  let v = c.defaultValue;
+  if (typeof v === 'string' && /^\d+(\.\d+)?%$/.test(v)) return Math.round(parseFloat(v) * 2.55);
+  if (typeof v !== 'number') return 0;
+  const extra = c.dmxValueResolution in OFL_RES ? OFL_RES[c.dmxValueResolution] : (c.fineChannelAliases || []).length;
+  v = Math.floor(v / 256 ** extra);
+  return Math.min(255, Math.max(0, v));
+}
+
+/** Maps the channels of one mode of an OFL fixture to the channels of the show. */
+function oflChannels(fixture, modeName) {
+  const avail = fixture.availableChannels || {};
+  const fine = new Set();
+  for (const c of Object.values(avail)) for (const a of c.fineChannelAliases || []) fine.add(a);
+  const mode = (fixture.modes || []).find((m) => m.name === modeName);
+  const notes = [];
+  const channels = ((mode && mode.channels) || []).map((name) => {
+    if (name === null) return { fixed: 0 };
+    if (typeof name === 'string' && fine.has(name)) return { fixed: 0 };
+    const c = typeof name === 'string' ? avail[name] : null;
+    if (!c) {
+      // An object (a matrix insert) or a template name with "$" is a pixel channel. Another unknown name is a switching channel.
+      const pixel = typeof name !== 'string' || name.includes('$');
+      if (pixel && !notes.includes('pixel channels are not supported yet')) notes.push('pixel channels are not supported yet');
+      return { fixed: 0 };
+    }
+    const caps = c.capabilities || (c.capability ? [c.capability] : []);
+    const cap = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= 255 && k.dmxRange[1] >= 255) || caps[0];
+    const type = cap && cap.type;
+    if (type === 'Intensity') return 'dimmer';
+    if (type === 'ColorIntensity' && OFL_COLORS[cap.color]) return OFL_COLORS[cap.color];
+    if (type === 'ShutterStrobe') return 'strobe';
+    if (type === 'Fog' || type === 'FogOutput') return 'fog';
+    return { fixed: oflDefault(c) };
+  });
+  return { channels, notes };
+}
+
+const ofl = { busy: false, want: null, seq: 0, key: '', fx: null, mode: null };
+
+/** Runs one request at a time. A newer call replaces the call that waits, and the reply of an older call is dropped. */
+async function oflGet(path, onOk) {
+  if (ofl.busy) { ofl.want = () => oflGet(path, onOk); return; }
+  ofl.busy = true;
+  const seq = ++ofl.seq;
+  set('oflst', 'searching…');
+  let fail = '';
+  let data;
+  try {
+    const r = await fetch(BASE + path, { signal: AbortSignal.timeout(45000) });
+    const body = await r.text();
+    if (!r.ok) {
+      fail = r.status === 502 && path.startsWith('/ofl/search')
+        ? "Too many results or no internet. Type more, or check the box's internet."
+        : 'The library failed: ' + r.status + ' ' + body.trim().slice(0, 120);
+    } else {
+      try { data = JSON.parse(body); } catch { /* data stays undefined */ }
+      if (data === null || typeof data !== 'object') fail = 'The library sent no JSON.';
+    }
+  } catch (e) { fail = 'The library did not answer: ' + (e.name === 'TimeoutError' ? 'timeout' : 'no connection'); }
+  ofl.busy = false;
+  const stale = seq !== ofl.seq || ofl.want;
+  if (!ofl.want) set('oflst', '');
+  if (!stale) { if (fail) toast(fail); else onOk(data); }
+  const w = ofl.want;
+  ofl.want = null;
+  if (w) w();
+}
+
+function oflSearch() {
+  const q = $('oflq').value.trim();
+  $('ofldet').hidden = true;
+  if (q.length < 3) {
+    ofl.seq++; ofl.want = null;
+    $('oflres').replaceChildren();
+    set('oflst', q ? 'Type at least 3 letters.' : '');
+    return;
+  }
+  oflGet('/ofl/search?q=' + encodeURIComponent(q), (list) => {
+    if (!Array.isArray(list)) return toast('The library sent no list.');
+    $('oflres').replaceChildren(...list.slice(0, 20).filter((x) => x && typeof x.key === 'string').map((x) => {
+      const b = h('button', null, String(x.name || x.key));
+      b.title = x.key;
+      b.addEventListener('click', () => oflPick(x.key));
+      return b;
+    }));
+    set('oflst', list.length ? '' : 'Nothing found.');
+  });
+}
+
+function oflPick(key) {
+  oflGet('/ofl/fixture?key=' + encodeURIComponent(key), (fx) => {
+    if (!Array.isArray(fx.modes) || !fx.modes.length) return toast('The library sent no modes.');
+    ofl.key = key; ofl.fx = fx; ofl.mode = fx.modes[0].name;
+    oflDetail();
+  });
+}
+
+function oflDetail() {
+  const fx = ofl.fx;
+  const m = oflChannels(fx, ofl.mode);
+  const pills = h('span', 'seg tg', ...fx.modes.map((md) => {
+    const b = h('button', md.name === ofl.mode ? 'on' : null, String(md.name) + ' · ' + (md.channels || []).length + ' ch');
+    b.addEventListener('click', () => { ofl.mode = md.name; oflDetail(); });
+    return b;
+  }));
+  const text = m.channels.map((c, i) => (i + 1) + ' ' + (typeof c === 'string' ? c : 'fixed ' + c.fixed)).join(' · ');
+  const add = h('button', null, 'Add');
+  const tooMany = m.channels.length > 32 || !m.channels.length;
+  add.disabled = tooMany;
+  add.addEventListener('click', () => {
+    if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
+    showEdit(() => show.fixtures.push({ name: String(fx.shortName || fx.name || ofl.key).slice(0, 16), address: nextAddress(), channels: m.channels, ofl: ofl.key + '#' + ofl.mode }));
+    $('ltofl').hidden = true;
+  });
+  $('ofldet').replaceChildren(
+    h('div', 'line', h('b', null, String(fx.name || ofl.key)), pills),
+    h('div', 'chs', text),
+    ...m.notes.map((n) => h('div', null, 'Note: ' + n)),
+    tooMany && h('div', null, m.channels.length ? 'A light can have 32 channels at most.' : 'This mode has no channels.'),
+    h('div', 'line', add));
+  $('ofldet').hidden = false;
+}
+
+$('ltlib').addEventListener('click', () => {
+  const box = $('ltofl');
+  box.hidden = !box.hidden;
+  if (!box.hidden) $('oflq').focus();
+});
+let oflTimer = 0;
+$('oflq').addEventListener('input', () => { clearTimeout(oflTimer); oflTimer = setTimeout(oflSearch, 300); });
 
 const handlers = { scenes: onScenes, hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => { otaDone(); toast(m.text); } };
 
