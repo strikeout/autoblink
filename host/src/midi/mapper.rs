@@ -268,13 +268,13 @@ mod tests {
             d.playhead_ms = Some(150_000);
             d.track_length_ms = Some(200_000);
         }
-        let input = scene_input(&state, None);
+        let input = scene_input(&state, (0, None));
         assert_eq!(input.guess, Some(Event::Drop));
         assert_eq!(input.phrase16, 1);
 
         // Without a playhead, the guess has no position.
         state.write().devices.get_mut(&1).unwrap().playhead_ms = None;
-        assert_eq!(scene_input(&state, None).guess, None);
+        assert_eq!(scene_input(&state, (0, None)).guess, None);
         state.write().devices.get_mut(&1).unwrap().playhead_ms = Some(150_000);
 
         // The phrases of the player replace the guess.
@@ -293,7 +293,7 @@ mod tests {
                 }],
             },
         );
-        assert_eq!(scene_input(&state, None).guess, None);
+        assert_eq!(scene_input(&state, (0, None)).guess, None);
     }
 
     #[tokio::test]
@@ -847,10 +847,13 @@ fn send_scene(midi: &dyn MidiTransport, o: Out, activity: &Arc<Mutex<MidiActivit
     }
 }
 
-/// Returns the state of the master deck for the DMX scenes. `prev_guess` is the guess of the
-/// previous call.
-fn scene_input(state: &SharedState, prev_guess: Option<Event>) -> SceneInput {
+/// Returns the state of the master deck for the DMX scenes. `prev_guess` is the master deck and
+/// the guess of the previous call. A new master deck starts without a previous guess.
+fn scene_input(state: &SharedState, prev_guess: (u8, Option<Event>)) -> SceneInput {
     let st = state.read();
+    let prev_guess = (prev_guess.0 == st.master.device_number)
+        .then_some(prev_guess.1)
+        .flatten();
     let dev = st.devices.get(&st.master.device_number);
     // The guess is only for a track without phrases.
     let guess = dev
@@ -937,8 +940,9 @@ async fn run_with_midi(
     // (device, rekordbox_id, title) of the last track that was sent over OSC.
     let mut prev_osc_track: Option<(u8, u32, String)> = None;
     let mut scenes = Scenes::default();
-    // The last guess of `scene_input`. The guess keeps a Drop or a Break near its threshold.
-    let mut prev_guess: Option<Event> = None;
+    // The master deck and the last guess of `scene_input`. The guess keeps a Drop or a Break near
+    // its threshold.
+    let mut prev_guess: (u8, Option<Event>) = (0, None);
     let start = Instant::now();
     let now_ms = || start.elapsed().as_millis() as u64;
     tracing::info!("MIDI mapper task started");
@@ -1290,7 +1294,7 @@ async fn run_with_midi(
             (c.scenes.clone(), c.midi.notes.off_vel0)
         };
         let input = scene_input(&state, prev_guess);
-        prev_guess = input.guess;
+        prev_guess = (input.device, input.guess);
         scenes.update(&scene_cfg, now_ms(), &input, &mut |o| {
             send_scene(midi.as_ref(), o, &activity, vel0)
         });

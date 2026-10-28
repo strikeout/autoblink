@@ -98,6 +98,8 @@ pub fn start(
         let mut last_master = 0u8;
         // The last guess of the loop. The guess keeps a Drop or a Break near its threshold.
         let mut prev_guess = None;
+        // The master deck of `prev_guess`.
+        let mut guess_dev = 0u8;
         let mut next_pulse: Option<u64> = None;
         let mut next_cc = Instant::now();
 
@@ -211,6 +213,11 @@ pub fn start(
             };
             // Lock the tracks only after the tracker is free.
             if let Some((rbid, beat_count, pos)) = track {
+                // A new master deck starts without a previous guess.
+                if snap.device != guess_dev {
+                    guess_dev = snap.device;
+                    prev_guess = None;
+                }
                 let tracks = state.tracks.0.lock().unwrap();
                 let data = tracks.get(&snap.device).filter(|t| t.rekordbox_id == rbid);
                 // Only a track without phrases has a guess.
