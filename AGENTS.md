@@ -163,7 +163,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.24.0 uses 82 % (1 612 560 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller. Version 1.20.0 used 83 %.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.25.0 uses 82 % (1 621 664 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller. Version 1.20.0 used 83 %.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
 ### Web page without a flash
@@ -186,6 +186,9 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The scene setting `one_at_a_time` (default on) is for a controller that shows one preset at a time. A note off of such a controller can end a preset with a different note. With the setting on, a flash ends before the next note on. The held scene comes back after a flash or a pulse. The engine sends no note off before a note on of the same note. Such a note off turns the light off for a moment.
 - Index 33 is after the OSC rows, so that the other indices stay. The page puts a row into the group of its section.
 - A row entry of 32 and up is an extra note (`scenes::EXTRA_BASE`): 32 is `extra[0]`. The page moves the entries when it removes an extra note.
+- `Row::holds` gives each entry of a row a hold in beats (0 is no hold). The page sends it only when a row has a hold, so `scenes_set` stays below `MAX_COMMAND_LEN`. The page keeps `holds` aligned with `presets` when it adds, removes or moves an entry.
+- An entry with a hold sends its note off after the hold, whatever the gate of the row. During the hold, the triggers of the row wait in one pending trigger. When the hold ends, the next entry fires at once. A scene row drops its pending trigger when another row has become the current scene.
+- After a flash or a pulse, `restore_held` sends the note of the newest held entry again (with `one_at_a_time`). The light can then show the entry of an older scene row while the page shows the newer scene.
 - The status field `scene.events` counts each event in the order of `Event::ALL`, also without presets and while the scenes are off. The page keeps the same order in `SCENE_EVENTS`.
 
 ### DMX show
@@ -198,7 +201,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The `dmx` thread has priority 6 on core 1. Its stack is 6 KB. This size is an estimate. Measure it with `/mem` on a box.
 - Three senders use one queue of depth 32 to the `dmx` thread: `midi`, `prolink-rx` and the HTTP task (`dmx_fog`). A full queue drops a message. A dropped Off keeps its layer on until the next Off of that preset. An On does not remove the layer. A stop only hides it.
 - The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
-- The strobe hold ends when the active page closes or a send to it fails.
+- The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
 - The HTTP task has 8 KB of stack. Nobody has measured it under `POST /show`.
 
 ### Debug logs
