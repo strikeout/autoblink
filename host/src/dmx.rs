@@ -120,6 +120,11 @@ pub fn start(
 ) -> Option<DmxHandle> {
     let target = dmx.target()?;
     let universe = dmx.universe;
+    if cfg.read().device_number == 7 {
+        tracing::warn!(
+            "The device number is the default 7. The host cannot find a box with number 7."
+        );
+    }
     let (tx, rx) = mpsc::channel(QUEUE_LEN);
     // A restart of the task gets the same receiver, so that the mapper keeps its sender.
     let rx = Arc::new(tokio::sync::Mutex::new(rx));

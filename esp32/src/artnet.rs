@@ -1,6 +1,9 @@
 //! The `artnet` thread receives Art-Net from a lighting desk. The desk sends ArtDmx for universe 0
 //! to UDP port 6454.
 //!
+//! The box answers no ArtPoll. A desk must send to the IP address of the box (unicast) or to the
+//! subnet broadcast address.
+//!
 //! The thread receives on all interfaces: the own WiFi network, the joined WiFi network and the
 //! Ethernet port. It keeps the last frame of universe 0 in `State::artnet`. The `dmx` thread
 //! merges that frame into its output (`autoblink_core_dmx::Merge`).

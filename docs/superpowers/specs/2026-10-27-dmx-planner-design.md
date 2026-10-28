@@ -108,7 +108,7 @@ The page has a live strip with these controls:
 - **Scene output.** The scene engine reports a preset on and a preset off. The MIDI sink turns a preset into a note, as today. The DMX sink turns a look into channel values.
 - **Merge rule.** HTP applies only to the intensity channels: dimmer, strobe intensity and colour channels. The pan, the tilt and the other channels use the last source that changed them (LTP). An HTP merge of pan and tilt makes the heads point to wrong places.
 - **Timing.** The effects use the predicted beat phase (BPM and the last beat), not the arrival time of a packet. On WiFi, a beat packet can arrive up to 300 ms late. The MIDI clock already corrects for this. The DMX engine uses the same phase.
-- **Storage.** The show goes into a new partition `show` of 64 KB at 0x3F0000, after `coredump`. The show uses a compact binary format. A box needs one USB flash to get the partition, because OTA does not change the partition table.
+- **Storage.** The show goes into a new partition `show` of 64 KB at 0x3F0000, after `coredump`. The show is stored as JSON. A box needs one USB flash to get the partition, because OTA does not change the partition table.
 - **Page.** The planner is a new "Lights" panel in `webui/index.html`. The ESP32 and the host serve this page. The show goes over the WebSocket in its own messages, not as setting indices.
 - **OFL on the ESP32.** The box streams the OFL data to the browser, and the browser parses it. The browser sends back only the channel layout of the chosen mode. Thus the ESP32 does not hold a large JSON document in its heap.
 - **Feature flag.** The `dmx` feature becomes a default feature of the firmware.

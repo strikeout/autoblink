@@ -65,16 +65,16 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 
 | Crate | Role | Key modules |
 |---|---|---|
-| `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
+| `host` | Desktop app + shared library | `config`, `dmx`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
 | `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `show.rs` (the `show` partition), `ofl.rs` (Open Fixture Library fetch), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
 | `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable. The host uses `scenes.rs` too. | `clock.rs`, `mapper.rs`, `scenes.rs` (DMX scenes), `settings.rs` (host setting indices) |
-| `crates/autoblink-core-dmx` | DMX looks of the firmware, host-testable | `show.rs` (show model and limits), `render.rs` (look into universe), `clock.rs` (beat clock), `effect.rs` (intensity and bar effects), `lights.rs` (engine) |
+| `crates/autoblink-core-dmx` | DMX looks of the firmware, host-testable | `show.rs` (show model and limits), `render.rs` (look into universe), `clock.rs` (beat clock), `effect.rs` (intensity and bar effects), `lights.rs` (engine), `artnet.rs` (ArtDmx parse and build), `merge.rs` (HTP and LTP merge) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
 
-`pub mod config link logbuf midi prolink runtime settings state web`
+`pub mod app config dmx link logbuf midi osc prolink runtime settings state web`
 
 Plus `pub fn interface_priority()` for network interface ranking.
 
@@ -242,6 +242,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The `artnet` thread (`esp32/src/artnet.rs`) receives Art-Net on UDP port 6454 on all interfaces. It keeps universe 0 only and ignores a frame of another universe. Its stack is 4 KB and its priority is 5 (`crate::spawn`). This size is an estimate. Measure it with `/mem` on a box.
 - `main` starts the thread after the network and the Pro DJ Link threads. The OTA maintenance start does not reach that line, so it has no Art-Net.
 - The permanent heap for Art-Net is about 8 KB.
+- The box answers no ArtPoll. A desk must send to the IP address of the box (unicast) or to the subnet broadcast address.
 - Art-Net counts as live for 3 s after its last frame (`ARTNET_TIMEOUT_MS`). Without a live frame, the output is the engine alone.
 - The merge rule is in `autoblink_core_dmx::merge`. The channels of kind Dimmer, Red, Green, Blue, White, Amber, Uv and Strobe use HTP (the higher value wins). All other channels use LTP (the source that changed the channel last wins). The channels that no light patches and the Fog channel are LTP too. After a timeout, the first live frame claims every non-zero channel.
 - The `dmx` thread reads the frame with `try_lock`, so the `artnet` thread never blocks it. The status field `dmx.artnet` is true while Art-Net is live.
@@ -250,8 +251,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 - The `[dmx]` section of the config file has `artnet_target` (an IPv4 address or IP:port, default port 6454) and `universe` (0 to 32767, default 0). Without `artnet_target`, or with a bad value, the engine does not start.
 - The engine task (`host/src/dmx.rs`) runs under `runtime::supervise`. It renders about every 25 ms and sends ArtDmx to the target.
-- The task is silent while it sees a box. A box is a Pro DJ Link device with the name `autoblink`. Its device number differs from the number of the host. Two hosts with the default device name therefore silence each other. Change `device_name` on one of them.
-- The host keeps a copy of the show in `show.json` in the folder of the config file. `GET /show` and `POST /show` work as on the box, with the same limits.
+- The task is silent while it sees a box. A box is a Pro DJ Link device with the name `autoblink`. Its device number differs from the number of the host. Two hosts with the default device name therefore silence each other. Change `device_name` on one of them. With the same device number as the host, the host does not find the box and keeps sending. The host logs a warning at start when `artnet_target` is set and its device number is the default 7.
+- The host keeps a copy of the show in `show.json` in the folder of the config file. `GET /show` and `POST /show` work as on the box, with the same 60 000-byte limit.
 - The host takes `dmx_live`, `dmx_fog` and `dmx_aim` from the page. When the page that holds the strobe closes, the host releases the hold (`StrobeGuard` in `web/mod.rs`).
 - The status field `box` gives the IP address of the box, or null. The status field `dmx` comes from the engine.
 - When a box is on the network, the host page loads and saves the show of the box (`GET` and `POST` to the box). Open the host page at `127.0.0.1` or `localhost`, so that the box accepts the POST (`dev_origin`). The preset names on the host page are the names of the host. The page hides the Preview button.
@@ -263,7 +264,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
-- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Measure these two.
+- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Measure these two. Measure `main` again after 1.29.0, because the `Box` builds in `dmx::start` can use its stack.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
 - The firmware keeps 600 columns of the waveform preview (`autoblink_core_dbserver::PREVIEW_COLUMNS`). The players send 1200.
 - The dbserver client reads the PWV4 preview and the PQTZ beat grid as a stream (`read_message_with`). It keeps only 600 preview columns and the beats of the phrase starts, the fill-ins and the end. A buffered grid and its parsed copy needed up to 72 KB for one fetch. Without phrases, the client does not request the beat grid.

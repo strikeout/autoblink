@@ -456,7 +456,11 @@ async fn show_get(State(shared): State<Arc<Shared>>) -> Response {
 }
 
 /// Replaces and stores the DMX show of the host. See the module documentation.
-async fn show_post(headers: HeaderMap, State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
+async fn show_post(
+    headers: HeaderMap,
+    State(shared): State<Arc<Shared>>,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
     let reply = |status: StatusCode, text: String| (status, [CORS], text).into_response();
     if !origin_allowed(&headers) {
         tracing::warn!(
@@ -468,6 +472,13 @@ async fn show_post(headers: HeaderMap, State(shared): State<Arc<Shared>>, body: 
             "The Origin of the page does not match the Host.".into(),
         );
     }
+    // The limit layer rejects a longer body. The reply of the layer has no CORS header.
+    let Ok(body) = body else {
+        return reply(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("The show is longer than {MAX_SHOW_LEN} bytes."),
+        );
+    };
     // The show has bounded lists, so a long list uses no memory before `sanitize` cuts it.
     let mut show: autoblink_core_dmx::Show = match serde_json::from_slice(&body) {
         Ok(show) => show,
