@@ -15,6 +15,7 @@ mod logring;
 mod mem;
 mod midi;
 mod net;
+#[cfg_attr(not(feature = "dmx"), allow(dead_code))]
 mod ofl;
 mod ota;
 mod prolink;

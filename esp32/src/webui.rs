@@ -416,6 +416,7 @@ fn ofl_routes(server: &mut EspHttpServer<'static>) -> anyhow::Result<()> {
 ///
 /// Returns `None` when `uri` has no such parameter, when an escape is not `%` and two hex
 /// digits, or when the text is not UTF-8.
+#[cfg_attr(not(feature = "dmx"), allow(dead_code))]
 fn query_value(uri: &str, name: &str) -> Option<String> {
     let (_, query) = uri.split_once('?')?;
     let raw = query
@@ -729,6 +730,21 @@ fn command(
             let _ = dmx_q.send_back(DmxMsg::Fog, 0);
             String::new()
         }
+        // A full queue drops the aim. The page sends the next one soon.
+        #[cfg(feature = "dmx")]
+        Some("dmx_aim") => match cmd["fixture"].as_u64().filter(|f| *f < 32) {
+            Some(fixture) => {
+                let axis = |key: &str| cmd[key].as_u64().unwrap_or(0).min(65535) as u16;
+                let msg = DmxMsg::Aim {
+                    fixture: fixture as u8,
+                    pan: axis("pan"),
+                    tilt: axis("tilt"),
+                };
+                let _ = dmx_q.send_back(msg, 0);
+                String::new()
+            }
+            None => error("The command needs a fixture below 32"),
+        },
         Some(other) => error(&format!("This device does not support the command {other}")),
         None => error("The command has no type"),
     }

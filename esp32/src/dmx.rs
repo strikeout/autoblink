@@ -46,6 +46,8 @@ pub enum DmxMsg {
     Test(u8),
     /// The fog button of the page.
     Fog,
+    /// The page aims a head by hand.
+    Aim { fixture: u8, pan: u16, tilt: u16 },
     /// A master beat. `at_ms` uses the clock of `State::now_ms`.
     Beat {
         beat_in_bar: u8,
@@ -132,6 +134,9 @@ pub fn start(
                         DmxMsg::Fired(e, p) => lights.fired(&show, e, p, now_ms),
                         DmxMsg::Test(p) => lights.test(&show, p, now_ms),
                         DmxMsg::Fog => lights.fog(now_ms),
+                        DmxMsg::Aim { fixture, pan, tilt } => {
+                            lights.aim(fixture, pan, tilt, now_ms)
+                        }
                         DmxMsg::Beat {
                             beat_in_bar,
                             bpm,
