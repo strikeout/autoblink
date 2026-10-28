@@ -97,6 +97,9 @@ impl DropGuess {
         if len_ms == 0 {
             return None;
         }
+        // ponytail: 8 beats cover 5 smoothed columns only while len_ms * bpm <= 57.6e6 (about
+        // 7.5 min at 128 BPM). A longer track fires one block late. Upgrade: use max(8 beats,
+        // 5 columns), capped below 16 beats, or test Drop on the unsmoothed profile.
         let ahead_ms = if bpm > 0.0 { 8.0 * 60_000.0 / bpm } else { 0.0 };
         let frac = (f64::from(playhead_ms) + ahead_ms) / f64::from(len_ms);
         Some(self.bucket_at(frac.clamp(0.0, 1.0), prev))

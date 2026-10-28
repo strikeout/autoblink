@@ -1614,6 +1614,8 @@ async function loadShow() {
     if (base !== showBase()) return;
     // Do not keep the show of another endpoint: the next edit would overwrite the wrong show.
     show = null;
+    lookOpen = null;
+    $('lookedit').hidden = true;
     for (const id of ['ltpatch', 'ltgroups', 'ltpos', 'ltidle']) $(id).replaceChildren();
     renderScenes();
     toast('The show did not load: ' + e.message);
