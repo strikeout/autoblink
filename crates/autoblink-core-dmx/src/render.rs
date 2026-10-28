@@ -1,5 +1,7 @@
 //! Render a look into the DMX universe.
 
+use crate::clock::Beat;
+use crate::effect::shape_offset;
 use crate::show::{Channel, Fixture, Look, Show, UNIVERSE};
 
 /// One value for each channel of the universe. Index 0 is DMX channel 1.
@@ -34,9 +36,11 @@ pub(crate) fn fixture_channels(f: &Fixture) -> impl Iterator<Item = (usize, Chan
 
 /// Writes the static values of `look` into `out`. `level(row, fixture_pos, fixture_count)`
 /// gives the effect factor 0 to 255 of a fixture in a row; 255 is no change.
+/// `beat` moves the pan and tilt of a row with a shape.
 pub fn render(
     show: &Show,
     look: &Look,
+    beat: Option<&Beat>,
     level: impl Fn(usize, usize, usize) -> u8,
     out: &mut Universe,
 ) {
@@ -52,6 +56,19 @@ pub fn render(
                     (u32::from(v) * intensity * lvl / (255 * 255)) as u8
                 }
             };
+            let fixture_index = show.fixtures.iter().position(|x| std::ptr::eq(x, f));
+            let base = row
+                .position
+                .and_then(|p| show.positions.get(usize::from(p)))
+                .and_then(|p| {
+                    p.aims
+                        .iter()
+                        .find(|a| Some(usize::from(a.fixture)) == fixture_index)
+                })
+                .map_or((32768, 32768), |a| (i32::from(a.pan), i32::from(a.tilt)));
+            let (dx, dy) = shape_offset(&row.shape, beat, pos, count);
+            let pan = (base.0 + dx).clamp(0, 65535) as u16;
+            let tilt = (base.1 + dy).clamp(0, 65535) as u16;
             for (i, c) in fixture_channels(f) {
                 out[i] = match c {
                     Channel::Dimmer => (intensity * lvl / 255) as u8,
@@ -59,14 +76,11 @@ pub fn render(
                     Channel::Green => colour(row.color[1]),
                     Channel::Blue => colour(row.color[2]),
                     Channel::White => colour(row.color[3]),
-                    Channel::Amber
-                    | Channel::Uv
-                    | Channel::Strobe
-                    | Channel::Fog
-                    | Channel::Pan
-                    | Channel::PanFine
-                    | Channel::Tilt
-                    | Channel::TiltFine => 0,
+                    Channel::Amber | Channel::Uv | Channel::Strobe | Channel::Fog => 0,
+                    Channel::Pan => (pan >> 8) as u8,
+                    Channel::PanFine => pan as u8,
+                    Channel::Tilt => (tilt >> 8) as u8,
+                    Channel::TiltFine => tilt as u8,
                     Channel::Fixed(v) => v,
                 };
             }
@@ -124,7 +138,7 @@ mod tests {
 
     fn run(show: &Show, look: &Look, level: u8) -> Universe {
         let mut out = [0; UNIVERSE];
-        render(show, look, |_, _, _| level, &mut out);
+        render(show, look, None, |_, _, _| level, &mut out);
         out
     }
 
@@ -188,5 +202,68 @@ mod tests {
         l.rows[0].group = 5;
         assert_eq!(run(&s, &l, 255)[0], 0);
         assert_eq!(touched(&s, &l).count(), 0);
+    }
+
+    #[test]
+    fn head_without_position_is_centred() {
+        let (s, l) = one(vec![fx(1, &[Pan, PanFine, Tilt, TiltFine])], [0; 4], 255);
+        assert_eq!(run(&s, &l, 255)[0..4], [0x80, 0, 0x80, 0]);
+    }
+
+    #[test]
+    fn position_sets_pan_tilt() {
+        let (mut s, mut l) = one(vec![fx(1, &[Pan, PanFine, Tilt, TiltFine])], [0; 4], 255);
+        s.positions = vec![crate::show::Position {
+            name: "p".into(),
+            aims: vec![crate::show::Aim {
+                fixture: 0,
+                pan: 0x1234,
+                tilt: 0xABCD,
+            }],
+        }];
+        l.rows[0].position = Some(0);
+        assert_eq!(run(&s, &l, 255)[0..4], [0x12, 0x34, 0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn coarse_only_head() {
+        let (mut s, mut l) = one(vec![fx(1, &[Pan])], [0; 4], 255);
+        s.positions = vec![crate::show::Position {
+            name: "p".into(),
+            aims: vec![crate::show::Aim {
+                fixture: 0,
+                pan: 0x1234,
+                tilt: 0,
+            }],
+        }];
+        l.rows[0].position = Some(0);
+        assert_eq!(run(&s, &l, 255)[0], 0x12);
+    }
+
+    #[test]
+    fn shape_clamps() {
+        let (mut s, mut l) = one(vec![fx(1, &[Pan, PanFine])], [0; 4], 255);
+        s.positions = vec![crate::show::Position {
+            name: "p".into(),
+            aims: vec![crate::show::Aim {
+                fixture: 0,
+                pan: 65000,
+                tilt: 0,
+            }],
+        }];
+        l.rows[0].position = Some(0);
+        l.rows[0].shape = crate::show::Shape::Sweep {
+            beats: 4,
+            size: 255,
+        };
+        let b = Beat {
+            phase: 0.0,
+            beat_in_bar: 2,
+            count: 1,
+            ms_per_beat: 500.0,
+        };
+        let mut out = [0; UNIVERSE];
+        render(&s, &l, Some(&b), |_, _, _| 255, &mut out);
+        assert_eq!(out[0..2], [255, 255]);
     }
 }

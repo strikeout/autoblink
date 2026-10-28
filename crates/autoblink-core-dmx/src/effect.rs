@@ -1,7 +1,7 @@
 //! The intensity effects of a row of fixtures.
 
 use crate::clock::Beat;
-use crate::show::{Effect, Every};
+use crate::show::{Effect, Every, Shape};
 
 /// The factor 0 to 255 of fixture `k` of `n` in a row with `effect`.
 /// It is 255 for `None`, `Strobe` and `Fog`, and for every effect without a beat.
@@ -41,6 +41,31 @@ pub fn factor(effect: &Effect, beat: Option<&Beat>, k: usize, n: usize) -> u8 {
         Effect::Random { .. } if n > 0 => lit(xorshift32(c.wrapping_add(1)) as usize % n == k),
         _ => 255,
     }
+}
+
+/// The pan and tilt offset of a shape for fixture `k` of `n`, in 16-bit units.
+/// A fixture is `k / n` of a cycle behind the first one. Without a beat, the offset is zero.
+pub fn shape_offset(shape: &Shape, beat: Option<&Beat>, k: usize, n: usize) -> (i32, i32) {
+    let (
+        Some(b),
+        Shape::Circle { beats, size }
+        | Shape::Figure8 { beats, size }
+        | Shape::Sweep { beats, size },
+    ) = (beat, shape)
+    else {
+        return (0, 0);
+    };
+    let beats = u32::from((*beats).max(1));
+    let amp = f64::from(*size) * 64.0;
+    let shift = if n > 0 { k as f64 / n as f64 } else { 0.0 };
+    let t = ((f64::from(b.count % beats) + b.phase) / f64::from(beats) + shift).fract();
+    let a = std::f64::consts::TAU * t;
+    let (x, y) = match shape {
+        Shape::Circle { .. } => (a.cos(), a.sin()),
+        Shape::Figure8 { .. } => (a.sin(), (2.0 * a).sin() / 2.0),
+        _ => (a.sin(), 0.0),
+    };
+    ((amp * x).round() as i32, (amp * y).round() as i32)
 }
 
 fn xorshift32(mut x: u32) -> u32 {
@@ -127,6 +152,30 @@ mod tests {
         assert_eq!(
             factor(&Effect::Fog { ms: 500 }, Some(&beat(0.5, 1, 0)), 0, 1),
             255
+        );
+    }
+
+    #[test]
+    fn circle_at_quarter_phase() {
+        let sh = Shape::Circle {
+            beats: 4,
+            size: 255,
+        };
+        let (x, y) = shape_offset(&sh, Some(&beat(0.0, 2, 1)), 0, 1);
+        assert!(x.abs() <= 1 && (y - 16320).abs() <= 1, "{x} {y}");
+        assert_eq!(shape_offset(&sh, None, 0, 1), (0, 0));
+    }
+
+    #[test]
+    fn heads_are_phase_shifted() {
+        let sh = Shape::Sweep {
+            beats: 4,
+            size: 255,
+        };
+        let b = beat(0.5, 1, 0);
+        assert_ne!(
+            shape_offset(&sh, Some(&b), 0, 2),
+            shape_offset(&sh, Some(&b), 1, 2)
         );
     }
 }

@@ -5,7 +5,7 @@
 use crate::clock::Beat;
 use crate::effect::factor;
 use crate::render::{fixture_channels, group_fixtures, render, touched, Universe};
-use crate::show::{Channel, Effect, Fade, Show, UNIVERSE};
+use crate::show::{Channel, Effect, Fade, Show, MAX_FIXTURES, UNIVERSE};
 use autoblink_core_midi::scenes::Event;
 
 /// The live controls of the page.
@@ -22,6 +22,8 @@ pub const MIN_ON_MS: u64 = 80;
 pub const IDLE_AFTER_MS: u64 = 2000;
 /// The fog button blows for this long.
 pub const FOG_BUTTON_MS: u64 = 3000;
+/// An aim from the page holds the pan and tilt of a fixture for this long.
+pub const AIM_MS: u64 = 10_000;
 
 const DEFAULT_MS_PER_BEAT: f64 = 500.0;
 
@@ -40,8 +42,18 @@ struct Burst {
     until: u64,
 }
 
+/// The pan, the tilt and the end time of the aim of one fixture.
+#[derive(Clone, Copy)]
+struct AimHold {
+    pan: u16,
+    tilt: u16,
+    until: u64,
+}
+
 #[derive(Default)]
 pub struct Lights {
+    /// The aim of each fixture. A fixed array, so that `frame` allocates nothing.
+    aims: [Option<AimHold>; MAX_FIXTURES],
     layers: Vec<Layer>,
     bursts: Vec<Burst>,
     /// The last fire time of a row: (preset, row index, ms).
@@ -114,6 +126,17 @@ impl Lights {
         self.fog_until = now_ms + FOG_BUTTON_MS;
     }
 
+    /// The page aims a fixture. The aim holds the pan and tilt over every layer until `AIM_MS` pass.
+    pub fn aim(&mut self, fixture: u8, pan: u16, tilt: u16, now_ms: u64) {
+        if let Some(slot) = self.aims.get_mut(usize::from(fixture)) {
+            *slot = Some(AimHold {
+                pan,
+                tilt,
+                until: now_ms + AIM_MS,
+            });
+        }
+    }
+
     pub fn set_playing(&mut self, playing: bool, now_ms: u64) {
         self.stopped_at = if playing { None } else { Some(now_ms) };
     }
@@ -181,6 +204,7 @@ impl Lights {
             render(
                 show,
                 look,
+                beat,
                 |r, k, n| factor(&look.rows[r].effect, beat, k, n),
                 out,
             );
@@ -193,6 +217,7 @@ impl Lights {
                 render(
                     show,
                     look,
+                    beat,
                     |r, k, n| factor(&look.rows[r].effect, beat, k, n),
                     &mut scratch,
                 );
@@ -207,11 +232,31 @@ impl Lights {
                 } else {
                     1.0
                 };
+                // ponytail: a fade between two positions blends the coarse and the fine byte
+                // alone. A pan across a byte border can jump for a moment. Blend the 16-bit pairs to fix it.
                 for ch in touched(show, look) {
                     let under = f64::from(out[ch]);
                     let top = f64::from(scratch[ch]);
                     out[ch] = (under + (top - under) * alpha).round() as u8;
                 }
+            }
+        }
+
+        for (i, slot) in self.aims.iter_mut().enumerate() {
+            if slot.is_some_and(|a| a.until <= now_ms) {
+                *slot = None;
+            }
+            let (Some(a), Some(f)) = (*slot, show.fixtures.get(i)) else {
+                continue;
+            };
+            for (ch, c) in fixture_channels(f) {
+                out[ch] = match c {
+                    Channel::Pan => (a.pan >> 8) as u8,
+                    Channel::PanFine => a.pan as u8,
+                    Channel::Tilt => (a.tilt >> 8) as u8,
+                    Channel::TiltFine => a.tilt as u8,
+                    _ => continue,
+                };
             }
         }
 
@@ -516,5 +561,17 @@ mod tests {
         l.fog(0);
         assert_eq!(frame(&mut l, &s, 2999)[19], 255);
         assert_eq!(frame(&mut l, &s, 3001)[19], 0);
+    }
+
+    #[test]
+    fn aim_override_and_timeout() {
+        use Channel::*;
+        let mut s = show();
+        s.fixtures
+            .push(fixture(30, &[Pan, PanFine, Tilt, TiltFine]));
+        let mut l = Lights::default();
+        l.aim(3, 0x1234, 0xABCD, 0);
+        assert_eq!(frame(&mut l, &s, 9_999)[29..33], [0x12, 0x34, 0xAB, 0xCD]);
+        assert_eq!(frame(&mut l, &s, 10_001)[29..33], [0, 0, 0, 0]);
     }
 }
