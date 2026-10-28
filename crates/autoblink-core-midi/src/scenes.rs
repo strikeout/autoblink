@@ -520,6 +520,12 @@ impl Scenes {
             if cfg.row(Event::Play).is_none() {
                 // Without a play row, the phrase row fires again below.
                 self.phrase_key = None;
+                if let (None, Some(e)) = (s.phrase, s.guess) {
+                    // The guess acts like a phrase: it fires again after a pause.
+                    self.guess_key = Some((s.device, s.track));
+                    self.guess_last = Some(e);
+                    self.event(cfg, e, now_ms, out);
+                }
             }
         } else if !s.playing && p.playing {
             self.event(cfg, Event::Stop, now_ms, out);
@@ -583,11 +589,12 @@ impl Scenes {
         out: &mut impl FnMut(Out),
     ) {
         let key = Some((s.device, s.track));
-        if self.guess_key != key {
+        let key_changed = self.guess_key != key;
+        if key_changed {
             self.guess_key = key;
             self.guess_last = None;
         }
-        let block_start = s.phrase16 == 1 && self.prev.phrase16 != 1;
+        let block_start = s.phrase16 == 1 && (self.prev.phrase16 != 1 || key_changed);
         if let Some(e) = s.guess.filter(|_| block_start) {
             if self.guess_last != Some(e) {
                 self.guess_last = Some(e);
@@ -609,8 +616,9 @@ impl Scenes {
             .phrase
             .and_then(|p| p.code)
             .and_then(Event::bucket);
-        let guessed = self.prev.phrase.is_none() && self.prev.guess.is_some();
-        let phrase = if guessed { self.prev.guess } else { real };
+        let fired_guess = self.guess_last.filter(|_| self.prev.phrase.is_none());
+        let guessed = fired_guess.is_some();
+        let phrase = fired_guess.or(real);
         let Some((e, row)) = self.current.and_then(|e| Some((e, cfg.row(e)?))) else {
             return SceneStatus {
                 phrase,
@@ -1034,6 +1042,56 @@ mod tests {
         s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
         assert_eq!(n, 0);
         assert!(!s.status(&c).guessed);
+    }
+
+    #[test]
+    fn play_without_row_refires_guess() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let seq = [(7, Event::Drop, 16), (7, Event::Drop, 1)];
+        assert_eq!(drops(&mut s, &c, &seq), 1);
+        let stopped = SceneInput {
+            playing: false,
+            ..guess_in(7, Event::Drop, 5)
+        };
+        s.update(&c, 5000, &stopped, &mut |_| {});
+        s.update(&c, 5100, &guess_in(7, Event::Drop, 5), &mut |_| {});
+        let mut n = 0;
+        s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn block_start_after_reset_on_beat_one() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let seq = [(7, Event::Drop, 1), (8, Event::Drop, 1)];
+        assert_eq!(drops(&mut s, &c, &seq), 2);
+    }
+
+    #[test]
+    fn status_shows_the_fired_guess() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let idle = SceneInput {
+            playing: false,
+            ..guess_in(7, Event::Groove, 5)
+        };
+        s.update(&c, 0, &idle, &mut |_| {});
+        let st = s.status(&c);
+        assert!(!st.guessed);
+        assert_eq!(st.phrase, None);
+        let none = SceneInput {
+            guess: None,
+            ..idle
+        };
+        s.update(&c, 5, &none, &mut |_| {});
+        assert!(!s.status(&c).guessed);
+        drops(&mut s, &c, &[(7, Event::Drop, 16), (7, Event::Drop, 1)]);
+        s.update(&c, 9000, &guess_in(7, Event::Break, 5), &mut |_| {});
+        let st = s.status(&c);
+        assert!(st.guessed);
+        assert_eq!(st.phrase, Some(Event::Drop));
     }
 
     #[test]
