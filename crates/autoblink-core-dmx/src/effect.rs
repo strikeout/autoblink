@@ -23,13 +23,18 @@ pub fn factor(effect: &Effect, beat: Option<&Beat>, k: usize, n: usize) -> u8 {
             (2.0 * b.phase).fract(),
             b.count.wrapping_mul(2).wrapping_add(u32::from(second_half)),
         ),
-        Every::Bar => (
-            (f64::from(b.beat_in_bar.saturating_sub(1)) + b.phase) / 4.0,
+        Every::Bar => {
+            // Without bar information, the count gives the beat in the bar.
+            let bib = match b.beat_in_bar {
+                0 => b.count % 4,
+                n => u32::from(n) - 1,
+            };
             // Count the bar starts, so that a bar steps with beat 1.
-            b.count
-                .wrapping_sub(u32::from(b.beat_in_bar.saturating_sub(1)))
-                / 4,
-        ),
+            (
+                (f64::from(bib) + b.phase) / 4.0,
+                b.count.wrapping_sub(bib) / 4,
+            )
+        }
     };
     let lit = |on: bool| if on { 255 } else { 0 };
     match effect {
@@ -60,8 +65,13 @@ pub fn shape_offset(shape: &Shape, beat: Option<&Beat>, k: usize, n: usize) -> (
     let amp = f64::from(*size) * 64.0;
     let shift = if n > 0 { k as f64 / n as f64 } else { 0.0 };
     let bib = u32::from(b.beat_in_bar.saturating_sub(1));
-    let bar = b.count.wrapping_sub(bib) / 4;
-    let i = bib.wrapping_add(bar.wrapping_mul(4)) % beats;
+    let i = if b.beat_in_bar == 0 {
+        // Without bar information, the count gives the index.
+        b.count % beats
+    } else {
+        let bar = b.count.wrapping_sub(bib) / 4;
+        bib.wrapping_add(bar.wrapping_mul(4)) % beats
+    };
     let t = ((f64::from(i) + b.phase) / f64::from(beats) + shift).fract();
     let a = std::f64::consts::TAU * t;
     let (x, y) = match shape {
@@ -227,5 +237,26 @@ mod tests {
         assert_eq!(at(1, 0), at(1, 8));
         assert_ne!(at(1, 0), at(1, 4));
         assert_eq!(at(1, 4), at(1, 12));
+        // A clock that started on beat 2 gives the same index on beat 1.
+        assert_eq!(at(1, 3), at(1, 0));
+    }
+
+    #[test]
+    fn unknown_bar_keeps_the_count_index() {
+        let shape = Shape::Circle {
+            beats: 8,
+            size: 100,
+        };
+        let at = |count: u32| shape_offset(&shape, Some(&beat(0.0, 0, count)), 0, 1);
+        assert_ne!(at(1), at(2));
+        assert_eq!(at(1), at(9));
+        let e = Effect::Chase { every: Every::Bar };
+        let lit = |count| (0..3).find(|&k| factor(&e, Some(&beat(0.0, 0, count)), k, 3) == 255);
+        // The bar index steps every 4 beats and does not freeze.
+        assert_eq!(lit(0), lit(3));
+        assert_ne!(lit(0), lit(4));
+        let f = Effect::Flash { every: Every::Bar };
+        let v = |count| factor(&f, Some(&beat(0.5, 0, count)), 0, 1);
+        assert_ne!(v(0), v(2));
     }
 }

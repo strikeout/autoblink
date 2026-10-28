@@ -6,7 +6,7 @@
 
 use crate::scenes::Event;
 
-/// The most values that the profile keeps.
+/// The largest number of values in the profile.
 pub const PROFILE_LEN: usize = 600;
 /// The columns that the moving average takes on each side of a column.
 const SMOOTH: usize = 4;
@@ -47,7 +47,7 @@ impl DropGuess {
         let n = cols.min(PROFILE_LEN);
         let folded: Vec<u32> = (0..n)
             .map(|i| {
-                let (a, b) = (i * cols / n, ((i + 1) * cols / n).max(i * cols / n + 1));
+                let (a, b) = (i * cols / n, (i + 1) * cols / n);
                 (a..b).map(energy).sum::<u32>() / (b - a) as u32
             })
             .collect();
