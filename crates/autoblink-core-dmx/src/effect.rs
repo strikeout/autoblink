@@ -60,7 +60,8 @@ pub fn shape_offset(shape: &Shape, beat: Option<&Beat>, k: usize, n: usize) -> (
     let amp = f64::from(*size) * 64.0;
     let shift = if n > 0 { k as f64 / n as f64 } else { 0.0 };
     let bib = u32::from(b.beat_in_bar.saturating_sub(1));
-    let i = (b.count.wrapping_sub(bib) % beats + bib) % beats;
+    let bar = b.count.wrapping_sub(bib) / 4;
+    let i = bib.wrapping_add(bar.wrapping_mul(4)) % beats;
     let t = ((f64::from(i) + b.phase) / f64::from(beats) + shift).fract();
     let a = std::f64::consts::TAU * t;
     let (x, y) = match shape {
@@ -191,11 +192,40 @@ mod tests {
         let at = |bar_beat: u8, count: u32| {
             shape_offset(&shape, Some(&beat(0.25, bar_beat, count)), 0, 1)
         };
-        // The cycle starts on beat 1 of a bar, whatever the count is.
+        // A bar line is beat 1, whatever the count of the clock start was.
         assert_eq!(at(1, 4), at(1, 8));
-        assert_eq!(at(1, 5), at(1, 9));
-        // Beat 2 of the same bar is one beat later than beat 1.
         assert_eq!(at(2, 5), at(2, 9));
+        // Beat 2 of the same bar is one beat later than beat 1.
         assert_ne!(at(1, 4), at(2, 5));
+    }
+
+    #[test]
+    fn shape_starts_on_beat_one_for_any_clock_start() {
+        let shape = Shape::Circle {
+            beats: 4,
+            size: 100,
+        };
+        let start = shape_offset(&shape, Some(&beat(0.0, 1, 4)), 0, 1);
+        // The clock first saw beat 2, 3 or 4 of a bar, so the count of beat 1 differs.
+        for count in [5, 6, 7] {
+            assert_eq!(
+                shape_offset(&shape, Some(&beat(0.0, 1, count)), 0, 1),
+                start
+            );
+        }
+    }
+
+    #[test]
+    fn shape_of_eight_beats_restarts_every_second_bar() {
+        let shape = Shape::Circle {
+            beats: 8,
+            size: 100,
+        };
+        let at = |bar_beat: u8, count: u32| {
+            shape_offset(&shape, Some(&beat(0.0, bar_beat, count)), 0, 1)
+        };
+        assert_eq!(at(1, 0), at(1, 8));
+        assert_ne!(at(1, 0), at(1, 4));
+        assert_eq!(at(1, 4), at(1, 12));
     }
 }
