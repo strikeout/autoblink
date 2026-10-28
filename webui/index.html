@@ -1833,42 +1833,76 @@ function oflChannels(fixture, modeName) {
   const mode = (fixture.modes || []).find((m) => m.name === modeName);
   const notes = [];
   let unknown = false;
-  const pixelNote = () => { if (!notes.includes('pixel channels are not supported yet')) notes.push('pixel channels are not supported yet'); };
-  const fixed0 = (n) => Array.from({ length: n }, () => ({ fixed: 0 }));
+  const note = (t) => { if (!notes.includes(t)) notes.push(t); };
+  const pixelNote = () => note('pixel channels are not supported yet');
   const matrix = fixture.matrix || {};
-  const leaves = (a) => (Array.isArray(a) ? a.reduce((n, x) => n + leaves(x), 0) : (a === null ? 0 : 1));
+  const leaves = (a) => (Array.isArray(a) ? a.flatMap(leaves) : (a === null ? [] : [String(a)]));
+  // Each template channel by the names that it gets for the pixels and for the pixel groups.
+  const tmpl = {};
+  const tmplFine = new Set();
+  const pixelNames = [...leaves(matrix.pixelKeys || []), ...Object.keys(matrix.pixelGroups || {})];
+  for (const [tn, tc] of Object.entries(fixture.templateChannels || {})) {
+    for (const a of tc.fineChannelAliases || []) tmplFine.add(a);
+    for (const k of pixelNames) {
+      tmpl[tn.replace('$pixelKey', k)] = tc;
+      for (const a of tc.fineChannelAliases || []) fine.add(a.replace('$pixelKey', k));
+    }
+  }
   // The number of pixels that a matrix insert repeats for.
   const pixels = (repeatFor) => {
     if (Array.isArray(repeatFor)) return repeatFor.length;
     if (repeatFor === 'eachPixelGroup') return Object.keys(matrix.pixelGroups || {}).length;
     if (Array.isArray(matrix.pixelCount)) return matrix.pixelCount.reduce((n, x) => n * x, 1);
-    return leaves(matrix.pixelKeys || []);
+    return leaves(matrix.pixelKeys || []).length;
+  };
+  // The channel of the show for one OFL channel.
+  const map = (c) => {
+    const caps = c.capabilities || (c.capability ? [c.capability] : []);
+    const extra = oflExtra(c);
+    const top = 256 ** (extra + 1) - 1;
+    const cap = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= top && k.dmxRange[1] >= top) || caps[0];
+    const type = cap && cap.type;
+    if (type === 'Intensity') return 'dimmer';
+    if (type === 'ColorIntensity' && OFL_COLORS[cap.color]) return OFL_COLORS[cap.color];
+    if (type === 'ShutterStrobe') {
+      // The engine sends Strobe 0 while no strobe runs. A shutter that is closed at 0 needs another channel type.
+      if (caps.some((k) => k.type === 'Intensity')) return 'dimmer';
+      const first = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] === 0) || caps[0];
+      if (first && first.type === 'ShutterStrobe' && first.shutterEffect === 'Closed') {
+        const open = caps.find((k) => k.type === 'ShutterStrobe' && k.shutterEffect === 'Open' && Array.isArray(k.dmxRange));
+        note('shutter kept open, no strobe');
+        return { fixed: open ? Math.min(255, Math.floor(open.dmxRange[0] / 256 ** extra)) : oflDefault(c) };
+      }
+      return 'strobe';
+    }
+    if (type === 'Fog' || type === 'FogOutput') return 'fog';
+    return { fixed: oflDefault(c) };
   };
   const channels = ((mode && mode.channels) || []).flatMap((name) => {
     if (name === null) return [{ fixed: 0 }];
     if (typeof name !== 'string') {
       // A matrix insert stands for one group of template channels for each pixel.
-      pixelNote();
-      const n = pixels(name.repeatFor) * (name.templateChannels || []).length;
-      if (!(n > 0)) unknown = true;
-      return fixed0(n > 0 ? n : 0);
+      const names = name.templateChannels || [];
+      const px = pixels(name.repeatFor);
+      const one = names.map((t) => {
+        if (t === null || tmplFine.has(t)) return { fixed: 0 };
+        const c = (fixture.templateChannels || {})[t] || avail[t];
+        if (c) return map(c);
+        pixelNote();
+        return { fixed: 0 };
+      });
+      if (!(px * one.length > 0)) unknown = true;
+      if (!(px > 0)) return [];
+      return name.channelOrder === 'perChannel' ? one.flatMap((m) => Array.from({ length: px }, () => m)) : Array.from({ length: px }, () => one).flat();
     }
     if (fine.has(name)) return [{ fixed: 0 }];
-    const c = avail[name];
+    const c = avail[name] || tmpl[name];
     if (!c) {
-      // A name that is no channel of the fixture is a pixel channel of a fixture with template channels ("Red 1"). Else it is a switching channel.
-      if (fixture.templateChannels) pixelNote();
+      // A name that is no channel of the fixture is a switching channel, or a pixel channel that the template channels do not describe.
+      if (fixture.templateChannels && name.split(' ').some((w) => pixelNames.includes(w))) pixelNote();
       return [{ fixed: 0 }];
     }
-    const caps = c.capabilities || (c.capability ? [c.capability] : []);
-    const top = 256 ** (oflExtra(c) + 1) - 1;
-    const cap = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= top && k.dmxRange[1] >= top) || caps[0];
-    const type = cap && cap.type;
-    if (type === 'Intensity') return ['dimmer'];
-    if (type === 'ColorIntensity' && OFL_COLORS[cap.color]) return [OFL_COLORS[cap.color]];
-    if (type === 'ShutterStrobe') return ['strobe'];
-    if (type === 'Fog' || type === 'FogOutput') return ['fog'];
-    return [{ fixed: oflDefault(c) }];
+    return [map(c)];
   });
   if (unknown) notes.push('The pixel count of this mode is unknown.');
   return { channels, notes, unknown };
@@ -1880,6 +1914,7 @@ const ofl = { busy: false, want: null, seq: 0, key: '', fx: null, mode: null };
 async function oflGet(path, onOk) {
   if (ofl.busy) { ofl.want = () => oflGet(path, onOk); return; }
   ofl.busy = true;
+  $('ltstrobe').disabled = true;
   const seq = ++ofl.seq;
   set('oflst', 'searching…');
   let fail = '';
@@ -1897,6 +1932,7 @@ async function oflGet(path, onOk) {
     }
   } catch (e) { fail = 'The library did not answer: ' + (e.name === 'TimeoutError' ? 'timeout' : 'no connection'); }
   ofl.busy = false;
+  $('ltstrobe').disabled = false;
   const stale = seq !== ofl.seq || ofl.want;
   if (!ofl.want && !stale) set('oflst', '');
   if (!stale) { if (fail) toast(fail); else onOk(data); }

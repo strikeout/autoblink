@@ -190,6 +190,9 @@ impl Show {
             clean(&mut f.name);
             if let Some(o) = &mut f.ofl {
                 clean_to(o, MAX_OFL);
+                if o.is_empty() {
+                    f.ofl = None;
+                }
             }
             f.address = f.address.clamp(1, UNIVERSE as u16);
             f.channels.truncate(MAX_CHANNELS);
@@ -357,8 +360,11 @@ mod tests {
         f.ofl = Some("a".repeat(200));
         let mut g = fixture(1);
         g.ofl = Some("ab\ncd".into());
-        s.fixtures = vec![f, g];
+        let mut e = fixture(2);
+        e.ofl = Some("\n\t".into());
+        s.fixtures = vec![f, g, e];
         s.sanitize();
+        assert_eq!(s.fixtures[2].ofl, None);
         assert_eq!(s.fixtures[0].ofl.as_ref().unwrap().chars().count(), 96);
         assert_eq!(s.fixtures[1].ofl.as_deref(), Some("abcd"));
     }

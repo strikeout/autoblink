@@ -197,10 +197,7 @@ fn failed(e: Option<&EspError>, text: &str, start: Instant) -> (u16, String) {
         sys::ESP_ERR_HTTP_EAGAIN | sys::ESP_ERR_HTTP_READ_TIMEOUT | sys::ESP_ERR_HTTP_CONNECTING
     ) || start.elapsed() >= TIMEOUT;
     if timeout {
-        (
-            504,
-            format!("The library did not answer in {} s.", TIMEOUT.as_secs()),
-        )
+        (504, "The library did not answer in time.".to_string())
     } else {
         (
             502,

@@ -195,6 +195,7 @@ pub fn start(
 
     #[cfg(feature = "dmx")]
     show_routes(&mut server, &state)?;
+    #[cfg(feature = "dmx")]
     ofl_routes(&mut server)?;
 
     for path in ["/", "/index.html"] {
@@ -370,6 +371,7 @@ fn release_strobe(_state: &State) {
 /// Meanwhile the HTTP server task serves no other request, and the page gets no beat and no
 /// status. A page from the computer of the developer uses the two routes too (see `dev_origin`).
 /// Thus each reply has `Access-Control-Allow-Origin: *`.
+#[cfg(feature = "dmx")]
 fn ofl_routes(server: &mut EspHttpServer<'static>) -> anyhow::Result<()> {
     type Fetch = fn(&str) -> Result<Vec<u8>, (u16, String)>;
     let routes: [(&str, &str, Fetch); 2] = [
