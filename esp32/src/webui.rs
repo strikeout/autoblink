@@ -48,7 +48,7 @@ use esp_idf_svc::http::server::{EspHttpConnection, Request};
 const INDEX_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
 
 /// The firmware ignores a command that is longer than this.
-/// The scenes command is the longest command, about 1.5 KB with 16 rows.
+/// The scenes command is the longest command, about 1.5 KB with 16 rows. A row without holds leaves out the `holds` key.
 const MAX_COMMAND_LEN: usize = 3072;
 
 /// The capabilities in the hello message.

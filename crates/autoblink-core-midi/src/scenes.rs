@@ -168,9 +168,14 @@ pub struct Row {
     #[serde(default)]
     pub decay: Decay,
     /// The hold of each entry of `presets`, in beats of the master. 0 or a missing entry means no
-    /// hold. The beats are `f64` for the same reason as in `Decay`.
-    #[serde(default)]
+    /// hold. The beats are `f64` because LLVM for Xtensa cannot compile serde code for an `f32`.
+    /// A row without holds leaves the key out, so that the JSON stays small.
+    #[serde(default, skip_serializing_if = "no_holds")]
     pub holds: Vec<f64>,
+}
+
+fn no_holds(holds: &[f64]) -> bool {
+    holds.iter().all(|&h| h == 0.0)
 }
 
 /// A note outside the range of the presets, with a name.
@@ -256,8 +261,8 @@ impl ScenesConfig {
             row.presets.truncate(MAX_ROW_PRESETS);
             row.holds.truncate(row.presets.len());
             for h in &mut row.holds {
-                *h = if h.is_finite() && *h >= 0.0625 {
-                    h.min(MAX_DECAY_BEATS)
+                *h = if h.is_finite() && *h > 0.0 {
+                    h.clamp(0.0625, MAX_DECAY_BEATS)
                 } else {
                     0.0
                 };
@@ -770,7 +775,8 @@ impl Scenes {
                 out(Out::NoteOff { ch, note });
             }
             self.restore_held(cfg, out);
-            if pending && cfg.enabled {
+            // A scene row that is no longer the current scene drops its queued fire.
+            if pending && cfg.enabled && (e.is_overlay() || self.current == Some(e)) {
                 if let Some(row) = cfg.row(e).filter(|r| step && r.advance > 0) {
                     let c = &mut self.cursors[i];
                     advance(c, row.order, row.presets.len() as u8, &mut self.rng);
@@ -785,7 +791,16 @@ impl Scenes {
         if !cfg.one_at_a_time {
             return;
         }
-        if let Some((ch, note)) = self.held {
+        // A hold entry of a scene row is on too, and it shows the preset. Any newer held note
+        // took its place in `held` when it fired.
+        let hold = self
+            .cursors
+            .iter()
+            .zip(Event::ALL)
+            .filter(|(c, e)| c.hold.is_some() && !e.is_overlay())
+            .max_by_key(|(c, _)| c.fired_ms)
+            .and_then(|(c, _)| c.hold.map(|h| (h.1, h.2)));
+        if let Some((ch, note)) = self.held.or(hold) {
             out(Out::NoteOn { ch, note, vel: 127 });
         }
     }
@@ -1500,6 +1515,9 @@ mod tests {
         c.rows[0].holds = vec![99.0, -1.0, f64::NAN, 5.0];
         c.sanitize();
         assert_eq!(c.rows[0].holds, [MAX_DECAY_BEATS, 0.0, 0.0]);
+        c.rows[0].holds = vec![0.01, 0.0, 1.0];
+        c.sanitize();
+        assert_eq!(c.rows[0].holds, [0.0625, 0.0, 1.0]);
     }
 
     #[test]
@@ -1537,5 +1555,76 @@ mod tests {
         out.clear();
         s.update(&c, 1000, &input(0, 0, 29), &mut |o| out.push(o));
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn two_triggers_in_one_hold_give_one_queued_fire() {
+        let c = hold_cfg(&[2.0, 0.0]);
+        let mut s = Scenes::default();
+        let mut out = Vec::new();
+        s.beat(&c, 0, 2, &mut |o| out.push(o));
+        s.beat(&c, 500, 3, &mut |o| out.push(o));
+        s.beat(&c, 750, 4, &mut |o| out.push(o));
+        out.clear();
+        s.update(&c, 1000, &input(0, 0, 29), &mut |o| out.push(o));
+        assert_eq!(notes(&out), [1]);
+        out.clear();
+        s.update(&c, 1100, &input(0, 0, 28), &mut |o| out.push(o));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_pulse_overlay_restores_the_hold_note() {
+        let mut intro = row(Event::Intro, &[3]);
+        intro.holds = vec![8.0];
+        let c = cfg(vec![intro, row(Event::Downbeat, &[7])]);
+        let mut s = Scenes::default();
+        s.update(&c, 0, &input(0, 0, 32), &mut |_| {});
+        let mut out = Vec::new();
+        s.beat(&c, 1000, 1, &mut |o| out.push(o));
+        assert_eq!(
+            out,
+            [
+                Out::NoteOn {
+                    ch: 9,
+                    note: 7,
+                    vel: 127
+                },
+                Out::NoteOff { ch: 9, note: 7 },
+                Out::NoteOn {
+                    ch: 9,
+                    note: 3,
+                    vel: 127
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_queued_fire_of_a_replaced_scene_is_dropped() {
+        let mut intro = row(Event::Intro, &[1, 2]);
+        intro.holds = vec![32.0, 0.0];
+        let c = cfg(vec![intro, row(Event::Groove, &[5])]);
+        let mut s = Scenes::default();
+        s.update(&c, 0, &input(0, 3, 32), &mut |_| {});
+        let mut out = Vec::new();
+        s.event(&c, Event::Intro, 0, &mut |o| out.push(o));
+        s.event(&c, Event::Groove, 100, &mut |o| out.push(o));
+        s.event(&c, Event::Intro, 200, &mut |o| out.push(o));
+        out.clear();
+        s.update(&c, 16_000, &input(0, 3, 10), &mut |o| out.push(o));
+        assert_eq!(notes(&out), Vec::<u8>::new());
+        assert_eq!(s.current, Some(Event::Groove));
+    }
+
+    #[test]
+    fn rows_without_holds_serialize_without_the_key() {
+        let json = serde_json::to_string(&row(Event::Beat, &[1])).unwrap();
+        assert!(!json.contains("holds"));
+        let mut r = row(Event::Beat, &[1]);
+        r.holds = vec![2.0];
+        assert!(serde_json::to_string(&r)
+            .unwrap()
+            .contains("\"holds\":[2.0]"));
     }
 }
