@@ -34,6 +34,16 @@
 //!   `{hot, start, end}` in ms; `hot` 0 is a memory cue, and `end` is set for a loop. Each
 //!   phrase is `{kind, start, end, fill}` in ms; `fill` is the start of the fill-in, or null.
 //!   The status field `wave` of a deck names the rekordbox ID that this route gives.
+//!
+//! HTTP, for the DMX show of the host:
+//! - `GET /show` gives the show as JSON (`autoblink_core_dmx::Show`).
+//! - `POST /show` replaces the show and writes it to `show.json` next to the config file. The
+//!   body is JSON, with any content type, so that the page can send a CORS simple request. The
+//!   reply is 204, 400 for a bad show, 403 for a foreign `Origin`, or 413 above `MAX_SHOW_LEN`.
+//!   The server keeps only the first entries of a long list (`Show::sanitize`).
+//! - The two replies have `Access-Control-Allow-Origin: *`, as on the box.
+//! - The `hello` has the capability `dmx` only when the config sets `[dmx] artnet_target`.
+//! - The status field `box` gives the IP address of an AUTOBLINK box on the network, or null.
 
 pub mod status;
 
@@ -41,8 +51,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -86,6 +97,8 @@ pub struct WebCtx {
     pub beat_tx: broadcast::Sender<BeatEvent>,
     pub midi_out: MidiOutHandle,
     pub cfg_change_tx: watch::Sender<()>,
+    /// The DMX show of the host. The DMX engine reads it.
+    pub show: crate::dmx::SharedShow,
 }
 
 struct Shared {
@@ -205,6 +218,12 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/index.html", get(|| async { Html(PAGE) }))
         .route("/ws", get(ws_handler))
         .route("/waveform/{deck}", get(waveform_handler))
+        .route(
+            "/show",
+            get(show_get)
+                .post(show_post)
+                .layer(DefaultBodyLimit::max(MAX_SHOW_LEN)),
+        )
         .with_state(shared)
 }
 
@@ -412,6 +431,70 @@ async fn waveform_handler(Path(deck): Path<u8>, State(shared): State<Arc<Shared>
     }
 }
 
+/// `POST /show` refuses a longer body. The box uses the same limit.
+const MAX_SHOW_LEN: usize = 60_000;
+
+/// Lets a page from another origin read the replies of `/show`, as on the box.
+const CORS: (header::HeaderName, &str) = (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+
+/// Gives the DMX show of the host. See the module documentation.
+async fn show_get(State(shared): State<Arc<Shared>>) -> Response {
+    // Clone the show under the lock. Serialize the clone after the statement releases the lock.
+    let show = shared.ctx.show.read().clone();
+    match serde_json::to_string(&show) {
+        Ok(json) => ([(header::CONTENT_TYPE, "application/json"), CORS], json).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// Replaces and stores the DMX show of the host. See the module documentation.
+async fn show_post(headers: HeaderMap, State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
+    let reply = |status: StatusCode, text: String| (status, [CORS], text).into_response();
+    if !origin_allowed(&headers) {
+        tracing::warn!(
+            origin = ?headers.get(header::ORIGIN),
+            "Web UI: refused a POST /show from a foreign origin"
+        );
+        return reply(
+            StatusCode::FORBIDDEN,
+            "The Origin of the page does not match the Host.".into(),
+        );
+    }
+    // The show has bounded lists, so a long list uses no memory before `sanitize` cuts it.
+    let mut show: autoblink_core_dmx::Show = match serde_json::from_slice(&body) {
+        Ok(show) => show,
+        Err(e) => {
+            return reply(
+                StatusCode::BAD_REQUEST,
+                format!("The show is not valid: {e}"),
+            )
+        }
+    };
+    show.sanitize();
+    let path = shared.ctx.cfg.read().show_path.clone();
+    if let Some(path) = path {
+        let copy = show.clone();
+        // The file write is a blocking call.
+        let saved =
+            tokio::task::spawn_blocking(move || crate::config::save_show(&path, &copy)).await;
+        let err = match saved {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(e.to_string()),
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(e) = err {
+            tracing::warn!("The host cannot store the show: {e}");
+            return reply(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("The host cannot store the show: {e}"),
+            );
+        }
+    }
+    *shared.ctx.show.write() = show;
+    tracing::info!("The page saved a new DMX show");
+    reply(StatusCode::NO_CONTENT, String::new())
+}
+
 /// Returns true when the request may open the socket.
 ///
 /// Browsers do not apply CORS to WebSockets. Without this check, any page in a browser on the
@@ -511,12 +594,19 @@ async fn send(socket: &mut WebSocket, msg: &str) -> bool {
 }
 
 async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
+    let mut caps = vec![
+        "beat", "decks", "mixer", "output", "settings", "ports", "logs", "waveform", "scenes",
+    ];
+    // The page shows the DMX show editor only when the host has a DMX engine.
+    if shared.ctx.cfg.read().dmx.artnet_target.is_some() {
+        caps.push("dmx");
+    }
     let hello = json!({
         "type": "hello",
         "proto": 1,
         "version": env!("CARGO_PKG_VERSION"),
         "device": "host",
-        "caps": ["beat", "decks", "mixer", "output", "settings", "ports", "logs", "waveform", "scenes"],
+        "caps": caps,
     });
     if !send(&mut socket, &hello.to_string()).await {
         return;
@@ -717,7 +807,28 @@ mod tests {
             beat_tx: broadcast::channel(16).0,
             midi_out: MidiOutHandle::start(16, None),
             cfg_change_tx: watch::channel(()).0,
+            show: crate::dmx::SharedShow::default(),
         }
+    }
+
+    /// Sends one HTTP/1.1 request and returns the full response.
+    async fn http(addr: SocketAddr, head: &str, body: &[u8]) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        s.write_all(
+            format!(
+                "{head}\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        // The server can refuse the request before it reads the body.
+        let _ = s.write_all(body).await;
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out).await;
+        String::from_utf8_lossy(&out).into_owned()
     }
 
     type Ws = tokio_tungstenite::WebSocketStream<
@@ -969,5 +1080,107 @@ mod tests {
             .insert("Origin", "https://evil.example".parse().unwrap());
         let err = tokio_tungstenite::connect_async(req).await.unwrap_err();
         assert!(err.to_string().contains("403"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn show_routes_store_a_bounded_show() {
+        let ctx = ctx();
+        let shared_show = ctx.show.clone();
+        let cfg = Arc::clone(&ctx.cfg);
+        let dir = std::env::temp_dir().join(format!("xdj-show-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("show.json");
+        cfg.write().show_path = Some(path.clone());
+        let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+
+        let resp = http(addr, "GET /show HTTP/1.1", b"").await;
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+        assert!(
+            resp.to_ascii_lowercase()
+                .contains("access-control-allow-origin: *"),
+            "{resp}"
+        );
+
+        // 40 fixtures: the server keeps the first 32 (MAX_FIXTURES).
+        let fixtures: Vec<_> = (0..40)
+            .map(|i| json!({"name": format!("f{i}"), "address": 1, "channels": ["dimmer"]}))
+            .collect();
+        let body = json!({ "fixtures": fixtures }).to_string();
+        let resp = http(addr, "POST /show HTTP/1.1", body.as_bytes()).await;
+        assert!(resp.starts_with("HTTP/1.1 204"), "{resp}");
+        assert_eq!(shared_show.read().fixtures.len(), 32);
+        assert_eq!(crate::config::load_show(&path), *shared_show.read());
+
+        let resp = http(addr, "GET /show HTTP/1.1", b"").await;
+        let json: serde_json::Value =
+            serde_json::from_str(resp.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(json["fixtures"].as_array().unwrap().len(), 32);
+        assert_eq!(json["fixtures"][31]["name"], "f31");
+
+        // A bad body changes nothing.
+        let resp = http(addr, "POST /show HTTP/1.1", b"{not json").await;
+        assert!(resp.starts_with("HTTP/1.1 400"), "{resp}");
+        assert_eq!(shared_show.read().fixtures.len(), 32);
+
+        let big = vec![b' '; MAX_SHOW_LEN + 1];
+        let resp = http(addr, "POST /show HTTP/1.1", &big).await;
+        assert!(resp.starts_with("HTTP/1.1 413"), "{resp}");
+
+        let resp = http(
+            addr,
+            "POST /show HTTP/1.1\r\nOrigin: https://evil.example",
+            b"{}",
+        )
+        .await;
+        assert!(resp.starts_with("HTTP/1.1 403"), "{resp}");
+        assert_eq!(shared_show.read().fixtures.len(), 32);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hello_has_dmx_only_with_an_artnet_target() {
+        for (target, want) in [(None, false), (Some("10.0.0.5".to_string()), true)] {
+            let ctx = ctx();
+            ctx.cfg.write().dmx.artnet_target = target;
+            let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+                .await
+                .unwrap();
+            let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+                .await
+                .unwrap();
+            let hello = next_of_type(&mut ws, "hello").await;
+            assert_eq!(
+                hello["caps"].as_array().unwrap().contains(&"dmx".into()),
+                want
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_names_the_box() {
+        let ctx = ctx();
+        let table = ctx.device_table.clone();
+        let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+            .await
+            .unwrap();
+        let status = next_of_type(&mut ws, "status").await;
+        assert!(status["box"].is_null());
+        table.lock().insert(
+            9,
+            crate::prolink::discovery::Device {
+                device_number: 9,
+                device_type: 1,
+                name: "autoblink".into(),
+                mac: [0; 6],
+                ip: [192, 168, 2, 50],
+                last_seen: std::time::Instant::now(),
+            },
+        );
+        wait_for(&mut ws, "status", |v| v["box"] == "192.168.2.50").await;
     }
 }

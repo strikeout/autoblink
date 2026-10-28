@@ -1,5 +1,6 @@
 pub mod app;
 pub mod config;
+pub mod dmx;
 pub mod link;
 pub mod logbuf;
 pub mod midi;
