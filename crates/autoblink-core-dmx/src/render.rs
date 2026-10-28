@@ -87,6 +87,7 @@ mod tests {
             name: "f".into(),
             address,
             channels: channels.to_vec(),
+            ofl: None,
         }
     }
 

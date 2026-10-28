@@ -16,6 +16,8 @@ pub const MAX_CHANNELS: usize = 32;
 pub const MAX_GROUPS: usize = 8;
 pub const MAX_LOOKS: usize = 32;
 pub const MAX_NAME: usize = 16;
+/// The longest OFL source of a fixture, in characters.
+pub const MAX_OFL: usize = 96;
 /// The most rows of one look. A row sets one group, so more rows than groups give nothing.
 pub const MAX_ROWS: usize = MAX_GROUPS;
 /// The longest cooldown of a look row, in seconds.
@@ -45,6 +47,9 @@ pub struct Fixture {
     pub address: u16,
     #[serde(deserialize_with = "bounded::<_, _, MAX_CHANNELS>")]
     pub channels: Vec<Channel>,
+    /// The Open Fixture Library source: `<manufacturer>/<model>#<mode name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ofl: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -169,12 +174,12 @@ where
     d.deserialize_seq(Bounded::<T, N>(PhantomData))
 }
 
+fn clean_to(name: &mut String, max: usize) {
+    *name = name.chars().filter(|c| !c.is_control()).take(max).collect();
+}
+
 fn clean(name: &mut String) {
-    *name = name
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_NAME)
-        .collect();
+    clean_to(name, MAX_NAME);
 }
 
 impl Show {
@@ -183,6 +188,9 @@ impl Show {
         self.fixtures.truncate(MAX_FIXTURES);
         for f in &mut self.fixtures {
             clean(&mut f.name);
+            if let Some(o) = &mut f.ofl {
+                clean_to(o, MAX_OFL);
+            }
             f.address = f.address.clamp(1, UNIVERSE as u16);
             f.channels.truncate(MAX_CHANNELS);
         }
@@ -235,6 +243,7 @@ mod tests {
             name: format!("f{n}"),
             address: 1,
             channels: vec![Channel::Dimmer],
+            ofl: None,
         }
     }
 
@@ -331,6 +340,30 @@ mod tests {
     }
 
     #[test]
+    fn ofl_round_trip() {
+        let mut s = Show::default();
+        let mut f = fixture(0);
+        f.ofl = Some("eurolite/led-bar-6-qcl-rgbw#4-channel".into());
+        s.fixtures = vec![f, fixture(1)];
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(json.matches("\"ofl\"").count(), 1);
+        assert_eq!(Show::from_json(json.as_bytes()), s);
+    }
+
+    #[test]
+    fn ofl_sanitize() {
+        let mut s = Show::default();
+        let mut f = fixture(0);
+        f.ofl = Some("a".repeat(200));
+        let mut g = fixture(1);
+        g.ofl = Some("ab\ncd".into());
+        s.fixtures = vec![f, g];
+        s.sanitize();
+        assert_eq!(s.fixtures[0].ofl.as_ref().unwrap().chars().count(), 96);
+        assert_eq!(s.fixtures[1].ofl.as_deref(), Some("abcd"));
+    }
+
+    #[test]
     fn json_round_trip() {
         let mut s = Show::default();
         s.fixtures = vec![Fixture {
@@ -348,6 +381,7 @@ mod tests {
                 Channel::Fog,
                 Channel::Fixed(5),
             ],
+            ofl: None,
         }];
         s.groups = vec![Group {
             name: "all".into(),
