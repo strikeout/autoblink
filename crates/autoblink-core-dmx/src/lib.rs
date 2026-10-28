@@ -14,3 +14,7 @@ pub mod effect;
 pub use effect::*;
 pub mod lights;
 pub use lights::*;
+pub mod artnet;
+pub use artnet::*;
+pub mod merge;
+pub use merge::*;
