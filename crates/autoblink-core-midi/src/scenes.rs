@@ -978,6 +978,13 @@ mod tests {
 
     fn drops(s: &mut Scenes, c: &ScenesConfig, seq: &[(u32, Event, u8)]) -> usize {
         let mut n = 0;
+        // Prime the engine, so that the Play edge of the first step fires nothing.
+        let prime = SceneInput {
+            guess: None,
+            phrase16: 0,
+            ..guess_in(seq[0].0, Event::Drop, 0)
+        };
+        s.update(c, 0, &prime, &mut |_| {});
         for (i, &(t, g, p)) in seq.iter().enumerate() {
             s.update(c, i as u64 * 500, &guess_in(t, g, p), &mut |_| {});
             s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
@@ -989,10 +996,8 @@ mod tests {
     fn guess_fires_on_block_start() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
-        assert_eq!(
-            drops(&mut s, &c, &[(7, Event::Drop, 16), (7, Event::Drop, 1)]),
-            1
-        );
+        assert_eq!(drops(&mut s, &c, &[(7, Event::Drop, 16)]), 0);
+        assert_eq!(drops(&mut s, &c, &[(7, Event::Drop, 1)]), 1);
         let st = s.status(&c);
         assert!(st.guessed);
         assert_eq!(st.phrase, Some(Event::Drop));
@@ -1018,8 +1023,8 @@ mod tests {
     fn same_guess_does_not_refire() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
+        assert_eq!(drops(&mut s, &c, &[(7, Event::Drop, 16)]), 0);
         let seq = [
-            (7, Event::Drop, 16),
             (7, Event::Drop, 1),
             (7, Event::Drop, 16),
             (7, Event::Drop, 1),
