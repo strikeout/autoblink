@@ -196,6 +196,8 @@ pub fn start(
                         bpm: snap.bpm,
                         phrase: None,
                         bass_cut: None,
+                        guess: None,
+                        phrase16: m.phrase16,
                     };
                     (snap, m.beat_count.map(|bc| (m.track.rekordbox_id, bc)))
                 })

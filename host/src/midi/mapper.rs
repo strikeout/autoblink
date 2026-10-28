@@ -818,6 +818,8 @@ fn scene_input(state: &SharedState) -> SceneInput {
         bpm: st.master.bpm,
         phrase,
         bass_cut: Some(st.no_bass()),
+        guess: None,
+        phrase16: 0,
     }
 }
 

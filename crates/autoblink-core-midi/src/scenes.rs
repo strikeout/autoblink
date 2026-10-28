@@ -323,6 +323,10 @@ pub struct SceneInput {
     pub phrase: Option<ScenePhrase>,
     /// True while the bass is cut on all live mixer channels. It is `None` without mixer data.
     pub bass_cut: Option<bool>,
+    /// The bucket that the drop guess gives now. The engine uses it only without a phrase.
+    pub guess: Option<Event>,
+    /// The beat in the 16-beat block, 1 to 16. 0 means unknown.
+    pub phrase16: u8,
 }
 
 /// The current scene, for the page.
@@ -338,6 +342,8 @@ pub struct SceneStatus {
     pub bars_left: Option<u8>,
     /// The phrase bucket of the master deck now.
     pub phrase: Option<Event>,
+    /// True when `phrase` comes from the guess, not from a phrase of the player.
+    pub guessed: bool,
     /// The number of times that each event occurred, in the order of `Event::ALL`. Each event
     /// counts, also without presets in its row. The count wraps at 256. The page flashes the
     /// title of a row when its count changes.
@@ -380,6 +386,10 @@ pub struct Scenes {
     phrase_key: Option<(u8, u32, usize)>,
     /// The (device, track, phrase) that the fill-in row fired for.
     fill_key: Option<(u8, u32, usize)>,
+    /// The (device, track) that `guess_last` belongs to.
+    guess_key: Option<(u8, u32)>,
+    /// The last bucket that the guess fired for `guess_key`.
+    guess_last: Option<Event>,
     /// The phrase index that a beat predicted. The status change to it fires no overlay.
     predicted_idx: Option<usize>,
     /// The time of the last phrase change or fill-in overlay from the status.
@@ -403,6 +413,8 @@ impl Default for Scenes {
             prev: SceneInput::default(),
             phrase_key: None,
             fill_key: None,
+            guess_key: None,
+            guess_last: None,
             predicted_idx: None,
             status_overlay_ms: None,
             ms_per_beat: 500.0,
@@ -553,9 +565,35 @@ impl Scenes {
                     }
                 }
             }
-            None => self.phrase_key = None,
+            None => {
+                self.phrase_key = None;
+                self.guess_update(cfg, s, now_ms, out);
+            }
         }
         self.prev = *s;
+    }
+
+    /// Fires the guessed bucket at the start of a 16-beat block. It fires only when the guess
+    /// differs from the last bucket that the guess fired for this track.
+    fn guess_update(
+        &mut self,
+        cfg: &ScenesConfig,
+        s: &SceneInput,
+        now_ms: u64,
+        out: &mut impl FnMut(Out),
+    ) {
+        let key = Some((s.device, s.track));
+        if self.guess_key != key {
+            self.guess_key = key;
+            self.guess_last = None;
+        }
+        let block_start = s.phrase16 == 1 && self.prev.phrase16 != 1;
+        if let Some(e) = s.guess.filter(|_| block_start) {
+            if self.guess_last != Some(e) {
+                self.guess_last = Some(e);
+                self.event(cfg, e, now_ms, out);
+            }
+        }
     }
 
     /// Returns the time of the next flash note off, so that the caller can wake up for it.
@@ -566,14 +604,17 @@ impl Scenes {
 
     /// Returns the current scene for the page.
     pub fn status(&self, cfg: &ScenesConfig) -> SceneStatus {
-        let phrase = self
+        let real = self
             .prev
             .phrase
             .and_then(|p| p.code)
             .and_then(Event::bucket);
+        let guessed = self.prev.phrase.is_none() && self.prev.guess.is_some();
+        let phrase = if guessed { self.prev.guess } else { real };
         let Some((e, row)) = self.current.and_then(|e| Some((e, cfg.row(e)?))) else {
             return SceneStatus {
                 phrase,
+                guessed,
                 events: self.events,
                 last: self.last,
                 ..SceneStatus::default()
@@ -592,6 +633,7 @@ impl Scenes {
             next,
             bars_left: (row.advance > 0).then(|| row.advance.saturating_sub(c.bars)),
             phrase,
+            guessed,
             events: self.events,
             last: self.last,
         }
@@ -911,7 +953,100 @@ mod tests {
                 fill_beats_left: None,
             }),
             bass_cut: None,
+            guess: None,
+            phrase16: 0,
         }
+    }
+
+    fn guess_in(track: u32, guess: Event, phrase16: u8) -> SceneInput {
+        SceneInput {
+            track,
+            phrase: None,
+            guess: Some(guess),
+            phrase16,
+            ..input(0, 0, 8)
+        }
+    }
+
+    fn drops(s: &mut Scenes, c: &ScenesConfig, seq: &[(u32, Event, u8)]) -> usize {
+        let mut n = 0;
+        for (i, &(t, g, p)) in seq.iter().enumerate() {
+            s.update(c, i as u64 * 500, &guess_in(t, g, p), &mut |_| {});
+            s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
+        }
+        n
+    }
+
+    #[test]
+    fn guess_fires_on_block_start() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        assert_eq!(
+            drops(&mut s, &c, &[(7, Event::Drop, 16), (7, Event::Drop, 1)]),
+            1
+        );
+        let st = s.status(&c);
+        assert!(st.guessed);
+        assert_eq!(st.phrase, Some(Event::Drop));
+    }
+
+    #[test]
+    fn guess_waits_for_block_start() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let seq = [
+            (7, Event::Intro, 6),
+            (7, Event::Drop, 7),
+            (7, Event::Drop, 8),
+        ];
+        assert_eq!(drops(&mut s, &c, &seq), 0);
+        assert_eq!(
+            drops(&mut s, &c, &[(7, Event::Drop, 16), (7, Event::Drop, 1)]),
+            1
+        );
+    }
+
+    #[test]
+    fn same_guess_does_not_refire() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let seq = [
+            (7, Event::Drop, 16),
+            (7, Event::Drop, 1),
+            (7, Event::Drop, 16),
+            (7, Event::Drop, 1),
+        ];
+        assert_eq!(drops(&mut s, &c, &seq), 1);
+    }
+
+    #[test]
+    fn phrases_win() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let with_phrase = |p16| SceneInput {
+            guess: Some(Event::Drop),
+            phrase16: p16,
+            ..input(0, 1, 8)
+        };
+        s.update(&c, 0, &with_phrase(16), &mut |_| {});
+        s.update(&c, 10, &with_phrase(1), &mut |_| {});
+        let mut n = 0;
+        s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
+        assert_eq!(n, 0);
+        assert!(!s.status(&c).guessed);
+    }
+
+    #[test]
+    fn track_change_resets_guess() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let seq = [
+            (7, Event::Drop, 16),
+            (7, Event::Drop, 1),
+            (8, Event::Drop, 16),
+            (8, Event::Drop, 1),
+        ];
+        assert_eq!(drops(&mut s, &c, &seq), 2);
     }
 
     #[test]
@@ -1343,6 +1478,8 @@ mod tests {
             bpm: 120.0,
             phrase: None,
             bass_cut: Some(false),
+            guess: None,
+            phrase16: 0,
         };
         s.update(&cfg, 0, &base, &mut |_| {});
         s.update(
