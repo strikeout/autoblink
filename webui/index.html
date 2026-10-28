@@ -1662,7 +1662,7 @@ function renderLights() {
   const idle = show.idle !== null && show.looks[show.idle] ? show.idle : null;
   $('ltidle').replaceChildren(pick(withLook, idle === null ? '' : String(idle),
     (v) => showEdit(() => { show.idle = v === '' ? null : +v; })),
-  idle !== null && idle < scenes.count && sceneChip(idle, true),
+  ...(idle !== null && idle < scenes.count ? [sceneChip(idle, true)] : []),
   h('span', 'hint', 'The look that plays when no scene plays. Only a preset with a look can be the idle look.'));
   set('stsum', '· ' + plural(show.fixtures.length, 'light', 'lights') + ' · ' + plural(show.groups.length, 'group', 'groups')
     + ' · idle look: ' + (idle === null ? 'none' : (idle + 1) + (scenes.labels[idle] ? ' ' + scenes.labels[idle] : '')));
@@ -1672,14 +1672,17 @@ function renderLights() {
 
 const CENTER = 32768;
 const isHead = (f) => f.channels.includes('pan') || f.channels.includes('tilt');
-let aimAt = 0, aimTimer = 0;
+let aimAt = 0, aimTimer = 0, aimPending = null;
 
-/** Moves a head at once. At most 20 messages for each second go out, and the last value always goes. */
+/** Moves a head at once. At most 20 messages for each second go out, and the last value of each head always goes. */
 function aimSend(fixture, a) {
   clearTimeout(aimTimer);
-  const go = () => { aimAt = Date.now(); send({ type: 'dmx_aim', fixture, pan: a.pan, tilt: a.tilt }); };
+  const go = (f, v) => { aimAt = Date.now(); send({ type: 'dmx_aim', fixture: f, pan: v.pan, tilt: v.tilt }); };
+  // A pending value of another head goes out at once, so that the new value cannot replace it.
+  if (aimPending && aimPending.fixture !== fixture) go(aimPending.fixture, aimPending.a);
+  aimPending = { fixture, a };
   const wait = 50 - (Date.now() - aimAt);
-  if (wait <= 0) go(); else aimTimer = setTimeout(go, wait);
+  if (wait <= 0) { aimPending = null; go(fixture, a); } else aimTimer = setTimeout(() => { aimPending = null; go(fixture, a); }, wait);
 }
 
 /** The position cards: one pan slider and one tilt slider for each moving head. */
@@ -1928,8 +1931,14 @@ function oflChannels(fixture, modeName) {
   const fine = new Set();
   // The fine alias of a Pan or Tilt channel is a fine channel of the show.
   const fineKind = {};
+  // The capability that covers the top value of a channel decides its type.
+  const capOf = (c) => {
+    const caps = c.capabilities || (c.capability ? [c.capability] : []);
+    const top = 256 ** (oflExtra(c) + 1) - 1;
+    return caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= top && k.dmxRange[1] >= top) || caps[0];
+  };
   for (const c of Object.values(avail)) {
-    const t = (c.capabilities || (c.capability ? [c.capability] : []))[0];
+    const t = capOf(c);
     for (const a of c.fineChannelAliases || []) {
       fine.add(a);
       if (t && (t.type === 'Pan' || t.type === 'Tilt')) fineKind[a] = t.type === 'Pan' ? 'pan_fine' : 'tilt_fine';
@@ -1949,8 +1958,12 @@ function oflChannels(fixture, modeName) {
   const keys = leaves(matrix.pixelKeys || []);
   const pc = matrix.pixelCount;
   if (!matrix.pixelKeys && Array.isArray(pc) && pc.length === 3 && pc.every((n) => Number.isInteger(n) && n > 0) && pc[0] * pc[1] * pc[2] <= 1024) {
-    const flat = pc.filter((n) => n > 1).length <= 1;
-    for (let z = 1; z <= pc[2]; z++) for (let y = 1; y <= pc[1]; y++) for (let x = 1; x <= pc[0]; x++) keys.push(flat ? String(x * y * z) : '(' + x + ', ' + y + ', ' + z + ')');
+    // OFL names a pixel by its own coordinate on each axis that has more than one pixel.
+    const axes = [0, 1, 2].filter((i) => pc[i] > 1).length;
+    for (let z = 1; z <= pc[2]; z++) for (let y = 1; y <= pc[1]; y++) for (let x = 1; x <= pc[0]; x++) {
+      const parts = [x, y, z].filter((_, i) => pc[i] > 1);
+      keys.push(axes <= 1 ? String(x * y * z) : '(' + parts.join(', ') + ')');
+    }
   }
   const pixelNames = [...keys, ...Object.keys(matrix.pixelGroups || {})];
   for (const [tn, tc] of Object.entries(fixture.templateChannels || {})) {
@@ -1971,8 +1984,7 @@ function oflChannels(fixture, modeName) {
   const map = (c) => {
     const caps = c.capabilities || (c.capability ? [c.capability] : []);
     const extra = oflExtra(c);
-    const top = 256 ** (extra + 1) - 1;
-    const cap = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= top && k.dmxRange[1] >= top) || caps[0];
+    const cap = capOf(c);
     const type = cap && cap.type;
     if (type === 'Intensity') return 'dimmer';
     if (type === 'Pan') return 'pan';
