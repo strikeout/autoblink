@@ -59,7 +59,14 @@ pub fn render(
                     Channel::Green => colour(row.color[1]),
                     Channel::Blue => colour(row.color[2]),
                     Channel::White => colour(row.color[3]),
-                    Channel::Amber | Channel::Uv | Channel::Strobe | Channel::Fog => 0,
+                    Channel::Amber
+                    | Channel::Uv
+                    | Channel::Strobe
+                    | Channel::Fog
+                    | Channel::Pan
+                    | Channel::PanFine
+                    | Channel::Tilt
+                    | Channel::TiltFine => 0,
                     Channel::Fixed(v) => v,
                 };
             }
@@ -108,6 +115,8 @@ mod tests {
                 intensity,
                 effect: Effect::None,
                 cooldown_s: 0,
+                position: None,
+                shape: crate::show::Shape::None,
             }],
         };
         (show, look)

@@ -16,6 +16,8 @@ pub const MAX_CHANNELS: usize = 32;
 pub const MAX_GROUPS: usize = 8;
 pub const MAX_LOOKS: usize = 32;
 pub const MAX_NAME: usize = 16;
+/// The most positions of a show.
+pub const MAX_POSITIONS: usize = 8;
 /// The longest OFL source of a fixture, in characters.
 pub const MAX_OFL: usize = 96;
 /// The most rows of one look. A row sets one group, so more rows than groups give nothing.
@@ -36,6 +38,10 @@ pub enum Channel {
     Uv,
     Strobe,
     Fog,
+    Pan,
+    PanFine,
+    Tilt,
+    TiltFine,
     /// A channel that always sends this value.
     Fixed(u8),
 }
@@ -117,6 +123,53 @@ pub struct LookRow {
     pub effect: Effect,
     #[serde(default)]
     pub cooldown_s: u16,
+    /// Index into `Show::positions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u8>,
+    #[serde(default, skip_serializing_if = "is_none_shape")]
+    pub shape: Shape,
+}
+
+/// The pan and tilt of one fixture in a position, as 16-bit values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Aim {
+    /// Index into `Show::fixtures`.
+    pub fixture: u8,
+    pub pan: u16,
+    pub tilt: u16,
+}
+
+/// A named set of aims.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Position {
+    pub name: String,
+    #[serde(deserialize_with = "bounded::<_, _, MAX_FIXTURES>")]
+    pub aims: Vec<Aim>,
+}
+
+/// A movement around the position of a row. `beats` is the period (1 to 32). `size` 255 is a
+/// quarter of the full pan and tilt range.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape {
+    #[default]
+    None,
+    Circle {
+        beats: u8,
+        size: u8,
+    },
+    Figure8 {
+        beats: u8,
+        size: u8,
+    },
+    Sweep {
+        beats: u8,
+        size: u8,
+    },
+}
+
+fn is_none_shape(s: &Shape) -> bool {
+    *s == Shape::None
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -139,6 +192,9 @@ pub struct Show {
     pub looks: Vec<Option<Look>>,
     /// The preset that plays when no other look plays.
     pub idle: Option<u8>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(deserialize_with = "bounded::<_, _, MAX_POSITIONS>")]
+    pub positions: Vec<Position>,
 }
 
 /// Reads a JSON list and keeps only its first `N` entries. It reads the other entries as
@@ -203,6 +259,15 @@ impl Show {
             clean(&mut g.name);
             g.fixtures.retain(|&i| usize::from(i) < fixtures);
         }
+        self.positions.truncate(MAX_POSITIONS);
+        for p in &mut self.positions {
+            clean(&mut p.name);
+            p.aims.retain(|a| usize::from(a.fixture) < fixtures);
+            let mut seen = [false; MAX_FIXTURES];
+            p.aims
+                .retain(|a| !std::mem::replace(&mut seen[usize::from(a.fixture)], true));
+        }
+        let positions = self.positions.len();
         self.looks.truncate(MAX_LOOKS);
         let groups = self.groups.len();
         for look in self.looks.iter_mut().flatten() {
@@ -210,6 +275,15 @@ impl Show {
             look.rows.truncate(MAX_ROWS);
             for r in &mut look.rows {
                 r.cooldown_s = r.cooldown_s.min(MAX_COOLDOWN_S);
+                if r.position.is_some_and(|p| usize::from(p) >= positions) {
+                    r.position = None;
+                }
+                if let Shape::Circle { beats, .. }
+                | Shape::Figure8 { beats, .. }
+                | Shape::Sweep { beats, .. } = &mut r.shape
+                {
+                    *beats = (*beats).clamp(1, 32);
+                }
                 match &mut r.effect {
                     Effect::Strobe { beats, .. } => *beats = (*beats).clamp(1, 16),
                     Effect::Fog { ms } => *ms = (*ms).clamp(100, 10000),
@@ -257,6 +331,8 @@ mod tests {
             intensity: 255,
             effect,
             cooldown_s: 0,
+            position: None,
+            shape: Shape::None,
         }
     }
 
@@ -476,5 +552,85 @@ mod tests {
     fn load_bad_json_gives_default() {
         assert_eq!(Show::from_json(b"\xff\xff"), Show::default());
         assert_eq!(Show::from_json(b"{\"fixtures\":7}"), Show::default());
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    #![allow(clippy::field_reassign_with_default)]
+    use super::*;
+
+    fn aim(fixture: u8) -> Aim {
+        Aim {
+            fixture,
+            pan: 1,
+            tilt: 2,
+        }
+    }
+
+    #[test]
+    fn old_show_loads_without_positions() {
+        let json = r#"{"fixtures":[{"name":"a","address":1,"channels":["dimmer",{"fixed":5}]}],"groups":[{"name":"g","fixtures":[0]}],"looks":[{"fade":"cut","rows":[{"group":0,"color":[1,2,3,4],"intensity":255,"effect":"none","cooldown_s":0}]}],"idle":0}"#;
+        let s = Show::from_json(json.as_bytes());
+        assert!(s.positions.is_empty());
+        assert_eq!(serde_json::to_string(&s).unwrap(), json);
+    }
+
+    #[test]
+    fn positions_sanitize() {
+        let mut s = Show::default();
+        s.fixtures = vec![Fixture {
+            name: "a".into(),
+            address: 1,
+            channels: vec![Channel::Pan],
+            ofl: None,
+        }];
+        s.groups = vec![Group {
+            name: "g".into(),
+            fixtures: vec![0],
+        }];
+        s.positions = (0..10)
+            .map(|i| Position {
+                name: format!("position number {i}"),
+                aims: vec![aim(0), aim(40), aim(0)],
+            })
+            .collect();
+        let row = |shape| LookRow {
+            group: 0,
+            color: [0; 4],
+            intensity: 0,
+            effect: Effect::None,
+            cooldown_s: 0,
+            position: Some(9),
+            shape,
+        };
+        s.looks = vec![Some(Look {
+            fade: Fade::Cut,
+            rows: vec![
+                row(Shape::Circle { beats: 0, size: 9 }),
+                row(Shape::Sweep { beats: 99, size: 9 }),
+            ],
+        })];
+        s.sanitize();
+        assert_eq!(s.positions.len(), MAX_POSITIONS);
+        assert_eq!(s.positions[0].name.chars().count(), MAX_NAME);
+        assert_eq!(s.positions[0].aims, vec![aim(0)]);
+        let rows = &s.looks[0].as_ref().unwrap().rows;
+        assert_eq!(rows[0].position, None);
+        assert_eq!(rows[0].shape, Shape::Circle { beats: 1, size: 9 });
+        assert_eq!(rows[1].shape, Shape::Sweep { beats: 32, size: 9 });
+    }
+
+    #[test]
+    fn pan_tilt_kinds_json() {
+        let c = [
+            Channel::Pan,
+            Channel::PanFine,
+            Channel::Tilt,
+            Channel::TiltFine,
+        ];
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(json, r#"["pan","pan_fine","tilt","tilt_fine"]"#);
+        assert_eq!(serde_json::from_str::<[Channel; 4]>(&json).unwrap(), c);
     }
 }

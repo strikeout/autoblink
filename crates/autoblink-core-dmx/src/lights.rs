@@ -269,6 +269,8 @@ mod tests {
             intensity,
             effect,
             cooldown_s,
+            position: None,
+            shape: crate::show::Shape::None,
         }
     }
 
@@ -326,6 +328,7 @@ mod tests {
                 Some(par([255, 255, 255, 0], 50, Fade::Cut)),
             ],
             idle: Some(3),
+            positions: Vec::new(),
         }
     }
 
