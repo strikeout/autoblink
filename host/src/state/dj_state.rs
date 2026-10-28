@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use autoblink_core_midi::guess::DropGuess;
 use parking_lot::RwLock;
 
 use crate::config::Source;
@@ -165,6 +166,7 @@ impl DjState {
             dev.song_structure = None;
             dev.phrase_error = None;
             dev.overview = None;
+            dev.guess = None;
             dev.track_length_ms = None;
             dev.current_phrase_idx = None;
             dev.prev_phrase_idx = None;
@@ -654,6 +656,7 @@ impl DjState {
     pub fn set_overview(&mut self, device_number: u8, overview: TrackOverview) {
         if let Some(dev) = self.devices.get_mut(&device_number) {
             if dev.rekordbox_id == overview.rekordbox_id {
+                dev.guess = DropGuess::from_preview(&overview.preview).map(Arc::new);
                 dev.overview = Some(Arc::new(overview));
             }
         }

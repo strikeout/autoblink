@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
+use autoblink_core_midi::guess::DropGuess;
+
 use crate::prolink::packets::PlayState;
 
 use super::beat_source::BeatSource;
@@ -66,6 +68,9 @@ pub struct DeviceState {
     pub phrase_error: Option<String>,
     /// The waveform preview and the cues. An `Arc`, because the web status clones each device.
     pub overview: Option<Arc<TrackOverview>>,
+    /// The drop guess from the preview of `overview`. The scenes use it for a track without
+    /// phrases.
+    pub guess: Option<Arc<DropGuess>>,
     pub current_phrase_idx: Option<usize>,
     pub prev_phrase_idx: Option<usize>,
 }
@@ -102,6 +107,7 @@ impl DeviceState {
             song_structure: None,
             phrase_error: None,
             overview: None,
+            guess: None,
             current_phrase_idx: None,
             prev_phrase_idx: None,
         }

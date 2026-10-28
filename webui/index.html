@@ -250,6 +250,7 @@ input.num.text{width:150px;text-align:left}
 @keyframes evhit{from{color:var(--flash);text-shadow:0 0 8px var(--flash)}}
 .ev.cur{background:rgba(255,208,0,.16);color:var(--flash);box-shadow:inset 3px 0 0 var(--flash)}
 .ev.cur small{color:var(--muted)}
+.ev .guess{text-transform:none;letter-spacing:.3px;font-weight:400;color:var(--muted)}
 .drop{position:relative;display:flex;flex-wrap:wrap;gap:5px;min-height:34px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:#0d0d16;align-items:center}
 .drop.empty::after{content:'drop a preset';color:var(--dim);font-size:11px}
 .drop.active{border-color:var(--flash);box-shadow:0 0 10px rgba(255,208,0,.35)}
@@ -1254,7 +1255,12 @@ function sceneClosed() {
 
 function sceneRowView(ev, label, sub) {
   const r = sceneRow(ev);
-  const name = h('div', 'ev', label, h('small', null, sub));
+  // The page shows "(guess)" while the bucket of this row comes from the waveform, not from the
+  // phrases of the player.
+  const guess = h('span', 'guess', ' (guess)');
+  guess.hidden = true;
+  guess.title = 'The track has no rekordbox phrases. The bucket comes from the waveform.';
+  const name = h('div', 'ev', label, guess, h('small', null, sub));
   const drop = h('div', 'drop' + (r.presets.length ? '' : ' empty'));
   drop.dataset.ev = ev;
   r.presets.forEach((p, pos) => {
@@ -1302,7 +1308,7 @@ function sceneRowView(ev, label, sub) {
   })));
   if (r.gate === 'flash') parts.push(...sceneDecay(ev, r));
   const ctl = h('div', 'ctl' + (r.presets.length ? '' : ' dim'), ...parts);
-  sceneRowEls.set(ev, { name, drop, info });
+  sceneRowEls.set(ev, { name, drop, info, guess });
   return [name, drop, ctl];
 }
 
@@ -1368,7 +1374,10 @@ function renderSceneLive(sc) {
   sceneEvents = events || null;
   for (const ev of SCENE_EVENTS.slice(0, 6)) {
     const el = sceneRowEls.get(ev);
-    if (el) el.name.classList.toggle('cur', !!sc && sc.phrase === ev);
+    if (!el) continue;
+    const cur = !!sc && sc.phrase === ev;
+    el.name.classList.toggle('cur', cur);
+    el.guess.hidden = !(cur && sc.guessed);
   }
   for (const [ev, el] of sceneRowEls) {
     const on = !!sc && sc.row === ev && scenes.enabled;

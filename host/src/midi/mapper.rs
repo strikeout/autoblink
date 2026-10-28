@@ -11,7 +11,7 @@ use crate::osc::{Arg, OscOut};
 use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::state::{BeatSource, SharedState};
-use autoblink_core_midi::scenes::{SceneInput, ScenePhrase, Scenes};
+use autoblink_core_midi::scenes::{Event, SceneInput, ScenePhrase, Scenes};
 use autoblink_core_midi::Out;
 
 // ── MIDI byte helpers ─────────────────────────────────────────────────────────
@@ -240,6 +240,60 @@ mod tests {
         assert!(msgs.contains(&note_on(3, 2, 127).to_vec()));
         assert!(!msgs.contains(&note_on(3, 2, 0).to_vec()));
         handle.abort();
+    }
+
+    #[test]
+    fn scene_input_guesses_only_without_phrases() {
+        use crate::state::{PhraseEntry, PhraseKind, SongStructure, TrackMood, TrackOverview};
+
+        let state = new_shared_state(30);
+        {
+            let mut st = state.write();
+            st.master.device_number = 1;
+            st.apply_cdj_status(&cdj_at(7, 5));
+            st.master.bpm = 128.0;
+            st.master.phrase_16_beat = 0;
+            // A quiet first half and a loud second half, 1200 columns.
+            let mut preview = vec![20u8; 600 * 6];
+            preview.extend(vec![200u8; 600 * 6]);
+            st.set_overview(
+                1,
+                TrackOverview {
+                    rekordbox_id: 7,
+                    preview,
+                    ..Default::default()
+                },
+            );
+            let d = st.devices.get_mut(&1).unwrap();
+            d.playhead_ms = Some(150_000);
+            d.track_length_ms = Some(200_000);
+        }
+        let input = scene_input(&state, None);
+        assert_eq!(input.guess, Some(Event::Drop));
+        assert_eq!(input.phrase16, 1);
+
+        // Without a playhead, the guess has no position.
+        state.write().devices.get_mut(&1).unwrap().playhead_ms = None;
+        assert_eq!(scene_input(&state, None).guess, None);
+        state.write().devices.get_mut(&1).unwrap().playhead_ms = Some(150_000);
+
+        // The phrases of the player replace the guess.
+        state.write().set_song_structure(
+            1,
+            7,
+            SongStructure {
+                mood: TrackMood::Mid,
+                end_beat: 65,
+                phrases: vec![PhraseEntry {
+                    index: 1,
+                    beat: 1,
+                    kind: PhraseKind::Intro,
+                    has_fill: false,
+                    fill_beat: 0,
+                }],
+            },
+        );
+        assert_eq!(scene_input(&state, None).guess, None);
     }
 
     #[tokio::test]
@@ -793,10 +847,23 @@ fn send_scene(midi: &dyn MidiTransport, o: Out, activity: &Arc<Mutex<MidiActivit
     }
 }
 
-/// Returns the state of the master deck for the DMX scenes.
-fn scene_input(state: &SharedState) -> SceneInput {
+/// Returns the state of the master deck for the DMX scenes. `prev_guess` is the guess of the
+/// previous call.
+fn scene_input(state: &SharedState, prev_guess: Option<Event>) -> SceneInput {
     let st = state.read();
     let dev = st.devices.get(&st.master.device_number);
+    // The guess is only for a track without phrases.
+    let guess = dev
+        .filter(|d| {
+            d.song_structure
+                .as_ref()
+                .is_none_or(|ss| ss.phrases.is_empty())
+        })
+        .and_then(|d| {
+            let len = d.track_length_ms.filter(|&l| l > 0)?;
+            let frac = f64::from(d.playhead_ms?) / f64::from(len);
+            Some(d.guess.as_ref()?.bucket_at(frac, prev_guess))
+        });
     let phrase = st.master_phrase().zip(dev).map(|(info, d)| {
         let entry = d
             .song_structure
@@ -818,8 +885,13 @@ fn scene_input(state: &SharedState) -> SceneInput {
         bpm: st.master.bpm,
         phrase,
         bass_cut: Some(st.no_bass()),
-        guess: None,
-        phrase16: 0,
+        guess,
+        // DjState stores 0..=15. The web status uses the same rule.
+        phrase16: if st.master.bpm > 0.0 {
+            st.master.phrase_16_beat.min(15) + 1
+        } else {
+            0
+        },
     }
 }
 
@@ -865,6 +937,8 @@ async fn run_with_midi(
     // (device, rekordbox_id, title) of the last track that was sent over OSC.
     let mut prev_osc_track: Option<(u8, u32, String)> = None;
     let mut scenes = Scenes::default();
+    // The last guess of `scene_input`. The guess keeps a Drop or a Break near its threshold.
+    let mut prev_guess: Option<Event> = None;
     let start = Instant::now();
     let now_ms = || start.elapsed().as_millis() as u64;
     tracing::info!("MIDI mapper task started");
@@ -1215,7 +1289,8 @@ async fn run_with_midi(
             let c = cfg.read();
             (c.scenes.clone(), c.midi.notes.off_vel0)
         };
-        let input = scene_input(&state);
+        let input = scene_input(&state, prev_guess);
+        prev_guess = input.guess;
         scenes.update(&scene_cfg, now_ms(), &input, &mut |o| {
             send_scene(midi.as_ref(), o, &activity, vel0)
         });

@@ -96,6 +96,8 @@ pub fn start(
         let mut smoother = Smoother::default();
         let mut smoothed_bpm = 0.0;
         let mut last_master = 0u8;
+        // The last guess of the loop. The guess keeps a Drop or a Break near its threshold.
+        let mut prev_guess = None;
         let mut next_pulse: Option<u64> = None;
         let mut next_cc = Instant::now();
 
@@ -199,17 +201,24 @@ pub fn start(
                         guess: None,
                         phrase16: m.phrase16,
                     };
-                    (snap, m.beat_count.map(|bc| (m.track.rekordbox_id, bc)))
+                    // The position in the track, 0.0 to 1.0, for the drop guess.
+                    let pos = m
+                        .playhead_ms
+                        .zip(m.track_len_ms.filter(|&l| l > 0))
+                        .map(|(p, l)| f64::from(p) / f64::from(l));
+                    (snap, Some((m.track.rekordbox_id, m.beat_count, pos)))
                 })
             };
             // Lock the tracks only after the tracker is free.
-            if let Some((rbid, beat_count)) = track {
+            if let Some((rbid, beat_count, pos)) = track {
                 let tracks = state.tracks.0.lock().unwrap();
-                snap.phrase = tracks
-                    .get(&snap.device)
-                    .filter(|t| t.rekordbox_id == rbid)
-                    .and_then(|t| t.structure.as_ref()?.as_ref().ok())
-                    .and_then(|ss| {
+                let data = tracks.get(&snap.device).filter(|t| t.rekordbox_id == rbid);
+                // Only a track without phrases has a guess.
+                scene_in.guess =
+                    data.and_then(|t| Some(t.guess.as_ref()?.bucket_at(pos?, prev_guess)));
+                snap.phrase = beat_count
+                    .zip(data.and_then(|t| t.structure.as_ref()?.as_ref().ok()))
+                    .and_then(|(beat_count, ss)| {
                         let idx = current_phrase_idx(ss, beat_count)?;
                         let info = phrase_info(ss, idx, beat_count)?;
                         let entry = &ss.phrases[idx];
@@ -230,6 +239,7 @@ pub fn start(
                         })
                     });
             }
+            prev_guess = scene_in.guess;
             let master = (snap.device != 0).then_some(Master {
                 device: snap.device,
                 playing: snap.playing,
