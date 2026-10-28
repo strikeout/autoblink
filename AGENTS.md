@@ -163,7 +163,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.26.0 uses 83 % (1 636 240 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.27.0 uses 85 % (1 667 440 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
 ### Web page without a flash
@@ -203,6 +203,12 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
 - The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
 - The HTTP task has 8 KB of stack. Nobody has measured it under `POST /show`.
+- A fixture has the channel kinds `pan`, `pan_fine`, `tilt` and `tilt_fine`. The generic types are `moving_head` (pan, tilt, dimmer, red, green, blue) and `moving_head_16` (with the fine channels). A head with only coarse channels gets the high byte of the 16-bit value.
+- The show holds up to 8 positions (`MAX_POSITIONS`, names of 16 characters). A position holds aims, and an aim is a 16-bit pan and tilt for one fixture. A head without an aim in the position sits at 32768 on each axis.
+- A look row can have `position` (an index) and `shape`. The shapes are `circle`, `figure8` and `sweep`. A shape has `beats` (1 to 32) and `size` (0 to 255). The amplitude is `size` x 64 units of the 16-bit range, so 255 is a quarter of the range.
+- The offset of a shape comes from `t = ((beat count mod beats) + phase) / beats + k / n`, where fixture `k` of `n` in the group is `k / n` of a cycle behind the first one. Circle is (cos, sin) of 2 pi t. Figure8 is (sin, sin(2a) / 2). Sweep moves pan only, as sin. The sum of position and offset is clamped to 0 to 65535. It does not wrap. Without a beat, the offset is zero.
+- The WebSocket command `dmx_aim` (fixture below 32, pan, tilt) holds the pan and tilt of one head for `AIM_MS` (10 s, `crates/autoblink-core-dmx/src/lights.rs`). The aim overrides every layer and the idle look. The queue drops it when full. The page sends at most 20 aims each second and always sends the last value.
+- A fade between two looks blends the coarse byte and the fine byte alone. A pan across a byte border can jump for a moment. The `ponytail:` comment in `lights.rs` names the fix: blend the 16-bit pairs.
 
 ### Light library (Open Fixture Library)
 
@@ -221,7 +227,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The certificate chain of OFL ends at ISRG Root X1. The common certificate bundle has it through the X2 cross-certificate.
 - The box needs internet: a joined WiFi network (indices 102 and 103), or an Ethernet network with a router.
 - `Fixture.ofl` holds `<key>#<mode>`, for example `eurolite/led-bar-6-qcl-rgbw#4-channel`. The core limits it to 96 characters.
-- The page maps the OFL channels to the kinds of the show. A channel with no kind and each pixel channel become a fixed placeholder channel, so that the footprint stays right. A mode with an unknown pixel count, or with more than 32 channels, the page does not add.
+- The page maps the OFL channels to the kinds of the show. A pixel channel gets the kind of its template channel, so each pixel shows the same colour. A channel that no template describes becomes a fixed placeholder channel, so that the footprint stays right. A Pan or Tilt channel maps to `pan` or `tilt`, and its fine alias maps to `pan_fine` or `tilt_fine`. A mode with an unknown pixel count, or with more than 32 channels, the page does not add.
 - Nobody has measured the heap after many fetches on a box. Run `/mem` after ten fetches.
 
 ### Debug logs
