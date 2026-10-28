@@ -163,7 +163,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.25.0 uses 82 % (1 621 664 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller. Version 1.20.0 used 83 %.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.26.0 uses 83 % (1 636 240 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller. Version 1.20.0 used 83 %.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
 ### Web page without a flash
@@ -203,6 +203,26 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
 - The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
 - The HTTP task has 8 KB of stack. Nobody has measured it under `POST /show`.
+
+### Light library (Open Fixture Library)
+
+- The box is the proxy of the Open Fixture Library (OFL). The phone on the WiFi network of the box often has no internet. The firmware passes the JSON of OFL through and does not parse it (`esp32/src/ofl.rs`).
+- `GET /ofl/search?q=<text>` searches. The text has 1 to 64 characters, and the page asks only for 3 or more. A 1-letter search gives a reply of 48 KB, which the firmware refuses (502).
+- `GET /ofl/fixture?key=<manufacturer>/<model>` gets one light. The key must match `^[a-z0-9-]+/[a-z0-9-]+$`.
+- Both routes check the Origin and send `Access-Control-Allow-Origin: *`. The statuses are:
+  - 400: the value is bad.
+  - 403: the Origin is wrong.
+  - 502: OFL fails, the reply is too large, or the box has no internet.
+  - 503: the heap is low, or another fetch or an OTA check runs.
+  - 504: OFL does not answer in 10 s.
+- A fetch does not start below 80 KB free heap or a 32 KB largest block (`MIN_FREE`, `MIN_BLOCK`). TLS takes about 50 KB. The firmware cuts off a reply larger than 24 KB (`MAX_BODY`).
+- The fetch runs on the `ofl` thread (12 KB stack, priority 5, from `crate::spawn`). The HTTP handler joins the thread. Thus a fetch blocks the HTTP task. The page gets no status and no beats for up to tens of seconds. The MIDI clock and the DMX output keep running.
+- While `ofl::busy()` is true, the status thread sends no status, as during an OTA check. The page disables the library search while the strobe hold is on.
+- The certificate chain of OFL ends at ISRG Root X1. The common certificate bundle has it through the X2 cross-certificate.
+- The box needs internet: a joined WiFi network (indices 102 and 103), or an Ethernet network with a router.
+- `Fixture.ofl` holds `<key>#<mode>`, for example `eurolite/led-bar-6-qcl-rgbw#4-channel`. The core limits it to 96 characters.
+- The page maps the OFL channels to the kinds of the show. A channel with no kind and each pixel channel become a fixed placeholder channel, so that the footprint stays right. A mode with an unknown pixel count, or with more than 32 channels, the page does not add.
+- Nobody has measured the heap after many fetches on a box. Run `/mem` after ten fetches.
 
 ### Debug logs
 
