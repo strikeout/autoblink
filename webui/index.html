@@ -147,6 +147,7 @@ input.num.text{width:150px;text-align:left}
 #p-scenes input.num{width:52px}
 /* DMX live strip */
 .live{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:8px 16px;background:#151524;border-bottom:1px solid var(--border)}
+#boxlink{color:var(--accent)}
 .live .fader{display:flex;align-items:center;gap:10px;flex:1 1 220px;max-width:420px}
 .live .fader b{font-size:11px;letter-spacing:1.4px;color:var(--muted);font-weight:700}
 .live input[type=range]{flex:1;height:28px;min-width:0}
@@ -281,6 +282,7 @@ input.num.text{width:150px;text-align:left}
   <b id="state" class="stop">■ STOP</b>
   <span id="toast"></span>
 </header>
+<div id="boxbar" class="live" hidden><span>The live controls are on the page of the box.</span> <a id="boxlink" target="_blank" rel="noopener">Open the box page</a></div>
 <div id="live" class="live" data-cap="dmx" hidden>
   <div class="fader" title="The master level of all lights."><b>MASTER</b><input id="ltmaster" type="range" min="0" max="255" value="255"><span id="ltpct" class="num">100%</span></div>
   <button id="ltstrobe" class="big" title="Hold to strobe all lights.">STROBE</button>
@@ -364,6 +366,7 @@ input.num.text{width:150px;text-align:left}
 
   <details id="p-setup" class="panel wide" data-cap="dmx" hidden>
     <summary><h2>Lights setup <span id="stsum" class="sum"></span></h2></summary>
+    <div id="ltsrc" class="hint"></div>
     <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button></div>
     <div id="ltofl" class="oflbox" hidden>
       <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span></div>
@@ -459,12 +462,38 @@ function onHello(m) {
   set('version', 'v' + m.version + (m.device && m.device !== 'host' ? ' · ' + m.device : ''));
   set('fwcur', 'v' + m.version);
   document.querySelectorAll('[data-cap]').forEach((e) => { e.hidden = !caps.has(e.dataset.cap); });
-  set('sctitle', caps.has('dmx') ? 'DMX Scenes & Looks' : 'DMX Scenes');
-  if (caps.has('dmx') && !showTimer) loadShow();
+  syncDmx();
+}
+
+// The show lives on the box when the host finds one, else on the server of this page (with the
+// capability dmx). Only the host page has a status.box.
+const boxIp = () => (status && status.box) || '';
+const showBase = () => (boxIp() ? 'http://' + boxIp() : BASE);
+let showFrom = null;
+
+/** Shows or hides the DMX panels and loads the show again when its endpoint changes. */
+function syncDmx() {
+  if (!caps) return;
+  const box = boxIp(), own = caps.has('dmx');
+  const avail = own || !!box;
+  $('p-setup').hidden = !avail;
+  $('live').hidden = !own || !!box || !$('takeover').hidden;
+  $('boxbar').hidden = !box;
+  if (box) $('boxlink').href = 'http://' + box + '/';
+  set('sctitle', avail ? 'DMX Scenes & Looks' : 'DMX Scenes');
+  set('ltsrc', box ? 'Editing the show of the box at ' + box
+    : 'Editing the show of ' + (BOX ? 'the box at ' + BOX : 'this computer (Art-Net)'));
+  const from = avail ? showBase() : null;
+  if (from !== showFrom) {
+    showFrom = from;
+    if (from !== null) { clearTimeout(showTimer); showTimer = 0; loadShow(); }
+  }
 }
 
 function onStatus(s) {
+  const boxWas = boxIp();
   status = s;
+  if (boxIp() !== boxWas) syncDmx();
   const m = s.master;
   set('source', s.source || '—');
   set('mode', s.mode || '—');
@@ -491,6 +520,8 @@ function onStatus(s) {
   if (s.output) renderOutput(s.output);
   if (scenes) renderSceneLive(s.scene);
   if (s.dmx) dmxLast = s.dmx; // some status messages have no dmx field
+  // The server released the strobe: a local hold that is not under the pointer is stale.
+  if (s.dmx && !s.dmx.strobe_hold && strobeHeld && !strobeDown) strobeHeld = false;
   const ms = $('ltmaster');
   if (dmxLast && document.activeElement !== ms && !ms.matches(':active')) { ms.value = dmxLast.master; masterPct(); }
   renderLayers();
@@ -1537,7 +1568,7 @@ const FIXTURE_TYPES = { dimmer: ['dimmer'], rgb: ['red', 'green', 'blue'], rgb_d
 const SWATCHES = [[255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255], [255, 255, 255]];
 const EVERY = [['beat', 'beat'], ['half', '½ beat'], ['bar', 'bar']];
 const EFFECTS = ['none', 'flash', 'pulse', 'chase', 'random', 'strobe', 'fog'];
-let show = null, strobeHeld = false, releaseLost = false, showTimer = 0, dmxLast = null, layerKey = '';
+let show = null, strobeHeld = false, strobeDown = false, releaseLost = false, showTimer = 0, dmxLast = null, layerKey = '';
 
 const chanLen = (f) => f.channels.length;
 const ftype = (f) => Object.keys(FIXTURE_TYPES).find((k) => FIXTURE_TYPES[k].join() === f.channels.join()) || 'custom';
@@ -1557,7 +1588,7 @@ function addressBad(i) {
 
 async function loadShow() {
   try {
-    const r = await fetch(BASE + '/show');
+    const r = await fetch(showBase() + '/show');
     if (!r.ok) throw new Error(r.status);
     show = await r.json();
     if (!show.positions) show.positions = [];
@@ -1575,9 +1606,12 @@ function showSave() {
 async function showPost(retry) {
   showTimer = 0;
   try {
-    const r = await fetch(BASE + '/show', { method: 'POST', body: JSON.stringify(show) });
+    const body = JSON.stringify(show);
+    const r = await fetch(showBase() + '/show', { method: 'POST', body });
     if (r.status === 503 && retry) { await new Promise((ok) => setTimeout(ok, 1000)); return showPost(false); }
-    if (!r.ok) toast('The show is not saved: ' + r.status + ' ' + (await r.text()).trim());
+    if (!r.ok) return toast('The show is not saved: ' + r.status + ' ' + (await r.text()).trim());
+    // The host keeps a copy of the show of the box. A failure of this copy is not an error.
+    if (boxIp() && caps && caps.has('dmx')) fetch(BASE + '/show', { method: 'POST', body }).catch(() => {});
   } catch { toast('The show is not saved: no connection'); }
 }
 
@@ -1908,8 +1942,8 @@ function liveSend(strobe) {
   send({ type: 'dmx_live', master: +$('ltmaster').value, strobe });
 }
 $('ltmaster').addEventListener('input', () => { masterPct(); liveSend(strobeHeld); });
-$('ltstrobe').addEventListener('pointerdown', (e) => { $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
-for (const t of ['pointerup', 'pointercancel']) $('ltstrobe').addEventListener(t, () => liveSend(false));
+$('ltstrobe').addEventListener('pointerdown', (e) => { strobeDown = true; $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
+for (const t of ['pointerup', 'pointercancel']) $('ltstrobe').addEventListener(t, () => { strobeDown = false; liveSend(false); });
 $('ltfog').addEventListener('click', () => send({ type: 'dmx_fog' }));
 $('ltaddfx').addEventListener('click', () => {
   if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
@@ -2059,7 +2093,7 @@ async function oflGet(path, onOk) {
   let fail = '';
   let data;
   try {
-    const r = await fetch(BASE + path, { signal: AbortSignal.timeout(45000) });
+    const r = await fetch(showBase() + path, { signal: AbortSignal.timeout(45000) });
     const body = await r.text();
     if (!r.ok) {
       fail = r.status === 502 && path.startsWith('/ofl/search')
@@ -2161,7 +2195,7 @@ function connect() {
     if ((m.type === 'status' || m.type === 'settings') && !$('takeover').hidden) {
       $('takeover').hidden = true;
       document.querySelector('main').hidden = false;
-      $('live').hidden = !(caps && caps.has('dmx'));
+      syncDmx();
       set('conn', 'live');
     }
     const f = handlers[m.type];
