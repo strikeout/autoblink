@@ -193,6 +193,7 @@ mod tests {
                 order: Order::Up,
                 gate: Gate::Hold,
                 decay: Decay::default(),
+                holds: Vec::new(),
             }];
         }
         let state = new_shared_state(30);
@@ -257,6 +258,7 @@ mod tests {
                 order: Order::Up,
                 gate: Gate::Flash,
                 decay: Decay::Ms(80),
+                holds: Vec::new(),
             }];
         }
         let state = new_shared_state(30);
