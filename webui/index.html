@@ -145,30 +145,67 @@ input.num.text{width:150px;text-align:left}
 #p-scenes .hint{color:var(--dim);font-size:11px;margin-left:auto}
 #p-scenes select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
 #p-scenes input.num{width:52px}
-/* DMX lights */
-#p-lights select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
-#p-lights .ltl{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;color:var(--muted);margin-bottom:10px}
-#p-lights .ltl input[type=range]{width:140px}
-#p-lights .ltl .lay{color:var(--text);margin-right:8px}
-#p-lights .ltl .lay b{color:var(--accent);margin-right:3px}
-#p-lights .lt{margin-bottom:12px}
-#p-lights .lr{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;padding:2px 0;color:var(--muted)}
-#p-lights input.name{width:120px;text-align:left}
-#p-lights .lr .nm{min-width:90px;color:var(--text)}
-#p-lights .lr.off{opacity:.55}
-#p-lights .bad{border-color:var(--danger);color:var(--danger)}
-#p-lights .tg{flex-wrap:wrap}
-#p-lights .swt{width:16px;height:16px;min-width:0;padding:0;border-radius:4px}
-#p-lights .swt.on{outline:2px solid var(--text);outline-offset:1px}
-#p-lights input[type=color]{width:26px;height:20px;padding:0;border:1px solid var(--border);border-radius:4px;background:none}
-#ltstrobe.on{background:var(--danger);color:#fff}
-#p-lights .hint{color:var(--dim);font-size:11px}
-.chip.look::after{content:'';position:absolute;left:0;bottom:0;border:6px solid transparent;border-left-color:var(--lk);border-bottom-color:var(--lk);border-bottom-left-radius:6px}
+/* DMX live strip */
+.live{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:8px 16px;background:#151524;border-bottom:1px solid var(--border)}
+.live .fader{display:flex;align-items:center;gap:10px;flex:1 1 220px;max-width:420px}
+.live .fader b{font-size:11px;letter-spacing:1.4px;color:var(--muted);font-weight:700}
+.live input[type=range]{flex:1;height:28px;min-width:0}
+.live .fader .num{min-width:3.2em;text-align:right}
+.live .big{min-width:96px;height:44px;border-radius:8px;border:1px solid var(--border);background:#1b1b2e;color:var(--text);font-weight:700;letter-spacing:1px;font-size:14px;touch-action:none}
+.live .big.on{background:var(--danger);border-color:var(--danger);color:#fff}
+.live .now{display:flex;flex-wrap:wrap;gap:6px;align-items:center;color:var(--muted);font-size:11px}
+.live .now .chip{cursor:default}
+/* look editor */
+#lookedit select,#p-setup select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
+.editor{margin:-4px 0 14px;padding:12px;border:1px solid var(--accent);border-radius:8px;background:#0b1820}
+.editor h3{font-size:12px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center}
+.editor h3 .seg{margin-left:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.card{background:#10101a;border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px;color:var(--muted);min-width:0}
+.card.off{opacity:.45}
+.card .t{display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:12px;color:var(--text)}
+.card .sws{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.card label{display:flex;gap:6px;align-items:center}
+.card input[type=range]{flex:1;min-width:0}
+.card .pills{display:flex;flex-wrap:wrap;gap:4px}
+.card .par{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
+.pill{padding:1px 9px;border-radius:10px;background:#2a2a3a;font-size:11px;color:var(--muted)}
+.pill.on{background:var(--accent);color:#000;border-color:var(--accent)}
+.swt{width:20px;height:20px;min-width:0;padding:0;border-radius:50%}
+.swt.on{outline:2px solid var(--text);outline-offset:1px}
+.card input[type=color]{width:28px;height:22px;padding:0;border:1px solid var(--border);border-radius:4px;background:none}
+.card input.num{width:52px}
+/* lights setup */
+#p-setup>summary h2 .sum{text-transform:none;letter-spacing:0;color:var(--dim);font-size:12px}
+#p-setup .cardrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:flex-start}
+#p-setup .fxc{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
+#p-setup .fxc.bad{border-color:var(--danger)}
+#p-setup .fxc .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+#p-setup .fxc .rng.bad{color:var(--danger);font-weight:700}
+#p-setup input.name{width:110px;text-align:left}
+#p-setup input.num{width:52px}
+#p-setup .hint{color:var(--dim);font-size:11px}
+#p-setup .section button,#p-setup .section select{margin-left:6px}
 .palette{display:flex;flex-wrap:wrap;gap:6px;padding:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
 .chip{display:inline-flex;flex-direction:column;align-items:flex-start;min-width:64px;padding:4px 8px 5px;border-radius:6px;background:#10303a;border:1px solid #0f5866;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;position:relative}
 .chip b{font-size:15px;color:var(--accent);line-height:1.1}
 .chip small{font-size:10px;color:var(--text);opacity:.85;white-space:nowrap;min-height:1.2em}
 .chip i{position:absolute;top:3px;right:6px;font-style:normal;font-size:9px;color:var(--dim)}
+.chip{--nc:#0f5866}
+.chip.named::after{content:'';position:absolute;left:0;top:0;border:7px solid transparent;border-left-color:var(--nc);border-top-color:var(--nc);border-top-left-radius:6px;pointer-events:none}
+.chip.mini.named::after{border-width:5px}
+.chip.rainbow::after{content:'';position:absolute;left:0;top:0;width:14px;height:14px;border-top-left-radius:6px;background:conic-gradient(from 180deg,#e33,#fd0,#2c2,#2ce,#36f,#a3f,#e33);clip-path:polygon(0 0,100% 0,0 100%);pointer-events:none}
+.chip.mini.rainbow::after{width:10px;height:10px}
+.chip .bulb{position:absolute;right:5px;top:14px;font-size:10px;pointer-events:none}
+.chip .edit{position:absolute;right:4px;bottom:2px;font-size:11px;color:var(--muted);cursor:pointer;padding:0 2px}
+.chip .edit:hover{color:var(--accent)}
+.chip.editing{outline:2px solid var(--accent);outline-offset:1px}
+.chip .hb{margin-left:4px;padding:0 4px;border-radius:4px;background:#000a;color:var(--flash);font-size:10px;font-weight:700;align-self:center}
+.chip.live .hb{background:#0003;color:#000}
+.holdpop{position:absolute;z-index:4;top:100%;left:0;margin-top:4px;width:260px;padding:10px;border-radius:8px;background:#1b1b2e;border:1px solid var(--flash);box-shadow:0 8px 24px #000a;font-size:11px;color:var(--muted);cursor:default}
+.holdpop b{color:var(--text)}
+.holdpop .pills{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:6px 0}
+.holdpop p{line-height:1.4}
 .chip.extra{background:#24163a;border-color:#5b3a8a}
 .chip.extra b{color:#c9a0ff}
 .addnote{display:inline-flex;gap:4px;align-items:center;padding:4px 6px;border:1px dashed var(--dim);border-radius:6px}
@@ -179,6 +216,7 @@ input.num.text{width:150px;text-align:left}
 .chip.mini{min-width:0;flex-direction:row;gap:5px;align-items:baseline;padding:3px 7px}
 .chip.mini b{font-size:13px}
 .chip.mini small{min-height:0}
+.chip:not(.mini) small{padding-right:12px}
 .chip .x{font-style:normal;color:var(--dim);font-size:12px;margin-left:2px;cursor:pointer;padding:0 2px}
 .chip.live{background:var(--flash);border-color:var(--flash)}
 .chip.live b,.chip.live small,.chip.live .x{color:#000}
@@ -198,7 +236,7 @@ input.num.text{width:150px;text-align:left}
 @keyframes evhit{from{color:var(--flash);text-shadow:0 0 8px var(--flash)}}
 .ev.cur{background:rgba(255,208,0,.16);color:var(--flash);box-shadow:inset 3px 0 0 var(--flash)}
 .ev.cur small{color:var(--muted)}
-.drop{display:flex;flex-wrap:wrap;gap:5px;min-height:34px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:#0d0d16;align-items:center}
+.drop{position:relative;display:flex;flex-wrap:wrap;gap:5px;min-height:34px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:#0d0d16;align-items:center}
 .drop.empty::after{content:'drop a preset';color:var(--dim);font-size:11px}
 .drop.active{border-color:var(--flash);box-shadow:0 0 10px rgba(255,208,0,.35)}
 .drop.target{border:1px dashed var(--accent);background:#0c1d24}
@@ -228,6 +266,12 @@ input.num.text{width:150px;text-align:left}
   <b id="state" class="stop">■ STOP</b>
   <span id="toast"></span>
 </header>
+<div id="live" class="live" data-cap="dmx" hidden>
+  <div class="fader" title="The master level of all lights."><b>MASTER</b><input id="ltmaster" type="range" min="0" max="255" value="255"><span id="ltpct" class="num">100%</span></div>
+  <button id="ltstrobe" class="big" title="Hold to strobe all lights.">STROBE</button>
+  <button id="ltfog" class="big" title="Run the fog machine once.">FOG</button>
+  <div id="ltlayers" class="now" title="The looks that play now."></div>
+</div>
 <section id="takeover" class="panel" hidden>
   <h2>Another screen is connected</h2>
   <p>The box sends its status to one screen at a time.</p>
@@ -281,16 +325,17 @@ input.num.text{width:150px;text-align:left}
   </section>
 
   <details id="p-scenes" class="panel wide" data-cap="scenes" open>
-    <summary><h2>DMX Scenes</h2></summary>
+    <summary><h2 id="sctitle">DMX Scenes</h2></summary>
     <div class="scfg">
       <label>Scenes <button id="scon" class="sw"></button></label>
       <label title="The MIDI channel of the DMX controller.">Channel <input id="scch" class="num" inputmode="numeric"></label>
       <label title="The note of preset 1. Preset 2 is the next note.">First note <input id="scfirst" class="num" inputmode="numeric"></label>
       <label title="The number of presets, 1 to 32.">Presets <input id="sccount" class="num" inputmode="numeric"></label>
       <label title="On: the controller shows one preset at a time, and a note off can end the preset that shows. A flash then ends before the next note, and the held scene comes back after a flash or a pulse. Off: the presets are layers, and each flash keeps its full decay.">One preset at a time <button id="scone" class="sw"></button></label>
-      <span class="hint">Drag a preset onto an event · Shift-click for a range · Click a preset to test it · Double-click to rename · Add a note outside the range at the end of the presets</span>
+      <span class="hint">Drag a preset onto an event · Shift-click for a range · Click a preset to test it · Double-click to rename · Add a note outside the range at the end of the presets<span data-cap="dmx" hidden> · 💡 has a DMX look · ✎ opens the look</span></span>
     </div>
     <div id="palette" class="palette"></div>
+    <div id="lookedit" class="editor" hidden></div>
     <div id="slots" class="slots"></div>
     <div class="legend">
       <span><b>on trigger</b> next preset each time the event fires</span>
@@ -302,22 +347,14 @@ input.num.text{width:150px;text-align:left}
     </div>
   </details>
 
-  <details id="p-lights" class="panel wide" data-cap="dmx" hidden open>
-    <summary><h2>Lights</h2></summary>
-    <div class="ltl">
-      <label title="The master level of all lights.">Master <input id="ltmaster" type="range" min="0" max="255" value="255"></label>
-      <button id="ltstrobe" title="Hold to strobe all lights.">Strobe</button>
-      <button id="ltfog" title="Run the fog machine once.">Fog</button>
-      <span id="ltlayers" title="The looks that play now."></span>
-    </div>
-    <div class="section" title="The lights on the DMX line. The address is the first channel.">Patch <button id="ltaddfx">+ Light</button></div>
-    <div id="ltpatch" class="lt"></div>
+  <details id="p-setup" class="panel wide" data-cap="dmx" hidden>
+    <summary><h2>Lights setup <span id="stsum" class="sum"></span></h2></summary>
+    <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button></div>
+    <div id="ltpatch" class="cardrow"></div>
     <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
-    <div id="ltgroups" class="lt"></div>
-    <div class="section">Look of a preset</div>
-    <div id="ltlook" class="lt"></div>
+    <div id="ltgroups" class="cardrow"></div>
     <div class="section">Idle look</div>
-    <div id="ltidle" class="lt"></div>
+    <div id="ltidle" class="cardrow"></div>
   </details>
 
   <details id="p-settings" class="panel wide" data-cap="settings" open>
@@ -400,6 +437,7 @@ function onHello(m) {
   set('version', 'v' + m.version + (m.device && m.device !== 'host' ? ' · ' + m.device : ''));
   set('fwcur', 'v' + m.version);
   document.querySelectorAll('[data-cap]').forEach((e) => { e.hidden = !caps.has(e.dataset.cap); });
+  set('sctitle', caps.has('dmx') ? 'DMX Scenes & Looks' : 'DMX Scenes');
   if (caps.has('dmx') && !showTimer) loadShow();
 }
 
@@ -432,7 +470,7 @@ function onStatus(s) {
   if (scenes) renderSceneLive(s.scene);
   if (s.dmx) dmxLast = s.dmx; // some status messages have no dmx field
   const ms = $('ltmaster');
-  if (dmxLast && document.activeElement !== ms && !ms.matches(':active')) ms.value = dmxLast.master;
+  if (dmxLast && document.activeElement !== ms && !ms.matches(':active')) { ms.value = dmxLast.master; masterPct(); }
   renderLayers();
   if (s.decks) renderDecks(s);
   if (s.ota) renderOta(s.ota);
@@ -944,6 +982,7 @@ function onBeat(m) {
 // Only the ESP32 sends "busy": another page has the status. The host never sends it.
 function onBusy() {
   document.querySelector('main').hidden = true;
+  $('live').hidden = true;
   $('takeover').hidden = false;
   set('conn', 'waiting');
 }
@@ -979,27 +1018,70 @@ const sceneDraft = {}; // the settings of the rows without presets
 const sceneRowEls = new Map();
 
 const SCENE_RHYTHM = ['beat', 'downbeat', 'phrase_change', 'fill'];
+const HOLD_BEATS = [[0, '—'], [0.25, '¼'], [0.5, '½'], [1, '1'], [2, '2'], [4, '4'], [8, '8']];
+let holdPop = null; // { ev, pos }: the row entry that has its hold popover open
+let lookOpen = null; // the preset whose look the editor shows
+
+// Colour words in English and German. The first word that matches wins.
+// A letter must not touch the word, but a German ending (e, en, er, es) may follow it.
+const colourRe = (words) => new RegExp('(?<![\\p{L}])(?:' + words + ')(?:e|en|er|es)?(?![\\p{L}])', 'u');
+const NAME_COLOURS = [
+  [colourRe('rainbow|regenbogen|rgb|multi|disco'), 'rainbow'],
+  [colourRe('uv|black ?light|schwarzlicht|violet|violett|purple|lila'), '#a3f'],
+  [colourRe('magenta|pink|rosa'), '#f3a'],
+  [colourRe('red|rot'), '#e33'],
+  [colourRe('amber|orange|warm'), '#f80'],
+  [colourRe('yellow|gelb|gold'), '#fd0'],
+  [colourRe('green|grün|gruen|lime'), '#2c2'],
+  [colourRe('cyan|türkis|tuerkis|turquoise|aqua|ice|cold|kalt'), '#2ce'],
+  [colourRe('blue|blau|navy'), '#36f'],
+  [colourRe('white|weiß|weiss|strobe|blinder|flash'), '#ddd'],
+  [colourRe('fog|smoke|nebel|haze|dunst'), '#777'],
+  [colourRe('blackout|black|dark|aus|off'), '#222'],
+];
+function nameColour(name) {
+  const s = (name || '').toLowerCase();
+  for (const [re, c] of NAME_COLOURS) if (re.test(s)) return c;
+  return null;
+}
+
+/** The text of a hold badge: "2♩" or "½♩". An empty text means no hold. */
+function holdText(v) {
+  if (!(v > 0)) return '';
+  const f = HOLD_BEATS.find(([b]) => b === v);
+  return (f ? f[1] : String(+v.toFixed(2))) + '♩';
+}
+
+/** Gives a row one hold for each preset. */
+function alignHolds(r) {
+  r.holds = r.presets.map((_, k) => (r.holds && r.holds[k]) || 0);
+  return r;
+}
 
 /** The defaults of a new row: a phrase row steps every 2 bars, a rhythm row holds its note. */
 function sceneRow(ev) {
   const phrase = SCENE_EVENTS.indexOf(ev) < 6;
-  return scenes.rows.find((r) => r.event === ev)
+  return alignHolds(scenes.rows.find((r) => r.event === ev)
     || sceneDraft[ev] || (sceneDraft[ev] = {
-      event: ev, presets: [], advance: phrase ? 2 : 0, order: 'up',
-      gate: SCENE_RHYTHM.includes(ev) ? 'hold' : 'pulse', decay: { beats: 0.5 } });
+      event: ev, presets: [], holds: [], advance: phrase ? 2 : 0, order: 'up',
+      gate: SCENE_RHYTHM.includes(ev) ? 'hold' : 'pulse', decay: { beats: 0.5 } }));
 }
 
 function sceneSave() {
   scenes.rows = SCENE_GROUPS.flatMap((g) => g[3]).map(([ev]) => sceneRow(ev)).filter((r) => r.presets.length);
-  send(Object.assign({ type: 'scenes_set' }, scenes));
+  // The box has little room for the command, so a row without holds sends none.
+  const rows = scenes.rows.map((r) => (r.holds.some((v) => v > 0) ? r : Object.assign({}, r, { holds: undefined })));
+  send(Object.assign({ type: 'scenes_set' }, scenes, { rows }));
   renderScenes();
 }
 
 /** Changes a row. A row that gets presets moves from the draft into the settings. */
 function sceneEdit(ev, f) {
   const r = sceneRow(ev);
+  holdPop = null;
   f(r);
   r.presets = r.presets.slice(0, ROW_MAX);
+  r.holds = alignHolds(r).holds.slice(0, ROW_MAX);
   if (r.presets.length && !scenes.rows.includes(r)) { scenes.rows.push(r); delete sceneDraft[ev]; }
   if (!r.presets.length) { scenes.rows = scenes.rows.filter((x) => x !== r); sceneDraft[ev] = r; }
   sceneSave();
@@ -1009,19 +1091,20 @@ function onScenes(m) {
   delete m.type;
   scenes = m;
   // Do not rebuild under an input that has the focus.
-  if ($('p-scenes').contains(document.activeElement) && document.activeElement.tagName === 'INPUT') scenePending = true;
+  const typing = document.activeElement && document.activeElement.tagName === 'INPUT';
+  if ($('p-scenes').contains(document.activeElement) && typing) scenePending = true;
   else renderScenes();
-  renderLights();
+  if (!(typing && $('p-setup').contains(document.activeElement))) renderLights();
 }
 
 function sceneChip(i, mini) {
   const x = i >= EXTRA_BASE ? scenes.extra[i - EXTRA_BASE] : null;
   const note = x ? x.note : scenes.first_note + i;
   const label = x ? x.label : (scenes.labels[i] || '');
-  const lk = x ? null : lookColor(i);
-  const c = h('span', 'chip' + (mini ? ' mini' : '') + (x ? ' extra' : '') + (lk ? ' look' : ''),
+  const nc = x ? nameColour(label) : lookColor(i) || nameColour(label);
+  const c = h('span', 'chip' + (mini ? ' mini' : '') + (x ? ' extra' : '') + (nc === 'rainbow' ? ' rainbow' : nc ? ' named' : ''),
     !mini && h('i', null, 'n' + note), h('b', null, x ? '♪' + note : String(i + 1)), h('small', null, label));
-  if (lk) c.style.setProperty('--lk', lk);
+  if (nc && nc !== 'rainbow') c.style.setProperty('--nc', nc);
   return c;
 }
 
@@ -1058,6 +1141,8 @@ function sceneAddForm() {
 function sceneRemoveExtra(k) {
   const gone = EXTRA_BASE + k;
   for (const r of [...scenes.rows, ...Object.values(sceneDraft)]) {
+    alignHolds(r);
+    r.holds = r.holds.filter((_, k) => r.presets[k] !== gone);
     r.presets = r.presets.filter((p) => p !== gone).map((p) => (p > gone ? p - 1 : p));
   }
   scenes.extra.splice(k, 1);
@@ -1091,6 +1176,15 @@ function renderScenes() {
     const c = sceneChip(i, false);
     c.classList.toggle('sel', sceneSel.has(i));
     c.title = 'Note ' + (scenes.first_note + i) + '. Click to test it.';
+    c.classList.toggle('editing', lookOpen === i);
+    if (show) {
+      if (show.looks[i]) c.append(h('span', 'bulb', '💡'));
+      const ed = h('span', 'edit', '✎');
+      ed.title = lookOpen === i ? 'Close the look of this preset.' : 'Edit the DMX look of this preset.';
+      ed.addEventListener('pointerdown', (e) => e.stopPropagation());
+      ed.addEventListener('click', () => { lookOpen = lookOpen === i ? null : i; renderScenes(); renderLights(); });
+      c.append(ed);
+    }
     sceneDrag(c, { from: 'palette', idx: i });
     chips.push(c);
   }
@@ -1144,22 +1238,25 @@ function sceneRowView(ev, label, sub) {
   drop.dataset.ev = ev;
   r.presets.forEach((p, pos) => {
     const c = sceneChip(p, true);
+    if (r.holds[pos] > 0) c.append(h('span', 'hb', holdText(r.holds[pos])));
+    c.title = 'Click to set how long this preset holds.';
     const x = h('em', 'x', '×');
     x.title = 'Remove';
     x.addEventListener('pointerdown', (e) => e.stopPropagation());
-    x.addEventListener('click', () => sceneEdit(ev, (r) => r.presets.splice(pos, 1)));
+    x.addEventListener('click', () => sceneEdit(ev, (r) => rowRemove(r, pos)));
     c.append(x);
     sceneDrag(c, { from: 'row', ev, pos });
     drop.append(c);
   });
   const info = h('span', 'info');
   drop.append(info);
+  if (holdPop && holdPop.ev === ev && r.presets[holdPop.pos] !== undefined) drop.append(holdPopover(ev, r, holdPop.pos));
   // Tap fallback: with a selection in the palette, a click on a row adds it.
   drop.addEventListener('click', (e) => {
     if (e.target !== drop || !sceneSel.size) return;
     const add = [...sceneSel].sort((a, b) => a - b);
     sceneSel.clear();
-    sceneEdit(ev, (r) => r.presets.push(...add));
+    sceneEdit(ev, (r) => rowAdd(r, add));
   });
 
   const parts = [seg([[false, 'on trigger', 'The next preset each time the event fires.'], [true, 'every', 'The next preset every N bars.']],
@@ -1186,6 +1283,30 @@ function sceneRowView(ev, label, sub) {
   const ctl = h('div', 'ctl' + (r.presets.length ? '' : ' dim'), ...parts);
   sceneRowEls.set(ev, { name, drop, info });
   return [name, drop, ctl];
+}
+
+/** Row edits that keep the holds in line with the presets. */
+function rowAdd(r, list, hold = 0) {
+  for (const p of list) { r.presets.push(p); r.holds.push(hold); }
+}
+function rowRemove(r, pos) {
+  r.presets.splice(pos, 1);
+  r.holds.splice(pos, 1);
+}
+
+/** The popover of the hold of one entry in a row. */
+function holdPopover(ev, r, pos) {
+  const p = r.presets[pos];
+  const x = p >= EXTRA_BASE ? scenes.extra[p - EXTRA_BASE] : null;
+  const name = (x ? x.label : scenes.labels[p]) || (x ? '♪' + x.note : 'Preset ' + (p + 1));
+  const pills = HOLD_BEATS.map(([v, t]) => {
+    const b = h('button', 'pill' + (v === r.holds[pos] ? ' on' : ''), t);
+    b.title = v ? v + (v === 1 ? ' beat' : ' beats') : 'No hold';
+    b.addEventListener('click', () => sceneEdit(ev, (row) => { row.holds[pos] = v; }));
+    return b;
+  });
+  return h('div', 'holdpop', h('b', null, name + ' · hold'), h('div', 'pills', ...pills, 'beats'),
+    h('p', null, 'While ' + name + ' holds, the row waits. The next trigger starts the next preset when ' + name + ' ends.'));
 }
 
 /** The decay of a flash: milliseconds in an input, or beats in a list. */
@@ -1296,6 +1417,12 @@ function sceneRename(i) {
 let sceneLastClick = null;
 
 function sceneClick(src, e) {
+  if (src.from === 'row') {
+    const same = holdPop && holdPop.ev === src.ev && holdPop.pos === src.pos;
+    holdPop = same ? null : { ev: src.ev, pos: src.pos };
+    renderScenes();
+    return;
+  }
   if (src.from !== 'palette') return;
   const i = src.idx;
   const now = Date.now();
@@ -1324,27 +1451,37 @@ function sceneDrop(src, target, e) {
   if (src.from === 'palette') {
     if (!to) return;
     sceneSel.clear();
-    sceneEdit(to, (r) => r.presets.push(...src.presets));
+    sceneEdit(to, (r) => rowAdd(r, src.presets));
     return;
   }
   const preset = sceneRow(src.ev).presets[src.pos];
+  const hold = sceneRow(src.ev).holds[src.pos];
   if (to === src.ev) {
     // Reorder: put the chip before the chip under the pointer, or at the end.
     const under = document.elementFromPoint(e.clientX, e.clientY);
     const chip = under && under.closest('.drop .chip');
     const chips = [...target.querySelectorAll('.chip')];
     sceneEdit(to, (r) => {
-      r.presets.splice(src.pos, 1);
+      rowRemove(r, src.pos);
       let at = chip ? chips.indexOf(chip) : r.presets.length;
       if (chip && at > src.pos) at -= 1;
       r.presets.splice(at, 0, preset);
+      r.holds.splice(at, 0, hold);
     });
     return;
   }
   // A chip that leaves its row moves to the other row, or goes away when it lands outside a row.
-  sceneEdit(src.ev, (r) => r.presets.splice(src.pos, 1));
-  if (to) sceneEdit(to, (r) => r.presets.push(preset));
+  sceneEdit(src.ev, (r) => rowRemove(r, src.pos));
+  if (to) sceneEdit(to, (r) => rowAdd(r, [preset], hold));
 }
+
+// A click outside the hold popover, or Escape, closes it. A click on a row chip toggles it.
+document.addEventListener('pointerdown', (e) => {
+  if (holdPop && !e.target.closest('.holdpop, .drop .chip')) { holdPop = null; renderScenes(); }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && holdPop) { holdPop = null; renderScenes(); }
+});
 
 $('scon').addEventListener('click', () => { if (scenes) { scenes.enabled = !scenes.enabled; sceneSave(); } });
 $('scone').addEventListener('click', () => { if (scenes) { scenes.one_at_a_time = !scenes.one_at_a_time; sceneSave(); } });
@@ -1370,7 +1507,7 @@ const FIXTURE_TYPES = { dimmer: ['dimmer'], rgb: ['red', 'green', 'blue'], rgb_d
 const SWATCHES = [[255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255], [255, 255, 255]];
 const EVERY = [['beat', 'beat'], ['half', '½ beat'], ['bar', 'bar']];
 const EFFECTS = ['none', 'flash', 'pulse', 'chase', 'random', 'strobe', 'fog'];
-let show = null, strobeHeld = false, releaseLost = false, showTimer = 0, lookSel = 0, dmxLast = null, layerKey = '';
+let show = null, strobeHeld = false, releaseLost = false, showTimer = 0, dmxLast = null, layerKey = '';
 
 const chanLen = (f) => f.channels.length;
 const ftype = (f) => Object.keys(FIXTURE_TYPES).find((k) => FIXTURE_TYPES[k].join() === f.channels.join()) || 'custom';
@@ -1449,23 +1586,28 @@ function textIn(value, title, onSet) {
   return i;
 }
 
+const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+
 function renderLights() {
   if (!show || !scenes) return;
   const patch = show.fixtures.map((f, i) => {
     const t = ftype(f);
     const types = Object.keys(FIXTURE_TYPES).map((k) => [k, k.replace('_', ' ')]);
     if (t === 'custom') types.push(['custom', 'custom']);
+    const bad = addressBad(i);
+    const range = h('span', 'rng' + (bad ? ' bad' : ''), 'DMX ' + f.address + (chanLen(f) > 1 ? '–' + (f.address + chanLen(f) - 1) : ''));
     const adr = numIn(1, 512, f.address, 'The first DMX channel, 1 to 512.', (v) => { f.address = v; renderLights(); });
-    adr.classList.toggle('bad', addressBad(i));
+    adr.classList.toggle('bad', bad);
     const del = h('button', null, '×');
     del.title = 'Remove this light.';
     del.addEventListener('click', () => showEdit(() => {
       show.fixtures.splice(i, 1);
       for (const g of show.groups) g.fixtures = g.fixtures.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));
     }));
-    return h('div', 'lr', textIn(f.name, 'The name of the light.', (v) => { f.name = v; }),
-      pick(types, t, (v) => showEdit(() => { if (v !== 'custom') f.channels = [...FIXTURE_TYPES[v]]; })),
-      adr, h('span', 'hint', chanLen(f) + ' ch'), del);
+    return h('div', 'fxc' + (bad ? ' bad' : ''),
+      h('div', 'line', textIn(f.name, 'The name of the light.', (v) => { f.name = v; }), del),
+      h('div', 'line', pick(types, t, (v) => showEdit(() => { if (v !== 'custom') f.channels = [...FIXTURE_TYPES[v]]; })), adr),
+      h('div', 'line', range, h('span', null, chanLen(f) + ' ch'), bad && h('span', 'rng bad', 'overlap')));
   });
   $('ltpatch').replaceChildren(...patch);
 
@@ -1487,55 +1629,62 @@ function renderLights() {
       }));
       return b;
     }));
-    return h('div', 'lr', textIn(g.name, 'The name of the group.', (v) => { g.name = v; }), tg, del);
+    return h('div', 'fxc', h('div', 'line', textIn(g.name, 'The name of the group.', (v) => { g.name = v; }), del), tg);
   }));
 
   renderLook();
   const withLook = [['', 'none'], ...show.looks.map((l, i) => (l ? [String(i), (i + 1) + ' ' + (scenes.labels[i] || '')] : null)).filter(Boolean)];
-  $('ltidle').replaceChildren(pick(withLook, show.idle === null ? '' : String(show.idle),
-    (v) => showEdit(() => { show.idle = v === '' ? null : +v; }, false)),
-  h('span', 'hint', ' The look that plays when no scene plays.'));
+  const idle = show.idle !== null && show.looks[show.idle] ? show.idle : null;
+  $('ltidle').replaceChildren(pick(withLook, idle === null ? '' : String(idle),
+    (v) => showEdit(() => { show.idle = v === '' ? null : +v; })),
+  idle !== null && idle < scenes.count && sceneChip(idle, true),
+  h('span', 'hint', 'The look that plays when no scene plays. Only a preset with a look can be the idle look.'));
+  set('stsum', '· ' + plural(show.fixtures.length, 'light', 'lights') + ' · ' + plural(show.groups.length, 'group', 'groups')
+    + ' · idle look: ' + (idle === null ? 'none' : (idle + 1) + (scenes.labels[idle] ? ' ' + scenes.labels[idle] : '')));
+  layerKey = '';
+  renderLayers();
 }
 
+/** The look editor under the palette. It shows the look of the preset that has the ✎ open. */
 function renderLook() {
-  lookSel = Math.min(lookSel, scenes.count - 1);
-  const i = lookSel;
+  const box = $('lookedit');
+  if (lookOpen !== null && lookOpen >= scenes.count) lookOpen = null;
+  box.hidden = lookOpen === null;
+  if (lookOpen === null) return;
+  const i = lookOpen;
   const look = show.looks[i] || null;
   const own = () => {
     while (show.looks.length <= i) show.looks.push(null);
     return show.looks[i] || (show.looks[i] = { fade: 'cut', rows: [] });
   };
-  const presets = Array.from({ length: scenes.count }, (_, k) => [String(k), (k + 1) + ' ' + (scenes.labels[k] || '') + (show.looks[k] ? ' ●' : '')]);
   const test = h('button', null, 'Preview');
   test.title = 'Send this preset to the lights, as a click on the preset does.';
   test.addEventListener('click', () => send({ type: 'scene_test', preset: i }));
-  const clear = h('button', null, 'Clear look');
+  const clear = h('button', null, 'Clear');
   clear.title = 'Remove the look of this preset.';
   clear.addEventListener('click', () => showEdit(() => {
     show.looks[i] = null;
     if (show.idle === i) show.idle = null;
   }));
-  const head = h('div', 'lr', pick(presets, String(i), (v) => { lookSel = +v; renderLook(); }),
-    h('span', null, 'Fade'),
-    seg([['cut', 'Cut', 'The look changes at once.'], ['beat', '1 beat', 'The look fades in 1 beat.'], ['bar', '1 bar', 'The look fades in 1 bar.']],
+  const mini = sceneChip(i, true);
+  mini.classList.add('editing');
+  const head = h('h3', null, mini, 'Look of preset ' + (i + 1),
+    seg([['cut', 'cut', 'The look changes at once.'], ['beat', '1 beat', 'The look fades in 1 beat.'], ['bar', '1 bar', 'The look fades in 1 bar.']],
       look ? look.fade : null, (v) => showEdit(() => { own().fade = v; })),
     test, clear);
-  const rows = show.groups.map((g, gi) => {
+  const cards = show.groups.map((g, gi) => {
     const r = look && look.rows.find((x) => x.group === gi);
-    const on = h('input');
-    on.type = 'checkbox';
-    on.checked = !!r;
+    const on = h('button', 'pill' + (r ? ' on' : ''), r ? 'on' : 'off');
     on.title = 'Use this group in the look.';
-    on.addEventListener('change', () => showEdit(() => {
+    on.addEventListener('click', () => showEdit(() => {
       const l = own();
-      if (on.checked) l.rows.push({ group: gi, color: [255, 0, 0, 0], intensity: 255, effect: 'none', cooldown_s: 0 });
-      else l.rows = l.rows.filter((x) => x.group !== gi);
+      if (r) l.rows = l.rows.filter((x) => x.group !== gi);
+      else l.rows.push({ group: gi, color: [255, 0, 0, 0], intensity: 255, effect: 'none', cooldown_s: 0 });
     }));
-    const name = h('span', 'nm', g.name || 'Group ' + (gi + 1));
-    if (!r) return h('div', 'lr off', on, name);
-    return h('div', 'lr', on, name, ...lookRowCtl(r, g));
+    const title = h('div', 't', g.name || 'Group ' + (gi + 1), on);
+    return r ? h('div', 'card', title, ...lookRowCtl(r, g)) : h('div', 'card off', title, h('div', null, 'Not in this look.'));
   });
-  $('ltlook').replaceChildren(head, ...(show.groups.length ? rows : [h('span', 'hint', 'Add a group first.')]));
+  box.replaceChildren(head, h('div', 'cards', ...(show.groups.length ? cards : [h('span', 'hint', 'Add a group first.')])));
 }
 
 /** The controls of one row of a look. */
@@ -1557,35 +1706,40 @@ function lookRowCtl(r, g) {
     r.color = [1, 3, 5].map((k) => parseInt(col.value.slice(k, k + 2), 16)).concat(r.color[3]);
   }));
   col.addEventListener('change', () => { renderLights(); renderScenes(); });
-  const out = [...sw, col];
-  const range = (min, max, v, title, set) => {
+  const out = [h('div', 'sws', ...sw, col)];
+  const range = (label, min, max, v, title, set) => {
     const s = h('input');
     s.type = 'range'; s.min = min; s.max = max; s.value = v; s.title = title;
-    s.style.width = '90px';
     s.addEventListener('input', () => rd(() => set(+s.value)));
-    return s;
+    return h('label', null, label, s);
   };
-  if (hasWhite) out.push(h('label', null, 'White ', range(0, 255, r.color[3], 'The white level, 0 to 255.', (v) => { r.color[3] = v; })));
-  out.push(h('label', null, 'Level ', range(0, 255, r.intensity, 'The intensity, 0 to 255.', (v) => { r.intensity = v; })));
+  if (hasWhite) out.push(range('White', 0, 255, r.color[3], 'The white level, 0 to 255.', (v) => { r.color[3] = v; }));
+  out.push(range('Level', 0, 255, r.intensity, 'The intensity, 0 to 255.', (v) => { r.intensity = v; }));
   const kind = effKind(r);
-  out.push(pick(EFFECTS.map((k) => [k, k]), kind, (v) => showEdit(() => {
-    r.effect = { none: 'none', strobe: { strobe: { rate: 128, beats: 1 } }, fog: { fog: { ms: 1000 } } }[v] || { [v]: { every: 'beat' } };
-    if (v === 'strobe') r.cooldown_s = 4;
-    else if (v === 'fog') r.cooldown_s = 30;
+  out.push(h('div', 'pills', ...EFFECTS.map((k) => {
+    const b = h('button', 'pill' + (k === kind ? ' on' : ''), k);
+    b.addEventListener('click', () => showEdit(() => {
+      r.effect = { none: 'none', strobe: { strobe: { rate: 128, beats: 1 } }, fog: { fog: { ms: 1000 } } }[k] || { [k]: { every: 'beat' } };
+      if (k === 'strobe') r.cooldown_s = 4;
+      else if (k === 'fog') r.cooldown_s = 30;
+    }));
+    return b;
   })));
+  const par = [];
   if (['flash', 'pulse', 'chase', 'random'].includes(kind)) {
-    out.push(h('label', null, 'every ', pick(EVERY, r.effect[kind].every, (v) => rd(() => { r.effect[kind].every = v; }))));
+    par.push(h('label', null, 'every ', pick(EVERY, r.effect[kind].every, (v) => rd(() => { r.effect[kind].every = v; }))));
   }
   if (kind === 'strobe') {
-    out.push(h('label', null, 'rate ', numIn(0, 255, r.effect.strobe.rate, 'The strobe rate, 0 to 255.', (v) => { r.effect.strobe.rate = v; })),
+    par.push(h('label', null, 'rate ', numIn(0, 255, r.effect.strobe.rate, 'The strobe rate, 0 to 255.', (v) => { r.effect.strobe.rate = v; })),
       h('label', null, 'beats ', numIn(1, 16, r.effect.strobe.beats, 'How many beats the strobe runs, 1 to 16.', (v) => { r.effect.strobe.beats = v; })));
   }
   if (kind === 'fog') {
-    out.push(h('label', null, 'ms ', numIn(100, 10000, r.effect.fog.ms, 'How long the fog runs, 100 to 10000 ms.', (v) => { r.effect.fog.ms = v; })));
+    par.push(h('label', null, 'ms ', numIn(100, 10000, r.effect.fog.ms, 'How long the fog runs, 100 to 10000 ms.', (v) => { r.effect.fog.ms = v; })));
   }
   if (kind === 'strobe' || kind === 'fog') {
-    out.push(h('label', null, 'cooldown s ', numIn(0, 600, r.cooldown_s, 'The seconds before the effect can start again, 0 to 600.', (v) => { r.cooldown_s = v; })));
+    par.push(h('label', null, 'cooldown s ', numIn(0, 600, r.cooldown_s, 'The seconds before the effect can start again, 0 to 600.', (v) => { r.cooldown_s = v; })));
   }
+  if (par.length) out.push(h('div', 'par', ...par));
   return out;
 }
 
@@ -1598,15 +1752,20 @@ function lookColor(i) {
 }
 
 function renderLayers() {
-  const names = dmxLast && scenes ? dmxLast.layers.map((i) => h('span', 'lay', h('b', null, String(i + 1)), scenes.labels[i] || '')) : [];
-  const key = dmxLast ? JSON.stringify(dmxLast.layers) + (scenes ? scenes.labels.join() : '') : '';
-  if (key !== layerKey) { layerKey = key; $('ltlayers').replaceChildren(h('span', null, names.length ? 'Playing: ' : 'No look plays'), ...names); }
+  const on = dmxLast && scenes ? dmxLast.layers.filter((i) => i < EXTRA_BASE) : [];
+  const key = dmxLast && scenes ? on.map((i) => i + (scenes.labels[i] || '') + (lookColor(i) || '')).join('|') + '/' + on.length : '';
+  if (key !== layerKey) {
+    layerKey = key;
+    $('ltlayers').replaceChildren(h('span', null, on.length ? 'NOW' : 'No look plays'), ...on.map((i) => sceneChip(i, true)));
+  }
   strobeClass();
 }
 
 function strobeClass() {
   $('ltstrobe').classList.toggle('on', strobeHeld || !!(dmxLast && dmxLast.strobe_hold));
 }
+
+const masterPct = () => set('ltpct', Math.round(+$('ltmaster').value / 2.55) + '%');
 
 function liveSend(strobe) {
   strobeHeld = strobe;
@@ -1615,7 +1774,7 @@ function liveSend(strobe) {
   if (!strobe && (!ws || ws.readyState !== 1)) releaseLost = true;
   send({ type: 'dmx_live', master: +$('ltmaster').value, strobe });
 }
-$('ltmaster').addEventListener('input', () => liveSend(strobeHeld));
+$('ltmaster').addEventListener('input', () => { masterPct(); liveSend(strobeHeld); });
 $('ltstrobe').addEventListener('pointerdown', (e) => { $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
 for (const t of ['pointerup', 'pointercancel']) $('ltstrobe').addEventListener(t, () => liveSend(false));
 $('ltfog').addEventListener('click', () => send({ type: 'dmx_fog' }));
@@ -1646,6 +1805,7 @@ function connect() {
     if ((m.type === 'status' || m.type === 'settings') && !$('takeover').hidden) {
       $('takeover').hidden = true;
       document.querySelector('main').hidden = false;
+      $('live').hidden = !(caps && caps.has('dmx'));
       set('conn', 'live');
     }
     const f = handlers[m.type];
