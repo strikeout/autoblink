@@ -1832,6 +1832,7 @@ function oflChannels(fixture, modeName) {
   for (const c of Object.values(avail)) for (const a of c.fineChannelAliases || []) fine.add(a);
   const mode = (fixture.modes || []).find((m) => m.name === modeName);
   const notes = [];
+  let unknown = false;
   const pixelNote = () => { if (!notes.includes('pixel channels are not supported yet')) notes.push('pixel channels are not supported yet'); };
   const fixed0 = (n) => Array.from({ length: n }, () => ({ fixed: 0 }));
   const matrix = fixture.matrix || {};
@@ -1848,7 +1849,9 @@ function oflChannels(fixture, modeName) {
     if (typeof name !== 'string') {
       // A matrix insert stands for one group of template channels for each pixel.
       pixelNote();
-      return fixed0(pixels(name.repeatFor) * (name.templateChannels || []).length);
+      const n = pixels(name.repeatFor) * (name.templateChannels || []).length;
+      if (!(n > 0)) unknown = true;
+      return fixed0(n > 0 ? n : 0);
     }
     if (fine.has(name)) return [{ fixed: 0 }];
     const c = avail[name];
@@ -1867,7 +1870,8 @@ function oflChannels(fixture, modeName) {
     if (type === 'Fog' || type === 'FogOutput') return ['fog'];
     return [{ fixed: oflDefault(c) }];
   });
-  return { channels, notes };
+  if (unknown) notes.push('The pixel count of this mode is unknown.');
+  return { channels, notes, unknown };
 }
 
 const ofl = { busy: false, want: null, seq: 0, key: '', fx: null, mode: null };
@@ -1941,7 +1945,7 @@ function oflDetail() {
   }));
   const text = m.channels.map((c, i) => (i + 1) + ' ' + (typeof c === 'string' ? c : 'fixed ' + c.fixed)).join(' · ');
   const add = h('button', null, 'Add');
-  const tooMany = m.channels.length > 32 || !m.channels.length;
+  const tooMany = m.channels.length > 32 || !m.channels.length || m.unknown;
   add.disabled = tooMany;
   add.addEventListener('click', () => {
     if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
@@ -1952,7 +1956,7 @@ function oflDetail() {
     h('div', 'line', h('b', null, String(fx.name || ofl.key)), pills),
     h('div', 'chs', text),
     ...m.notes.map((n) => h('div', null, 'Note: ' + n)),
-    tooMany && h('div', null, m.channels.length ? 'A light can have 32 channels at most.' : 'This mode has no channels.'),
+    tooMany && !m.unknown && h('div', null, m.channels.length ? 'A light can have 32 channels at most.' : 'This mode has no channels.'),
     h('div', 'line', add));
   $('ofldet').hidden = false;
 }
