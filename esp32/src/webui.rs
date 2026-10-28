@@ -8,7 +8,7 @@
 //!
 //! With the `dmx` feature, the firmware also sends the capability `dmx` and the status field
 //! `dmx`. `GET /show` gives the DMX show as JSON, and `POST /show` replaces it. The commands
-//! `dmx_live` and `dmx_fog` set the live controls. They get no reply.
+//! `dmx_live`, `dmx_fog` and `dmx_aim` set the live controls. They get no reply.
 //!
 //! `GET /ofl/search?q=<text>` and `GET /ofl/fixture?key=<manufacturer>/<model>` pass the JSON of
 //! the Open Fixture Library through to the page (see `ofl.rs`).

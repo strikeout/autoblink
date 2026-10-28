@@ -633,4 +633,32 @@ mod position_tests {
         assert_eq!(json, r#"["pan","pan_fine","tilt","tilt_fine"]"#);
         assert_eq!(serde_json::from_str::<[Channel; 4]>(&json).unwrap(), c);
     }
+
+    #[test]
+    fn shape_wire_format() {
+        for (shape, json) in [
+            (Shape::None, r#""none""#),
+            (
+                Shape::Circle {
+                    beats: 4,
+                    size: 100,
+                },
+                r#"{"circle":{"beats":4,"size":100}}"#,
+            ),
+            (
+                Shape::Figure8 { beats: 8, size: 50 },
+                r#"{"figure8":{"beats":8,"size":50}}"#,
+            ),
+            (
+                Shape::Sweep {
+                    beats: 2,
+                    size: 255,
+                },
+                r#"{"sweep":{"beats":2,"size":255}}"#,
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&shape).unwrap(), json);
+            assert_eq!(serde_json::from_str::<Shape>(json).unwrap(), shape);
+        }
+    }
 }

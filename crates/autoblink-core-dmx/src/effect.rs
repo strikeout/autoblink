@@ -44,7 +44,8 @@ pub fn factor(effect: &Effect, beat: Option<&Beat>, k: usize, n: usize) -> u8 {
 }
 
 /// The pan and tilt offset of a shape for fixture `k` of `n`, in 16-bit units.
-/// A fixture is `k / n` of a cycle behind the first one. Without a beat, the offset is zero.
+/// A fixture is `k / n` of a cycle ahead of the first one. The cycle starts on a bar line.
+/// Without a beat, the offset is zero.
 pub fn shape_offset(shape: &Shape, beat: Option<&Beat>, k: usize, n: usize) -> (i32, i32) {
     let (
         Some(b),
@@ -58,7 +59,9 @@ pub fn shape_offset(shape: &Shape, beat: Option<&Beat>, k: usize, n: usize) -> (
     let beats = u32::from((*beats).max(1));
     let amp = f64::from(*size) * 64.0;
     let shift = if n > 0 { k as f64 / n as f64 } else { 0.0 };
-    let t = ((f64::from(b.count % beats) + b.phase) / f64::from(beats) + shift).fract();
+    let bib = u32::from(b.beat_in_bar.saturating_sub(1));
+    let i = (b.count.wrapping_sub(bib) % beats + bib) % beats;
+    let t = ((f64::from(i) + b.phase) / f64::from(beats) + shift).fract();
     let a = std::f64::consts::TAU * t;
     let (x, y) = match shape {
         Shape::Circle { .. } => (a.cos(), a.sin()),
@@ -177,5 +180,22 @@ mod tests {
             shape_offset(&sh, Some(&b), 0, 2),
             shape_offset(&sh, Some(&b), 1, 2)
         );
+    }
+
+    #[test]
+    fn shape_is_aligned_to_the_bar() {
+        let shape = Shape::Circle {
+            beats: 4,
+            size: 100,
+        };
+        let at = |bar_beat: u8, count: u32| {
+            shape_offset(&shape, Some(&beat(0.25, bar_beat, count)), 0, 1)
+        };
+        // The cycle starts on beat 1 of a bar, whatever the count is.
+        assert_eq!(at(1, 4), at(1, 8));
+        assert_eq!(at(1, 5), at(1, 9));
+        // Beat 2 of the same bar is one beat later than beat 1.
+        assert_eq!(at(2, 5), at(2, 9));
+        assert_ne!(at(1, 4), at(2, 5));
     }
 }

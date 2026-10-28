@@ -194,6 +194,14 @@ impl Lights {
         self.layers.retain(|l| l.off_at.is_none_or(|t| t > now_ms));
         self.bursts.retain(|b| b.until > now_ms);
         out.fill(0);
+        // A head that no look aims sits at the centre, not at the end stop.
+        for f in &show.fixtures {
+            for (i, c) in fixture_channels(f) {
+                if matches!(c, Channel::Pan | Channel::Tilt) {
+                    out[i] = 0x80;
+                }
+            }
+        }
 
         let stopped = self
             .stopped_at
@@ -572,6 +580,67 @@ mod tests {
         let mut l = Lights::default();
         l.aim(3, 0x1234, 0xABCD, 0);
         assert_eq!(frame(&mut l, &s, 9_999)[29..33], [0x12, 0x34, 0xAB, 0xCD]);
-        assert_eq!(frame(&mut l, &s, 10_001)[29..33], [0, 0, 0, 0]);
+        assert_eq!(frame(&mut l, &s, 10_001)[29..33], [0x80, 0, 0x80, 0]);
+    }
+
+    #[test]
+    fn aim_wins_over_layer_and_idle_position() {
+        use Channel::*;
+        let mut s = show();
+        s.fixtures
+            .push(fixture(30, &[Dimmer, Pan, PanFine, Tilt, TiltFine]));
+        s.groups.push(group(3));
+        s.positions = vec![crate::show::Position {
+            name: "a".into(),
+            aims: vec![crate::show::Aim {
+                fixture: 3,
+                pan: 0x2000,
+                tilt: 0x3000,
+            }],
+        }];
+        let mut idle = par([1, 2, 3, 0], 255, Fade::Cut);
+        idle.rows = vec![row(3, [1, 2, 3, 0], 255, Effect::None, 0)];
+        idle.rows[0].position = Some(0);
+        s.looks[3] = Some(idle);
+        let mut l = Lights::default();
+        l.on(0, 0);
+        assert_eq!(frame(&mut l, &s, 10)[30..34], [0x20, 0, 0x30, 0]);
+        l.aim(3, 0x1234, 0xABCD, 20);
+        assert_eq!(frame(&mut l, &s, 30)[30..34], [0x12, 0x34, 0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn layer_without_aim_keeps_idle_position() {
+        use Channel::*;
+        let mut s = show();
+        s.fixtures
+            .push(fixture(30, &[Dimmer, Pan, PanFine, Tilt, TiltFine]));
+        s.groups.push(group(3));
+        s.positions = vec![crate::show::Position {
+            name: "a".into(),
+            aims: vec![crate::show::Aim {
+                fixture: 3,
+                pan: 0x2000,
+                tilt: 0x3000,
+            }],
+        }];
+        let mut idle = par([1, 2, 3, 0], 255, Fade::Cut);
+        idle.rows = vec![row(3, [1, 2, 3, 0], 255, Effect::None, 0)];
+        idle.rows[0].position = Some(0);
+        s.looks[3] = Some(idle);
+        let mut flash = par([255, 0, 0, 0], 255, Fade::Cut);
+        flash.rows = vec![row(3, [255, 0, 0, 0], 255, Effect::None, 0)];
+        s.looks[0] = Some(flash);
+        let mut l = Lights::default();
+        l.on(0, 0);
+        assert_eq!(frame(&mut l, &s, 10)[30..34], [0x20, 0, 0x30, 0]);
+        let mut empty = show();
+        empty
+            .fixtures
+            .push(fixture(30, &[Pan, PanFine, Tilt, TiltFine]));
+        assert_eq!(
+            frame(&mut Lights::default(), &empty, 10)[29..33],
+            [0x80, 0, 0x80, 0]
+        );
     }
 }

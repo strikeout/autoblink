@@ -1707,9 +1707,13 @@ function renderPositions() {
       const rows = heads.map(([f, i]) => {
         const axis = (label, key) => {
           const s = h('input');
-          s.type = 'range'; s.min = 0; s.max = 65535; s.value = aimOf(i)[key];
+          s.type = 'range'; s.min = 0; s.max = 65535; s.step = 256; s.value = aimOf(i)[key];
           s.title = label + ' of ' + (f.name || 'Light ' + (i + 1)) + ', 0 to 65535.';
           s.addEventListener('input', () => {
+            const a = aimOf(i);
+            aimSend(i, { ...a, [key]: +s.value });
+          });
+          s.addEventListener('change', () => {
             const a = aimOf(i);
             a[key] = +s.value;
             showEdit(() => { if (!p.aims.includes(a)) p.aims.push(a); }, false);

@@ -2,7 +2,7 @@
 
 use crate::clock::Beat;
 use crate::effect::shape_offset;
-use crate::show::{Channel, Fixture, Look, Show, UNIVERSE};
+use crate::show::{Channel, Fixture, Look, LookRow, Shape, Show, UNIVERSE};
 
 /// One value for each channel of the universe. Index 0 is DMX channel 1.
 pub type Universe = [u8; UNIVERSE];
@@ -70,6 +70,9 @@ pub fn render(
             let pan = (base.0 + dx).clamp(0, 65535) as u16;
             let tilt = (base.1 + dy).clamp(0, 65535) as u16;
             for (i, c) in fixture_channels(f) {
+                if !aims_heads(row) && is_pan_tilt(c) {
+                    continue;
+                }
                 out[i] = match c {
                     Channel::Dimmer => (intensity * lvl / 255) as u8,
                     Channel::Red => colour(row.color[0]),
@@ -88,13 +91,28 @@ pub fn render(
     }
 }
 
+/// A row without a position and without a shape leaves the pan and tilt of its heads alone.
+fn aims_heads(row: &LookRow) -> bool {
+    row.position.is_some() || row.shape != Shape::None
+}
+
+fn is_pan_tilt(c: Channel) -> bool {
+    matches!(
+        c,
+        Channel::Pan | Channel::PanFine | Channel::Tilt | Channel::TiltFine
+    )
+}
+
 /// Returns the set of channel indices that `look` touches (the channels of the fixtures of its groups).
-/// A channel can appear more than once.
+/// A channel can appear more than once. A row that aims no head does not touch pan and tilt.
 pub fn touched<'a>(show: &'a Show, look: &'a Look) -> impl Iterator<Item = usize> + 'a {
-    look.rows
-        .iter()
-        .flat_map(move |row| group_fixtures(show, row.group))
-        .flat_map(|(_, _, f)| fixture_channels(f).map(|(i, _)| i))
+    look.rows.iter().flat_map(move |row| {
+        group_fixtures(show, row.group).flat_map(move |(_, _, f)| {
+            fixture_channels(f)
+                .filter(move |&(_, c)| aims_heads(row) || !is_pan_tilt(c))
+                .map(|(i, _)| i)
+        })
+    })
 }
 
 #[cfg(test)]
@@ -205,9 +223,26 @@ mod tests {
     }
 
     #[test]
-    fn head_without_position_is_centred() {
-        let (s, l) = one(vec![fx(1, &[Pan, PanFine, Tilt, TiltFine])], [0; 4], 255);
+    fn head_with_shape_and_no_position_is_centred() {
+        let (s, mut l) = one(vec![fx(1, &[Pan, PanFine, Tilt, TiltFine])], [0; 4], 255);
+        l.rows[0].shape = Shape::Sweep { beats: 4, size: 0 };
         assert_eq!(run(&s, &l, 255)[0..4], [0x80, 0, 0x80, 0]);
+    }
+
+    #[test]
+    fn row_without_aim_leaves_pan_tilt() {
+        let (s, mut l) = one(
+            vec![fx(1, &[Dimmer, Pan, PanFine, Tilt, TiltFine])],
+            [0; 4],
+            255,
+        );
+        l.rows[0].position = None;
+        l.rows[0].shape = Shape::None;
+        assert_eq!(run(&s, &l, 255)[1..5], [0, 0, 0, 0]);
+        assert_eq!(
+            touched(&s, &l).collect::<BTreeSet<_>>(),
+            BTreeSet::from([0])
+        );
     }
 
     #[test]
