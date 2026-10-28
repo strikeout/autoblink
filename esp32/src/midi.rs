@@ -98,8 +98,8 @@ pub fn start(
         let mut last_master = 0u8;
         // The last guess of the loop. The guess keeps a Drop or a Break near its threshold.
         let mut prev_guess = None;
-        // The master deck of `prev_guess`.
-        let mut guess_dev = 0u8;
+        // The master deck and the track of `prev_guess`.
+        let mut guess_key = (0u8, 0u32);
         let mut next_pulse: Option<u64> = None;
         let mut next_cc = Instant::now();
 
@@ -203,26 +203,25 @@ pub fn start(
                         guess: None,
                         phrase16: m.phrase16,
                     };
-                    // The position in the track, 0.0 to 1.0, for the drop guess.
-                    let pos = m
-                        .playhead_ms
-                        .zip(m.track_len_ms.filter(|&l| l > 0))
-                        .map(|(p, l)| f64::from(p) / f64::from(l));
+                    // The playhead and the length of the track, for the drop guess.
+                    let pos = m.playhead_ms.zip(m.track_len_ms);
                     (snap, Some((m.track.rekordbox_id, m.beat_count, pos)))
                 })
             };
             // Lock the tracks only after the tracker is free.
             if let Some((rbid, beat_count, pos)) = track {
-                // A new master deck starts without a previous guess.
-                if snap.device != guess_dev {
-                    guess_dev = snap.device;
+                // A new master deck or a new track starts without a previous guess.
+                if (snap.device, rbid) != guess_key {
+                    guess_key = (snap.device, rbid);
                     prev_guess = None;
                 }
                 let tracks = state.tracks.0.lock().unwrap();
                 let data = tracks.get(&snap.device).filter(|t| t.rekordbox_id == rbid);
                 // Only a track without phrases has a guess.
-                scene_in.guess =
-                    data.and_then(|t| Some(t.guess.as_ref()?.bucket_at(pos?, prev_guess)));
+                scene_in.guess = data.and_then(|t| {
+                    let (p, l) = pos?;
+                    t.guess.as_ref()?.bucket_ahead(p, l, snap.bpm, prev_guess)
+                });
                 snap.phrase = beat_count
                     .zip(data.and_then(|t| t.structure.as_ref()?.as_ref().ok()))
                     .and_then(|(beat_count, ss)| {

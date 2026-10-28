@@ -657,6 +657,19 @@ impl DjState {
         if let Some(dev) = self.devices.get_mut(&device_number) {
             if dev.rekordbox_id == overview.rekordbox_id {
                 dev.guess = DropGuess::from_preview(&overview.preview).map(Arc::new);
+                if let Some(g) = &dev.guess {
+                    let (hi, lo, mid) = g.thresholds();
+                    let (first, last) = g.mid_columns();
+                    tracing::info!(
+                        device = device_number,
+                        hi,
+                        lo,
+                        mid,
+                        first,
+                        last,
+                        "Guess thresholds of the track."
+                    );
+                }
                 dev.overview = Some(Arc::new(overview));
             }
         }

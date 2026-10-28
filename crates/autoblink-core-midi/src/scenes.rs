@@ -976,17 +976,18 @@ mod tests {
         }
     }
 
-    fn drops(s: &mut Scenes, c: &ScenesConfig, seq: &[(u32, Event, u8)]) -> usize {
+    fn drops(s: &mut Scenes, c: &ScenesConfig, now: &mut u64, seq: &[(u32, Event, u8)]) -> usize {
         let mut n = 0;
-        // Prime the engine, so that the Play edge of the first step fires nothing.
+        // Prime the engine at `now`, so that the Play edge of the first step fires nothing.
         let prime = SceneInput {
             guess: None,
             phrase16: 0,
             ..guess_in(seq[0].0, Event::Drop, 0)
         };
-        s.update(c, 0, &prime, &mut |_| {});
-        for (i, &(t, g, p)) in seq.iter().enumerate() {
-            s.update(c, i as u64 * 500, &guess_in(t, g, p), &mut |_| {});
+        s.update(c, *now, &prime, &mut |_| {});
+        for &(t, g, p) in seq {
+            *now += 500;
+            s.update(c, *now, &guess_in(t, g, p), &mut |_| {});
             s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
         }
         n
@@ -996,8 +997,9 @@ mod tests {
     fn guess_fires_on_block_start() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
-        assert_eq!(drops(&mut s, &c, &[(7, Event::Drop, 16)]), 0);
-        assert_eq!(drops(&mut s, &c, &[(7, Event::Drop, 1)]), 1);
+        let mut now = 0;
+        assert_eq!(drops(&mut s, &c, &mut now, &[(7, Event::Drop, 16)]), 0);
+        assert_eq!(drops(&mut s, &c, &mut now, &[(7, Event::Drop, 1)]), 1);
         let st = s.status(&c);
         assert!(st.guessed);
         assert_eq!(st.phrase, Some(Event::Drop));
@@ -1007,14 +1009,20 @@ mod tests {
     fn guess_waits_for_block_start() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
+        let mut now = 0;
         let seq = [
             (7, Event::Intro, 6),
             (7, Event::Drop, 7),
             (7, Event::Drop, 8),
         ];
-        assert_eq!(drops(&mut s, &c, &seq), 0);
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 0);
         assert_eq!(
-            drops(&mut s, &c, &[(7, Event::Drop, 16), (7, Event::Drop, 1)]),
+            drops(
+                &mut s,
+                &c,
+                &mut now,
+                &[(7, Event::Drop, 16), (7, Event::Drop, 1)]
+            ),
             1
         );
     }
@@ -1023,13 +1031,14 @@ mod tests {
     fn same_guess_does_not_refire() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
-        assert_eq!(drops(&mut s, &c, &[(7, Event::Drop, 16)]), 0);
+        let mut now = 0;
+        assert_eq!(drops(&mut s, &c, &mut now, &[(7, Event::Drop, 16)]), 0);
         let seq = [
             (7, Event::Drop, 1),
             (7, Event::Drop, 16),
             (7, Event::Drop, 1),
         ];
-        assert_eq!(drops(&mut s, &c, &seq), 1);
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 1);
     }
 
     #[test]
@@ -1053,8 +1062,9 @@ mod tests {
     fn play_without_row_refires_guess() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
+        let mut now = 0;
         let seq = [(7, Event::Drop, 16), (7, Event::Drop, 1)];
-        assert_eq!(drops(&mut s, &c, &seq), 1);
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 1);
         let stopped = SceneInput {
             playing: false,
             ..guess_in(7, Event::Drop, 5)
@@ -1070,14 +1080,16 @@ mod tests {
     fn block_start_after_reset_on_beat_one() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
+        let mut now = 0;
         let seq = [(7, Event::Drop, 1), (8, Event::Drop, 1)];
-        assert_eq!(drops(&mut s, &c, &seq), 2);
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 2);
     }
 
     #[test]
     fn status_shows_the_fired_guess() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
+        let mut now = 0;
         let idle = SceneInput {
             playing: false,
             ..guess_in(7, Event::Groove, 5)
@@ -1092,7 +1104,12 @@ mod tests {
         };
         s.update(&c, 5, &none, &mut |_| {});
         assert!(!s.status(&c).guessed);
-        drops(&mut s, &c, &[(7, Event::Drop, 16), (7, Event::Drop, 1)]);
+        drops(
+            &mut s,
+            &c,
+            &mut now,
+            &[(7, Event::Drop, 16), (7, Event::Drop, 1)],
+        );
         s.update(&c, 9000, &guess_in(7, Event::Break, 5), &mut |_| {});
         let st = s.status(&c);
         assert!(st.guessed);
@@ -1103,13 +1120,14 @@ mod tests {
     fn track_change_resets_guess() {
         let c = cfg(vec![row(Event::Drop, &[3])]);
         let mut s = Scenes::default();
+        let mut now = 0;
         let seq = [
             (7, Event::Drop, 16),
             (7, Event::Drop, 1),
             (8, Event::Drop, 16),
             (8, Event::Drop, 1),
         ];
-        assert_eq!(drops(&mut s, &c, &seq), 2);
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 2);
     }
 
     #[test]

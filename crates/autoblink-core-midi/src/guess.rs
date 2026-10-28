@@ -23,6 +23,8 @@ pub struct DropGuess {
     profile: Vec<u8>,
     hi: u8,
     lo: u8,
+    /// The median energy.
+    mid: u8,
     /// The first and the last column with an energy of at least the median.
     first_mid: usize,
     last_mid: usize,
@@ -66,9 +68,38 @@ impl DropGuess {
             profile,
             hi,
             lo,
+            mid,
             first_mid,
             last_mid,
         })
+    }
+
+    /// The thresholds as `(hi, lo, mid)`. Use them to tune `MIN_SPREAD` and `HYSTERESIS`.
+    pub fn thresholds(&self) -> (u8, u8, u8) {
+        (self.hi, self.lo, self.mid)
+    }
+
+    /// The first and the last profile column with an energy of at least `mid`.
+    pub fn mid_columns(&self) -> (usize, usize) {
+        (self.first_mid, self.last_mid)
+    }
+
+    /// The bucket for the block that starts half a block (8 beats) after the playhead. A fire
+    /// at a block start decides the look of the coming block, so the classifier looks ahead.
+    /// A `bpm` of 0 or less gives no offset. A `len_ms` of 0 gives `None`.
+    pub fn bucket_ahead(
+        &self,
+        playhead_ms: u32,
+        len_ms: u32,
+        bpm: f64,
+        prev: Option<Event>,
+    ) -> Option<Event> {
+        if len_ms == 0 {
+            return None;
+        }
+        let ahead_ms = if bpm > 0.0 { 8.0 * 60_000.0 / bpm } else { 0.0 };
+        let frac = (f64::from(playhead_ms) + ahead_ms) / f64::from(len_ms);
+        Some(self.bucket_at(frac.clamp(0.0, 1.0), prev))
     }
 
     /// The bucket at the position `frac` (0.0 to 1.0) of the track. `prev` is the bucket that
@@ -157,6 +188,35 @@ mod tests {
         let f = 275.0 / 600.0;
         assert_eq!(g.bucket_at(f, None), Event::Groove);
         assert_eq!(g.bucket_at(f, Some(Event::Drop)), Event::Drop);
+    }
+
+    /// A step from 20 to 200 at column 400 of 600. The block that starts at the step is a Drop.
+    /// The smoothing straddles the step, so the position of the step itself is not yet a Drop.
+    /// The look half a block (8 beats) ahead is a Drop at the step and half a block after it.
+    #[test]
+    fn classifies_half_a_block_ahead_of_the_step() {
+        let g = guess(&[(50, 20), (350, 20), (200, 200)]);
+        // 600 columns on a 600 000 ms track: 1000 ms for each column. At 120 BPM half a block
+        // is 4000 ms.
+        let (len, bpm) = (600_000, 120.0);
+        assert_ne!(g.bucket_at(400.0 / 600.0, None), Event::Drop);
+        assert_eq!(g.bucket_ahead(400_000, len, bpm, None), Some(Event::Drop));
+        assert_eq!(g.bucket_ahead(404_000, len, bpm, None), Some(Event::Drop));
+        // Without an offset the step itself is not yet a Drop.
+        assert_ne!(g.bucket_ahead(400_000, len, 0.0, None), Some(Event::Drop));
+        assert_eq!(g.bucket_ahead(0, 0, bpm, None), None);
+        // A step down gives Break the same way.
+        let b = guess(&[(200, 200), (250, 20), (150, 200)]);
+        assert_ne!(b.bucket_at(200.0 / 600.0, None), Event::Break);
+        assert_eq!(b.bucket_ahead(200_000, len, bpm, None), Some(Event::Break));
+    }
+
+    #[test]
+    fn thresholds_are_exposed() {
+        let g = guess(&[(300, 20), (300, 200)]);
+        let (hi, lo, mid) = g.thresholds();
+        assert!(lo <= mid && mid <= hi);
+        assert_eq!(hi, 200);
     }
 
     #[test]

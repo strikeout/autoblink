@@ -191,6 +191,14 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
                 f.metadata.artist,
                 f.metadata.title
             );
+            if let Some(g) = &guess {
+                let (hi, lo, mid) = g.thresholds();
+                let (first, last) = g.mid_columns();
+                log::info!(
+                    "Deck {}: guess thresholds hi {hi}, lo {lo}, mid {mid}, columns {first} to {last}.",
+                    track.device
+                );
+            }
             data.metadata = Some(f.metadata);
             data.structure = Some(f.song_structure);
             data.overview = f.overview.map(Arc::new);
