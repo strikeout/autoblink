@@ -6,6 +6,13 @@
 //! With `ota`, the page shows the System panel: the firmware update, the restart button and the
 //! WiFi settings. The page sends `reboot` for the restart button.
 //!
+//! With the `dmx` feature, the firmware also sends the capability `dmx` and the status field
+//! `dmx`. `GET /show` gives the DMX show as JSON, and `POST /show` replaces it. The commands
+//! `dmx_live`, `dmx_fog` and `dmx_aim` set the live controls. They get no reply.
+//!
+//! `GET /ofl/search?q=<text>` and `GET /ofl/fixture?key=<manufacturer>/<model>` pass the JSON of
+//! the Open Fixture Library through to the page (see `ofl.rs`).
+//!
 //! The firmware sends the status and the beats to one page at a time, the active page. Another
 //! page gets `busy` and shows a button. The button sends `take_over`, and the firmware closes the
 //! connection of the active page. That page then connects again and gets `busy`.
@@ -26,6 +33,9 @@ use esp_idf_svc::ws::FrameType;
 use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 
+#[cfg(feature = "dmx")]
+use crate::dmx::{DmxMsg, DmxStatus};
+use crate::ofl;
 use crate::ota::{self, OtaCmd, OtaStatus};
 use crate::settings::Settings;
 use crate::tracks::TrackData;
@@ -33,13 +43,34 @@ use crate::State;
 use autoblink_core_dbserver::{phrase_status, PhraseKind, TrackOverview};
 use autoblink_core_midi::scenes::{SceneStatus, ScenesConfig};
 use autoblink_core_prolink::{Deck, PlayState};
+#[cfg(feature = "dmx")]
+use esp_idf_svc::hal::task::queue::Queue;
+#[cfg(feature = "dmx")]
+use esp_idf_svc::http::server::{EspHttpConnection, Request};
 
 /// The page, compressed with gzip by `build.rs`.
 const INDEX_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
 
 /// The firmware ignores a command that is longer than this.
-/// The scenes command is the longest command, about 1.5 KB with 16 rows.
+/// The scenes command is the longest command, about 1.5 KB with 16 rows. A row without holds leaves out the `holds` key.
 const MAX_COMMAND_LEN: usize = 3072;
+
+/// The capabilities in the hello message.
+const CAPS: &[&str] = &[
+    "beat",
+    "decks",
+    "output",
+    "settings",
+    "waveform",
+    "ota",
+    "scenes",
+    #[cfg(feature = "dmx")]
+    "dmx",
+];
+
+/// `POST /show` refuses a longer body.
+#[cfg(feature = "dmx")]
+const MAX_SHOW_LEN: usize = 60_000;
 
 /// The page gets the status this often.
 const STATUS_INTERVAL: Duration = Duration::from_millis(100);
@@ -54,18 +85,21 @@ const STATUS_INTERVAL: Duration = Duration::from_millis(100);
 struct Active(Mutex<(u32, Option<EspHttpWsDetachedSender>)>);
 
 impl Active {
-    fn send(&self, text: &[u8]) {
+    /// Returns true when the send failed and removed the active page.
+    fn send(&self, text: &[u8]) -> bool {
         // A send waits for the HTTP server task, and that task takes this lock when a connection
         // closes. Send without the lock, so that the two tasks cannot block each other.
         let (generation, Some(mut sender)) = self.0.lock().unwrap().clone() else {
-            return;
+            return false;
         };
         if sender.send(FrameType::Text(false), text).is_err() {
             let mut active = self.0.lock().unwrap();
             if active.0 == generation {
                 active.1 = None;
+                return true;
             }
         }
+        false
     }
 
     /// Makes `sender` the active connection. Returns the old active connection.
@@ -77,11 +111,14 @@ impl Active {
 
     /// Removes the connection `session` if it is the active connection. Call it only on the HTTP
     /// server task, where the socket number of a closed connection is not yet free.
-    fn remove(&self, session: i32) {
+    /// Returns true when the session was the active page.
+    fn remove(&self, session: i32) -> bool {
         let mut active = self.0.lock().unwrap();
-        if active.1.as_ref().is_some_and(|a| a.session() == session) {
+        let was_active = active.1.as_ref().is_some_and(|a| a.session() == session);
+        if was_active {
             active.1 = None;
         }
+        was_active
     }
 
     fn is_some(&self) -> bool {
@@ -97,6 +134,7 @@ impl Active {
 pub fn start(
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
+    #[cfg(feature = "dmx")] dmx_q: Arc<Queue<DmxMsg>>,
 ) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<(u8, u8)>)> {
     // When all sockets are open, a new connection closes the socket that received data least
     // recently. The active WebSocket receives no data, so it is that socket. The page loads the
@@ -155,6 +193,11 @@ pub fn start(
             .write_all(crate::mem::report().as_bytes())
     })?;
 
+    #[cfg(feature = "dmx")]
+    show_routes(&mut server, &state)?;
+    #[cfg(feature = "dmx")]
+    ofl_routes(&mut server)?;
+
     for path in ["/", "/index.html"] {
         server.fn_handler(path, Method::Get, |req| {
             req.into_response(
@@ -187,7 +230,7 @@ pub fn start(
                 "proto": 1,
                 "version": env!("CARGO_PKG_VERSION"),
                 "device": "esp32",
-                "caps": ["beat", "decks", "output", "settings", "waveform", "ota", "scenes"],
+                "caps": CAPS,
             });
             ws.send(FrameType::Text(false), hello.to_string().as_bytes())?;
             // Only the HTTP server task sets the active page, so the check and the set cannot race.
@@ -201,7 +244,10 @@ pub fn start(
             return ws.send(FrameType::Text(false), msg.as_bytes());
         }
         if ws.is_closed() {
-            ws_active.remove(ws.session());
+            // The active page can leave the network while it holds the strobe. It then does not send the release.
+            if ws_active.remove(ws.session()) {
+                release_strobe(&ws_state);
+            }
             return Ok(());
         }
 
@@ -242,13 +288,23 @@ pub fn start(
             );
         };
         if cmd["type"] == "take_over" {
-            take_over(ws, &ws_active)?;
+            take_over(ws, &ws_active, &ws_state)?;
             let msg = settings.lock().unwrap().message();
             ws.send(FrameType::Text(false), msg.as_bytes())?;
             let msg = settings.lock().unwrap().scenes_message();
             return ws.send(FrameType::Text(false), msg.as_bytes());
         }
-        let reply = command(&cmd, &settings, &ws_state);
+        let reply = command(
+            &cmd,
+            &settings,
+            &ws_state,
+            #[cfg(feature = "dmx")]
+            &dmx_q,
+        );
+        // A command without a reply gives an empty text.
+        if reply.is_empty() {
+            return Ok(());
+        }
         ws.send(FrameType::Text(false), reply.as_bytes())
     };
     server.ws_handler("/ws", None, move |ws| -> Result<(), EspError> {
@@ -274,25 +330,238 @@ pub fn start(
                         beat_msg,
                         r#"{{"type":"beat","device":{device},"beat":{beat}}}"#
                     );
-                    active.send(beat_msg.as_bytes());
+                    if active.send(beat_msg.as_bytes()) {
+                        release_strobe(&state);
+                    }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
             if Instant::now() >= next_status {
                 next_status = Instant::now() + STATUS_INTERVAL;
-                // The OTA check takes about 50 KB of heap for TLS. The status message can then
-                // fail to allocate, so the page gets no status until the check ends.
-                if active.is_some() && !ota::busy() {
+                // The OTA check and an OFL fetch take about 50 KB of heap for TLS. The status
+                // message can then fail to allocate, so the page gets no status until they end.
+                if active.is_some() && !ota::busy() && !ofl::busy() {
                     let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
                     status_message(&state, clock_enabled, &mut status);
-                    active.send(&status);
+                    if active.send(&status) {
+                        release_strobe(&state);
+                    }
                 }
             }
         }
     })?;
 
     Ok((server, beat_tx))
+}
+
+/// Releases the strobe hold. The active page can leave the network while it holds the strobe,
+/// and it cannot send the release.
+fn release_strobe(_state: &State) {
+    #[cfg(feature = "dmx")]
+    _state
+        .dmx_live
+        .strobe_hold
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Adds `GET /ofl/search?q=<text>` and `GET /ofl/fixture?key=<manufacturer>/<model>`.
+///
+/// The handler waits for the fetch of `ofl.rs`. Each step of the fetch can wait up to 10 s.
+/// Meanwhile the HTTP server task serves no other request, and the page gets no beat and no
+/// status. A page from the computer of the developer uses the two routes too (see `dev_origin`).
+/// Thus each reply has `Access-Control-Allow-Origin: *`.
+#[cfg(feature = "dmx")]
+fn ofl_routes(server: &mut EspHttpServer<'static>) -> anyhow::Result<()> {
+    type Fetch = fn(&str) -> Result<Vec<u8>, (u16, String)>;
+    let routes: [(&str, &str, Fetch); 2] = [
+        ("/ofl/search", "q", ofl::search),
+        ("/ofl/fixture", "key", ofl::fixture),
+    ];
+    for (path, name, fetch) in routes {
+        server.fn_handler(path, Method::Get, move |req| -> anyhow::Result<()> {
+            let (origin, host) = (req.header("Origin"), req.header("Host"));
+            let reply = if !origin_allowed(origin, host) {
+                log::warn!("GET {path} refused: Origin {origin:?} does not match Host {host:?}");
+                Err((
+                    403,
+                    "The Origin of the page does not match the Host.".to_string(),
+                ))
+            } else {
+                match query_value(req.uri(), name) {
+                    Some(value) => fetch(&value),
+                    None => Err((400, format!("The request has no valid value for {name}."))),
+                }
+            };
+            let cors = ("Access-Control-Allow-Origin", "*");
+            match reply {
+                Ok(body) => req
+                    .into_response(200, None, &[("Content-Type", "application/json"), cors])?
+                    .write_all(&body)?,
+                Err((status, text)) => req
+                    .into_response(
+                        status,
+                        None,
+                        &[("Content-Type", "text/plain; charset=utf-8"), cors],
+                    )?
+                    .write_all(text.as_bytes())?,
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Returns the URL-decoded value of the query parameter `name` in `uri`. A `+` is a space.
+///
+/// Returns `None` when `uri` has no such parameter, when an escape is not `%` and two hex
+/// digits, or when the text is not UTF-8.
+#[cfg_attr(not(feature = "dmx"), allow(dead_code))]
+fn query_value(uri: &str, name: &str) -> Option<String> {
+    let (_, query) = uri.split_once('?')?;
+    let raw = query
+        .split('&')
+        .find_map(|p| p.strip_prefix(name)?.strip_prefix('='))?;
+    let mut out = Vec::with_capacity(raw.len());
+    let mut bytes = raw.bytes();
+    while let Some(b) = bytes.next() {
+        out.push(match b {
+            b'+' => b' ',
+            b'%' => {
+                let hi = char::from(bytes.next()?).to_digit(16)?;
+                let lo = char::from(bytes.next()?).to_digit(16)?;
+                (hi * 16 + lo) as u8
+            }
+            b => b,
+        });
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Adds `GET /show` and `POST /show`.
+///
+/// A page from the computer of the developer uses the two routes too (see `dev_origin`). The page
+/// sends the POST body as `text/plain`, so the browser sends no preflight request. Thus each
+/// reply has `Access-Control-Allow-Origin: *`, and the route accepts each content type.
+#[cfg(feature = "dmx")]
+fn show_routes(server: &mut EspHttpServer<'static>, state: &Arc<State>) -> anyhow::Result<()> {
+    const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
+
+    let get_state = state.clone();
+    server.fn_handler("/show", Method::Get, move |req| -> anyhow::Result<()> {
+        // The `dmx` thread locks the show for each frame. A clone keeps the lock short.
+        let show = get_state.show.lock().unwrap().clone();
+        let mut resp =
+            req.into_response(200, None, &[("Content-Type", "application/json"), CORS])?;
+        // The buffer sends the JSON in chunks of 512 bytes. The full JSON is not on the heap.
+        let mut w = std::io::BufWriter::with_capacity(512, StdWrite(&mut resp));
+        serde_json::to_writer(&mut w, &show)?;
+        std::io::Write::flush(&mut w)?;
+        Ok(())
+    })?;
+
+    let post_state = state.clone();
+    server.fn_handler(
+        "/show",
+        Method::Post,
+        move |mut req| -> anyhow::Result<()> {
+            let (status, text) = post_show(&mut req, &post_state);
+            let headers = [("Content-Type", "text/plain; charset=utf-8"), CORS];
+            req.into_response(status, None, &headers)?
+                .write_all(text.as_bytes())?;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
+/// Reads, checks and stores the show of `POST /show`. Returns the status and the text of the reply.
+#[cfg(feature = "dmx")]
+fn post_show(req: &mut Request<&mut EspHttpConnection>, state: &State) -> (u16, String) {
+    let (origin, host) = (req.header("Origin"), req.header("Host"));
+    if !origin_allowed(origin, host) {
+        log::warn!("POST /show refused: Origin {origin:?} does not match Host {host:?}");
+        return (
+            403,
+            "The Origin of the page does not match the Host.".into(),
+        );
+    }
+    let len = req
+        .header("Content-Length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    if len > MAX_SHOW_LEN {
+        return (
+            413,
+            format!("The show has {len} bytes. The limit is {MAX_SHOW_LEN} bytes."),
+        );
+    }
+    // The parsed show and the scratch buffer of serde_json for a long string need heap. A body
+    // larger than half of the largest free block can fail to allocate, and the box restarts.
+    // SAFETY: the heap call only reads counters.
+    let block = unsafe { sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT) };
+    if len > block / 2 {
+        log::warn!("POST /show refused: {len} bytes, largest free block {block} bytes");
+        return (503, "Not enough memory for the show. Try again.".into());
+    }
+    // serde_json reads the body in small blocks. A full copy of the body is not on the heap.
+    let body = std::io::BufReader::with_capacity(512, StdRead(&mut *req));
+    let mut show: autoblink_core_dmx::Show = match serde_json::from_reader(body) {
+        Ok(show) => show,
+        Err(e) => return (400, format!("The show is not valid: {e}")),
+    };
+    show.sanitize();
+    // The flash erase and write take time. The firmware holds only the store lock for them, so
+    // the `dmx` thread does not stop.
+    let saved = match state.show_store.lock().unwrap().as_mut() {
+        Some(store) => store.save(&show),
+        None => {
+            return (
+                500,
+                "The box has no show partition. Flash the box over USB to add it.".into(),
+            )
+        }
+    };
+    if let Err(e) = saved {
+        log::warn!("The firmware cannot save the show: {e:#}");
+        return (500, format!("The firmware cannot save the show: {e:#}"));
+    }
+    *state.show.lock().unwrap() = show;
+    log::info!("The page saved a new DMX show");
+    (204, String::new())
+}
+
+/// Gives an `esp_idf_svc::io::Read` to serde_json as a `std::io::Read`.
+#[cfg(feature = "dmx")]
+struct StdRead<R>(R);
+
+#[cfg(feature = "dmx")]
+impl<R: esp_idf_svc::io::Read> std::io::Read for StdRead<R>
+where
+    R::Error: std::error::Error + Send + Sync + 'static,
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf).map_err(std::io::Error::other)
+    }
+}
+
+/// Gives an `esp_idf_svc::io::Write` to serde_json as a `std::io::Write`.
+#[cfg(feature = "dmx")]
+struct StdWrite<W>(W);
+
+#[cfg(feature = "dmx")]
+impl<W: Write> std::io::Write for StdWrite<W>
+where
+    W::Error: std::error::Error + Send + Sync + 'static,
+{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write_all(buf).map_err(std::io::Error::other)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Writes the waveform route body in the host format (`host/src/web/mod.rs`).
@@ -355,7 +624,7 @@ fn write_waveform<W: Write>(w: &mut W, o: &TrackOverview) -> Result<(), W::Error
 
 /// Makes the page that sends this command the active page. Closes the connection of the old
 /// active page.
-fn take_over(ws: &mut EspHttpWsConnection, active: &Active) -> Result<(), EspError> {
+fn take_over(ws: &mut EspHttpWsConnection, active: &Active, state: &State) -> Result<(), EspError> {
     let EspHttpWsConnection::Receiving(sd, _, _) = ws else {
         return Ok(());
     };
@@ -367,6 +636,8 @@ fn take_over(ws: &mut EspHttpWsConnection, active: &Active) -> Result<(), EspErr
         // SAFETY: `sd` is the live server handle of this handler call. A closed `old` socket
         // gives only an error code.
         unsafe { sys::httpd_sess_trigger_close(sd, old) };
+        // The page that loses control also loses its strobe hold.
+        release_strobe(state);
     }
     Ok(())
 }
@@ -377,7 +648,13 @@ fn error(text: &str) -> String {
 }
 
 /// Runs one command from the page. Returns the reply as JSON text: the new settings, or an error.
-fn command(cmd: &Value, settings: &Mutex<Settings>, state: &Arc<State>) -> String {
+/// Returns an empty text for a command without a reply.
+fn command(
+    cmd: &Value,
+    settings: &Mutex<Settings>,
+    state: &Arc<State>,
+    #[cfg(feature = "dmx")] dmx_q: &Queue<DmxMsg>,
+) -> String {
     match cmd["type"].as_str() {
         Some(kind @ ("set" | "cycle")) => {
             let Some(idx) = cmd["idx"].as_u64().map(|i| i as usize) else {
@@ -434,6 +711,39 @@ fn command(cmd: &Value, settings: &Mutex<Settings>, state: &Arc<State>) -> Strin
                 r#"{"type":"reboot"}"#.into()
             }
             Err(e) => error(&format!("The firmware cannot restart: {e}")),
+        },
+        // The `dmx` thread reads the live controls for each frame.
+        #[cfg(feature = "dmx")]
+        Some("dmx_live") => match (cmd["master"].as_f64(), cmd["strobe"].as_bool()) {
+            (Some(master), Some(strobe)) => {
+                use std::sync::atomic::Ordering::Relaxed;
+                let live = &state.dmx_live;
+                live.master.store(master.clamp(0.0, 255.0) as u8, Relaxed);
+                live.strobe_hold.store(strobe, Relaxed);
+                String::new()
+            }
+            _ => error("The command needs master and strobe"),
+        },
+        // A full queue drops the fog. The page can send it again.
+        #[cfg(feature = "dmx")]
+        Some("dmx_fog") => {
+            let _ = dmx_q.send_back(DmxMsg::Fog, 0);
+            String::new()
+        }
+        // A full queue drops the aim. The page sends the next one soon.
+        #[cfg(feature = "dmx")]
+        Some("dmx_aim") => match cmd["fixture"].as_u64().filter(|f| *f < 32) {
+            Some(fixture) => {
+                let axis = |key: &str| cmd[key].as_u64().unwrap_or(0).min(65535) as u16;
+                let msg = DmxMsg::Aim {
+                    fixture: fixture as u8,
+                    pan: axis("pan"),
+                    tilt: axis("tilt"),
+                };
+                let _ = dmx_q.send_back(msg, 0);
+                String::new()
+            }
+            None => error("The command needs a fixture below 32"),
         },
         Some(other) => error(&format!("This device does not support the command {other}")),
         None => error("The command has no type"),
@@ -546,6 +856,10 @@ struct Status<'a> {
     mixer: Option<()>,
     ota: OtaStatus,
     system: SystemJson,
+    /// `None` while the `dmx` thread holds the lock. The page then keeps the last value.
+    #[cfg(feature = "dmx")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dmx: Option<DmxStatus>,
 }
 
 #[derive(Serialize)]
@@ -718,6 +1032,9 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
     if ota.state.is_empty() {
         ota.state = "idle";
     }
+    // The `dmx` thread does not wait for this lock, so the status does not wait either.
+    #[cfg(feature = "dmx")]
+    let dmx = state.dmx_status.try_lock().ok().map(|s| s.clone());
     let status = Status {
         kind: "status",
         source: master.map(|_| "ProLink (network)"),
@@ -748,6 +1065,8 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
             heap_free: unsafe { sys::esp_get_free_heap_size() },
             heap_min: unsafe { sys::esp_get_minimum_free_heap_size() },
         },
+        #[cfg(feature = "dmx")]
+        dmx,
     };
     out.clear();
     // Serialization to a Vec fails only when the heap is full.

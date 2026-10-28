@@ -86,6 +86,21 @@ impl Event {
         }
     }
 
+    /// Returns true for the events of the phrase structure.
+    pub fn is_phrase_event(self) -> bool {
+        matches!(
+            self,
+            Event::Intro
+                | Event::Groove
+                | Event::Build
+                | Event::Drop
+                | Event::Break
+                | Event::Outro
+                | Event::PhraseChange
+                | Event::Fill
+        )
+    }
+
     /// Returns true for the rows of the Rhythm group.
     pub fn is_overlay(self) -> bool {
         matches!(
@@ -152,6 +167,15 @@ pub struct Row {
     pub gate: Gate,
     #[serde(default)]
     pub decay: Decay,
+    /// The hold of each entry of `presets`, in beats of the master. 0 or a missing entry means no
+    /// hold. The beats are `f64` because LLVM for Xtensa cannot compile serde code for an `f32`.
+    /// A row without holds leaves the key out, so that the JSON stays small.
+    #[serde(default, skip_serializing_if = "no_holds")]
+    pub holds: Vec<f64>,
+}
+
+fn no_holds(holds: &[f64]) -> bool {
+    holds.iter().all(|&h| h == 0.0)
 }
 
 /// A note outside the range of the presets, with a name.
@@ -227,10 +251,22 @@ impl ScenesConfig {
         let extras = self.extra.len();
         let mut seen = Vec::new();
         self.rows.retain_mut(|row| {
-            row.presets.retain(|&p| {
-                p < count || (p >= EXTRA_BASE && usize::from(p - EXTRA_BASE) < extras)
-            });
+            // A hold stays with its preset, so the lists are cut together.
+            row.holds.resize(row.presets.len(), 0.0);
+            let valid =
+                |p: u8| p < count || (p >= EXTRA_BASE && usize::from(p - EXTRA_BASE) < extras);
+            let mut keep_entry = row.presets.iter().map(|&p| valid(p));
+            row.holds.retain(|_| keep_entry.next().unwrap_or(false));
+            row.presets.retain(|&p| valid(p));
             row.presets.truncate(MAX_ROW_PRESETS);
+            row.holds.truncate(row.presets.len());
+            for h in &mut row.holds {
+                *h = if h.is_finite() && *h > 0.0 {
+                    h.clamp(0.0625, MAX_DECAY_BEATS)
+                } else {
+                    0.0
+                };
+            }
             if !ADVANCE_BARS.contains(&row.advance) {
                 row.advance = 0;
             }
@@ -287,6 +323,10 @@ pub struct SceneInput {
     pub phrase: Option<ScenePhrase>,
     /// True while the bass is cut on all live mixer channels. It is `None` without mixer data.
     pub bass_cut: Option<bool>,
+    /// The bucket that the drop guess gives now. The engine uses it only without a phrase.
+    pub guess: Option<Event>,
+    /// The beat in the 16-beat block, 1 to 16. 0 means unknown.
+    pub phrase16: u8,
 }
 
 /// The current scene, for the page.
@@ -302,6 +342,8 @@ pub struct SceneStatus {
     pub bars_left: Option<u8>,
     /// The phrase bucket of the master deck now.
     pub phrase: Option<Event>,
+    /// True when `phrase` comes from the guess, not from a phrase of the player.
+    pub guessed: bool,
     /// The number of times that each event occurred, in the order of `Event::ALL`. Each event
     /// counts, also without presets in its row. The count wraps at 256. The page flashes the
     /// title of a row when its count changes.
@@ -320,6 +362,12 @@ struct Cursor {
     bars: u8,
     /// The time of the last trigger.
     fired_ms: u64,
+    /// The hold that keeps the row busy: (end time, channel, note).
+    hold: Option<(u64, u8, u8)>,
+    /// A trigger came while the row was busy. It fires when the hold ends.
+    pending: bool,
+    /// A bar step is among the pending triggers. The row advances before it fires.
+    pending_step: bool,
 }
 
 /// The scene engine has no clock and no I/O, like the mapper.
@@ -338,6 +386,10 @@ pub struct Scenes {
     phrase_key: Option<(u8, u32, usize)>,
     /// The (device, track, phrase) that the fill-in row fired for.
     fill_key: Option<(u8, u32, usize)>,
+    /// The (device, track) that `guess_last` belongs to.
+    guess_key: Option<(u8, u32)>,
+    /// The last bucket that the guess fired for `guess_key`.
+    guess_last: Option<Event>,
     /// The phrase index that a beat predicted. The status change to it fires no overlay.
     predicted_idx: Option<usize>,
     /// The time of the last phrase change or fill-in overlay from the status.
@@ -345,6 +397,8 @@ pub struct Scenes {
     ms_per_beat: f64,
     events: [u8; EVENT_COUNT],
     last: [Option<u8>; EVENT_COUNT],
+    /// The presets that rows sent since the last `drain_fired`: (event, preset entry).
+    fired: Vec<(Event, u8)>,
 }
 
 impl Default for Scenes {
@@ -359,14 +413,20 @@ impl Default for Scenes {
             prev: SceneInput::default(),
             phrase_key: None,
             fill_key: None,
+            guess_key: None,
+            guess_last: None,
             predicted_idx: None,
             status_overlay_ms: None,
             ms_per_beat: 500.0,
             events: [0; EVENT_COUNT],
             last: [None; EVENT_COUNT],
+            fired: Vec::with_capacity(8),
         }
     }
 }
+
+/// The most entries that `Scenes::fired` keeps.
+const FIRED_MAX: usize = 16;
 
 fn index(e: Event) -> usize {
     e as usize
@@ -460,6 +520,12 @@ impl Scenes {
             if cfg.row(Event::Play).is_none() {
                 // Without a play row, the phrase row fires again below.
                 self.phrase_key = None;
+                if let (None, Some(e)) = (s.phrase, s.guess) {
+                    // The guess acts like a phrase: it fires again after a pause.
+                    self.guess_key = Some((s.device, s.track));
+                    self.guess_last = Some(e);
+                    self.event(cfg, e, now_ms, out);
+                }
             }
         } else if !s.playing && p.playing {
             self.event(cfg, Event::Stop, now_ms, out);
@@ -505,26 +571,58 @@ impl Scenes {
                     }
                 }
             }
-            None => self.phrase_key = None,
+            None => {
+                self.phrase_key = None;
+                self.guess_update(cfg, s, now_ms, out);
+            }
         }
         self.prev = *s;
     }
 
+    /// Fires the guessed bucket at the start of a 16-beat block. It fires only when the guess
+    /// differs from the last bucket that the guess fired for this track.
+    fn guess_update(
+        &mut self,
+        cfg: &ScenesConfig,
+        s: &SceneInput,
+        now_ms: u64,
+        out: &mut impl FnMut(Out),
+    ) {
+        let key = Some((s.device, s.track));
+        let key_changed = self.guess_key != key;
+        if key_changed {
+            self.guess_key = key;
+            self.guess_last = None;
+        }
+        let block_start = s.phrase16 == 1 && (self.prev.phrase16 != 1 || key_changed);
+        if let Some(e) = s.guess.filter(|_| block_start) {
+            if self.guess_last != Some(e) {
+                self.guess_last = Some(e);
+                self.event(cfg, e, now_ms, out);
+            }
+        }
+    }
+
     /// Returns the time of the next flash note off, so that the caller can wake up for it.
     pub fn next_off_ms(&self) -> Option<u64> {
-        self.flashes.iter().map(|f| f.0).min()
+        let holds = self.cursors.iter().filter_map(|c| c.hold.map(|h| h.0));
+        self.flashes.iter().map(|f| f.0).chain(holds).min()
     }
 
     /// Returns the current scene for the page.
     pub fn status(&self, cfg: &ScenesConfig) -> SceneStatus {
-        let phrase = self
+        let real = self
             .prev
             .phrase
             .and_then(|p| p.code)
             .and_then(Event::bucket);
+        let fired_guess = self.guess_last.filter(|_| self.prev.phrase.is_none());
+        let guessed = fired_guess.is_some();
+        let phrase = fired_guess.or(real);
         let Some((e, row)) = self.current.and_then(|e| Some((e, cfg.row(e)?))) else {
             return SceneStatus {
                 phrase,
+                guessed,
                 events: self.events,
                 last: self.last,
                 ..SceneStatus::default()
@@ -543,6 +641,7 @@ impl Scenes {
             next,
             bars_left: (row.advance > 0).then(|| row.advance.saturating_sub(c.bars)),
             phrase,
+            guessed,
             events: self.events,
             last: self.last,
         }
@@ -561,9 +660,19 @@ impl Scenes {
 
     /// Fires the current preset of a row, and moves the row to its next preset.
     fn fire(&mut self, cfg: &ScenesConfig, e: Event, now_ms: u64, out: &mut impl FnMut(Out)) {
-        if !cfg.enabled {
+        if !cfg.enabled || cfg.row(e).is_none() {
             return;
         }
+        let c = &mut self.cursors[index(e)];
+        if c.hold.is_some() {
+            c.pending = true;
+            return;
+        }
+        self.fire_now(cfg, e, now_ms, out);
+    }
+
+    /// Fires the row at once, also when it is busy.
+    fn fire_now(&mut self, cfg: &ScenesConfig, e: Event, now_ms: u64, out: &mut impl FnMut(Out)) {
         let Some(row) = cfg.row(e) else { return };
         let len = row.presets.len() as u8;
         let c = &mut self.cursors[index(e)];
@@ -599,6 +708,11 @@ impl Scenes {
                 continue;
             }
             c.bars = 0;
+            if c.hold.is_some() && self.current == Some(row.event) {
+                c.pending = true;
+                c.pending_step = true;
+                continue;
+            }
             advance(c, row.order, len, &mut self.rng);
             let step = c.pos % len;
             if self.current == Some(row.event) {
@@ -618,6 +732,10 @@ impl Scenes {
         out: &mut impl FnMut(Out),
     ) {
         self.last[index(row.event)] = Some(step);
+        if self.fired.len() >= FIRED_MAX {
+            self.fired.remove(0);
+        }
+        self.fired.push((row.event, row.presets[usize::from(step)]));
         let ch = cfg.channel;
         let note = cfg.note(row.presets[usize::from(step)]);
         // A flash of the same note stays on. The new flash replaces its off time.
@@ -645,6 +763,12 @@ impl Scenes {
             out(Out::NoteOff { ch: p.0, note: p.1 });
         }
         out(Out::NoteOn { ch, note, vel: 127 });
+        let hold = row.holds.get(usize::from(step)).copied().unwrap_or(0.0);
+        if hold > 0.0 {
+            let end = now_ms + (hold * self.ms_per_beat).max(1.0) as u64;
+            self.cursors[index(row.event)].hold = Some((end, ch, note));
+            return;
+        }
         match row.gate {
             Gate::Pulse => {
                 out(Out::NoteOff { ch, note });
@@ -658,6 +782,14 @@ impl Scenes {
                 };
                 self.flashes.push((now_ms + ms.max(1.0) as u64, ch, note));
             }
+        }
+    }
+
+    /// Calls `f(event, preset)` for each preset that a row sent since the last call, in order.
+    /// The list keeps the newest 16 entries.
+    pub fn drain_fired(&mut self, mut f: impl FnMut(Event, u8)) {
+        for (e, p) in self.fired.drain(..) {
+            f(e, p);
         }
     }
 
@@ -678,6 +810,30 @@ impl Scenes {
         if ended {
             self.restore_held(cfg, out);
         }
+        for (i, e) in Event::ALL.into_iter().enumerate() {
+            let c = &mut self.cursors[i];
+            let Some((end, ch, note)) = c.hold else {
+                continue;
+            };
+            if end > now_ms {
+                continue;
+            }
+            c.hold = None;
+            let pending = std::mem::take(&mut c.pending);
+            let step = std::mem::take(&mut c.pending_step);
+            if held != Some((ch, note)) {
+                out(Out::NoteOff { ch, note });
+            }
+            self.restore_held(cfg, out);
+            // A scene row that is no longer the current scene drops its queued fire.
+            if pending && cfg.enabled && (e.is_overlay() || self.current == Some(e)) {
+                if let Some(row) = cfg.row(e).filter(|r| step && r.advance > 0) {
+                    let c = &mut self.cursors[i];
+                    advance(c, row.order, row.presets.len() as u8, &mut self.rng);
+                }
+                self.fire_now(cfg, e, now_ms, out);
+            }
+        }
     }
 
     /// Sends the held note again after an overlay went off. Only with one preset at a time.
@@ -685,7 +841,16 @@ impl Scenes {
         if !cfg.one_at_a_time {
             return;
         }
-        if let Some((ch, note)) = self.held {
+        // A hold entry of a scene row is on too, and it shows the preset. Any newer held note
+        // took its place in `held` when it fired.
+        let hold = self
+            .cursors
+            .iter()
+            .zip(Event::ALL)
+            .filter(|(c, e)| c.hold.is_some() && !e.is_overlay())
+            .max_by_key(|(c, _)| c.fired_ms)
+            .and_then(|(c, _)| c.hold.map(|h| (h.1, h.2)));
+        if let Some((ch, note)) = self.held.or(hold) {
             out(Out::NoteOn { ch, note, vel: 127 });
         }
     }
@@ -696,6 +861,13 @@ impl Scenes {
         }
         if let Some((ch, note)) = self.held.take() {
             out(Out::NoteOff { ch, note });
+        }
+        for c in &mut self.cursors {
+            if let Some((_, ch, note)) = c.hold.take() {
+                out(Out::NoteOff { ch, note });
+            }
+            c.pending = false;
+            c.pending_step = false;
         }
     }
 }
@@ -754,6 +926,7 @@ mod tests {
             order: Order::Up,
             gate: Gate::Pulse,
             decay: Decay::default(),
+            holds: Vec::new(),
         }
     }
 
@@ -788,7 +961,223 @@ mod tests {
                 fill_beats_left: None,
             }),
             bass_cut: None,
+            guess: None,
+            phrase16: 0,
         }
+    }
+
+    fn guess_in(track: u32, guess: Event, phrase16: u8) -> SceneInput {
+        SceneInput {
+            track,
+            phrase: None,
+            guess: Some(guess),
+            phrase16,
+            ..input(0, 0, 8)
+        }
+    }
+
+    fn drops(s: &mut Scenes, c: &ScenesConfig, now: &mut u64, seq: &[(u32, Event, u8)]) -> usize {
+        let mut n = 0;
+        // Prime the engine at `now`, so that the Play edge of the first step fires nothing.
+        let prime = SceneInput {
+            guess: None,
+            phrase16: 0,
+            ..guess_in(seq[0].0, Event::Drop, 0)
+        };
+        s.update(c, *now, &prime, &mut |_| {});
+        for &(t, g, p) in seq {
+            *now += 500;
+            s.update(c, *now, &guess_in(t, g, p), &mut |_| {});
+            s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
+        }
+        n
+    }
+
+    #[test]
+    fn guess_fires_on_block_start() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let mut now = 0;
+        assert_eq!(drops(&mut s, &c, &mut now, &[(7, Event::Drop, 16)]), 0);
+        assert_eq!(drops(&mut s, &c, &mut now, &[(7, Event::Drop, 1)]), 1);
+        let st = s.status(&c);
+        assert!(st.guessed);
+        assert_eq!(st.phrase, Some(Event::Drop));
+    }
+
+    #[test]
+    fn guess_waits_for_block_start() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let mut now = 0;
+        let seq = [
+            (7, Event::Intro, 6),
+            (7, Event::Drop, 7),
+            (7, Event::Drop, 8),
+        ];
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 0);
+        assert_eq!(
+            drops(
+                &mut s,
+                &c,
+                &mut now,
+                &[(7, Event::Drop, 16), (7, Event::Drop, 1)]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn same_guess_does_not_refire() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let mut now = 0;
+        assert_eq!(drops(&mut s, &c, &mut now, &[(7, Event::Drop, 16)]), 0);
+        let seq = [
+            (7, Event::Drop, 1),
+            (7, Event::Drop, 16),
+            (7, Event::Drop, 1),
+        ];
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 1);
+    }
+
+    #[test]
+    fn phrases_win() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let with_phrase = |p16| SceneInput {
+            guess: Some(Event::Drop),
+            phrase16: p16,
+            ..input(0, 1, 8)
+        };
+        s.update(&c, 0, &with_phrase(16), &mut |_| {});
+        s.update(&c, 10, &with_phrase(1), &mut |_| {});
+        let mut n = 0;
+        s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
+        assert_eq!(n, 0);
+        assert!(!s.status(&c).guessed);
+    }
+
+    #[test]
+    fn play_without_row_refires_guess() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let mut now = 0;
+        let seq = [(7, Event::Drop, 16), (7, Event::Drop, 1)];
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 1);
+        let stopped = SceneInput {
+            playing: false,
+            ..guess_in(7, Event::Drop, 5)
+        };
+        s.update(&c, 5000, &stopped, &mut |_| {});
+        s.update(&c, 5100, &guess_in(7, Event::Drop, 5), &mut |_| {});
+        let mut n = 0;
+        s.drain_fired(|e, _| n += usize::from(e == Event::Drop));
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn block_start_after_reset_on_beat_one() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let mut now = 0;
+        let seq = [(7, Event::Drop, 1), (8, Event::Drop, 1)];
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 2);
+    }
+
+    #[test]
+    fn status_shows_the_fired_guess() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let mut now = 0;
+        let idle = SceneInput {
+            playing: false,
+            ..guess_in(7, Event::Groove, 5)
+        };
+        s.update(&c, 0, &idle, &mut |_| {});
+        let st = s.status(&c);
+        assert!(!st.guessed);
+        assert_eq!(st.phrase, None);
+        let none = SceneInput {
+            guess: None,
+            ..idle
+        };
+        s.update(&c, 5, &none, &mut |_| {});
+        assert!(!s.status(&c).guessed);
+        drops(
+            &mut s,
+            &c,
+            &mut now,
+            &[(7, Event::Drop, 16), (7, Event::Drop, 1)],
+        );
+        s.update(&c, 9000, &guess_in(7, Event::Break, 5), &mut |_| {});
+        let st = s.status(&c);
+        assert!(st.guessed);
+        assert_eq!(st.phrase, Some(Event::Drop));
+    }
+
+    #[test]
+    fn track_change_resets_guess() {
+        let c = cfg(vec![row(Event::Drop, &[3])]);
+        let mut s = Scenes::default();
+        let mut now = 0;
+        let seq = [
+            (7, Event::Drop, 16),
+            (7, Event::Drop, 1),
+            (8, Event::Drop, 16),
+            (8, Event::Drop, 1),
+        ];
+        assert_eq!(drops(&mut s, &c, &mut now, &seq), 2);
+    }
+
+    #[test]
+    fn drain_fired_reports_event_and_preset() {
+        let c = cfg(vec![row(Event::Drop, &[3, 4])]);
+        let mut s = Scenes::default();
+        s.update(&c, 1000, &input(0, 8, 16), &mut |_| {});
+        let mut got = Vec::new();
+        s.drain_fired(|e, p| got.push((e, p)));
+        assert_eq!(got, vec![(Event::Drop, 3)]);
+        let mut again = Vec::new();
+        s.drain_fired(|e, p| again.push((e, p)));
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn drain_fired_reports_bar_steps() {
+        let mut drop = row(Event::Drop, &[0, 1]);
+        drop.advance = 1;
+        let c = cfg(vec![drop]);
+        let mut s = Scenes::default();
+        s.update(&c, 1000, &input(0, 8, 32), &mut |_| {});
+        s.beat(&c, 3000, 1, &mut |_| {});
+        let mut got = Vec::new();
+        s.drain_fired(|e, p| got.push((e, p)));
+        assert_eq!(got, vec![(Event::Drop, 0), (Event::Drop, 1)]);
+    }
+
+    #[test]
+    fn drain_fired_keeps_16_and_skips_disabled() {
+        let mut c = cfg(vec![row(Event::Beat, &[1])]);
+        let mut s = Scenes::default();
+        for i in 0..20 {
+            s.beat(&c, 1000 + i * 500, 2, &mut |_| {});
+        }
+        let mut n = 0;
+        s.drain_fired(|_, _| n += 1);
+        assert_eq!(n, 16);
+        c.enabled = false;
+        s.beat(&c, 20000, 2, &mut |_| {});
+        s.drain_fired(|_, _| n += 1);
+        assert_eq!(n, 16);
+    }
+
+    #[test]
+    fn phrase_events() {
+        assert!(Event::Drop.is_phrase_event());
+        assert!(Event::Fill.is_phrase_event());
+        assert!(!Event::Beat.is_phrase_event());
+        assert!(!Event::Stop.is_phrase_event());
     }
 
     #[test]
@@ -1170,6 +1559,8 @@ mod tests {
             bpm: 120.0,
             phrase: None,
             bass_cut: Some(false),
+            guess: None,
+            phrase16: 0,
         };
         s.update(&cfg, 0, &base, &mut |_| {});
         s.update(
@@ -1270,5 +1661,188 @@ mod tests {
             serde_json::from_str::<ScenesConfig>("{}").unwrap(),
             ScenesConfig::default()
         );
+    }
+
+    fn hold_cfg(holds: &[f64]) -> ScenesConfig {
+        let mut r = row(Event::Beat, &[0, 1]);
+        r.holds = holds.to_vec();
+        cfg(vec![r])
+    }
+
+    #[test]
+    fn hold_blocks_and_queues() {
+        let c = hold_cfg(&[2.0, 0.0]);
+        let mut s = Scenes::default();
+        let mut out = Vec::new();
+        s.beat(&c, 0, 2, &mut |o| out.push(o));
+        assert_eq!(
+            out[0],
+            Out::NoteOn {
+                ch: 9,
+                note: 0,
+                vel: 127
+            }
+        );
+        out.clear();
+        s.beat(&c, 500, 3, &mut |o| out.push(o));
+        s.update(&c, 999, &input(0, 0, 30), &mut |o| out.push(o));
+        assert!(out.is_empty());
+        s.update(&c, 1000, &input(0, 0, 29), &mut |o| out.push(o));
+        assert_eq!(out[0], Out::NoteOff { ch: 9, note: 0 });
+        assert_eq!(
+            out[1],
+            Out::NoteOn {
+                ch: 9,
+                note: 1,
+                vel: 127
+            }
+        );
+        let mut fired = Vec::new();
+        s.drain_fired(|e, p| fired.push((e, p)));
+        assert_eq!(fired, [(Event::Beat, 0), (Event::Beat, 1)]);
+    }
+
+    #[test]
+    fn hold_without_pending_just_ends() {
+        let mut r = row(Event::Beat, &[0]);
+        r.holds = vec![1.0];
+        let c = cfg(vec![r]);
+        let mut s = Scenes::default();
+        let mut out = Vec::new();
+        s.beat(&c, 0, 2, &mut |o| out.push(o));
+        out.clear();
+        s.update(&c, 499, &input(0, 0, 30), &mut |o| out.push(o));
+        assert!(out.is_empty());
+        s.update(&c, 500, &input(0, 0, 30), &mut |o| out.push(o));
+        assert_eq!(out, [Out::NoteOff { ch: 9, note: 0 }]);
+        assert_eq!(s.next_off_ms(), None);
+    }
+
+    #[test]
+    fn holds_sanitize() {
+        let mut c = ScenesConfig {
+            count: 16,
+            rows: vec![Row {
+                holds: vec![1.0],
+                ..row(Event::Beat, &[0, 1, 2])
+            }],
+            ..ScenesConfig::default()
+        };
+        c.sanitize();
+        assert_eq!(c.rows[0].holds, [1.0, 0.0, 0.0]);
+        c.rows[0].holds = vec![99.0, -1.0, f64::NAN, 5.0];
+        c.sanitize();
+        assert_eq!(c.rows[0].holds, [MAX_DECAY_BEATS, 0.0, 0.0]);
+        c.rows[0].holds = vec![0.01, 0.0, 1.0];
+        c.sanitize();
+        assert_eq!(c.rows[0].holds, [0.0625, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn next_off_includes_hold() {
+        let c = hold_cfg(&[2.0, 0.0]);
+        let mut s = Scenes::default();
+        s.beat(&c, 0, 2, &mut |_| {});
+        assert_eq!(s.next_off_ms(), Some(1000));
+    }
+
+    #[test]
+    fn old_json_without_holds_parses() {
+        let r: Row = serde_json::from_str(r#"{"event":"beat","presets":[1]}"#).unwrap();
+        assert!(r.holds.is_empty());
+        let c = cfg(vec![r]);
+        let mut s = Scenes::default();
+        let mut out = Vec::new();
+        s.beat(&c, 0, 2, &mut |o| out.push(o));
+        s.beat(&c, 500, 3, &mut |o| out.push(o));
+        assert_eq!(out.len(), 4);
+    }
+
+    #[test]
+    fn switching_off_clears_holds() {
+        let mut c = hold_cfg(&[2.0, 0.0]);
+        let mut s = Scenes::default();
+        s.beat(&c, 0, 2, &mut |_| {});
+        s.beat(&c, 500, 3, &mut |_| {});
+        c.enabled = false;
+        let mut out = Vec::new();
+        s.update(&c, 600, &input(0, 0, 30), &mut |o| out.push(o));
+        assert_eq!(out, [Out::NoteOff { ch: 9, note: 0 }]);
+        assert_eq!(s.next_off_ms(), None);
+        c.enabled = true;
+        out.clear();
+        s.update(&c, 1000, &input(0, 0, 29), &mut |o| out.push(o));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn two_triggers_in_one_hold_give_one_queued_fire() {
+        let c = hold_cfg(&[2.0, 0.0]);
+        let mut s = Scenes::default();
+        let mut out = Vec::new();
+        s.beat(&c, 0, 2, &mut |o| out.push(o));
+        s.beat(&c, 500, 3, &mut |o| out.push(o));
+        s.beat(&c, 750, 4, &mut |o| out.push(o));
+        out.clear();
+        s.update(&c, 1000, &input(0, 0, 29), &mut |o| out.push(o));
+        assert_eq!(notes(&out), [1]);
+        out.clear();
+        s.update(&c, 1100, &input(0, 0, 28), &mut |o| out.push(o));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_pulse_overlay_restores_the_hold_note() {
+        let mut intro = row(Event::Intro, &[3]);
+        intro.holds = vec![8.0];
+        let c = cfg(vec![intro, row(Event::Downbeat, &[7])]);
+        let mut s = Scenes::default();
+        s.update(&c, 0, &input(0, 0, 32), &mut |_| {});
+        let mut out = Vec::new();
+        s.beat(&c, 1000, 1, &mut |o| out.push(o));
+        assert_eq!(
+            out,
+            [
+                Out::NoteOn {
+                    ch: 9,
+                    note: 7,
+                    vel: 127
+                },
+                Out::NoteOff { ch: 9, note: 7 },
+                Out::NoteOn {
+                    ch: 9,
+                    note: 3,
+                    vel: 127
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_queued_fire_of_a_replaced_scene_is_dropped() {
+        let mut intro = row(Event::Intro, &[1, 2]);
+        intro.holds = vec![32.0, 0.0];
+        let c = cfg(vec![intro, row(Event::Groove, &[5])]);
+        let mut s = Scenes::default();
+        s.update(&c, 0, &input(0, 3, 32), &mut |_| {});
+        let mut out = Vec::new();
+        s.event(&c, Event::Intro, 0, &mut |o| out.push(o));
+        s.event(&c, Event::Groove, 100, &mut |o| out.push(o));
+        s.event(&c, Event::Intro, 200, &mut |o| out.push(o));
+        out.clear();
+        s.update(&c, 16_000, &input(0, 3, 10), &mut |o| out.push(o));
+        assert_eq!(notes(&out), Vec::<u8>::new());
+        assert_eq!(s.current, Some(Event::Groove));
+    }
+
+    #[test]
+    fn rows_without_holds_serialize_without_the_key() {
+        let json = serde_json::to_string(&row(Event::Beat, &[1])).unwrap();
+        assert!(!json.contains("holds"));
+        let mut r = row(Event::Beat, &[1]);
+        r.holds = vec![2.0];
+        assert!(serde_json::to_string(&r)
+            .unwrap()
+            .contains("\"holds\":[2.0]"));
     }
 }

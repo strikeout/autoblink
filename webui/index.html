@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AUTOBLINK</title>
+<!-- The icon is inline, so that the host, the emulator and the ESP32 need no icon route. -->
+<link id="icon" rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='c' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23fff'/%3E%3Cstop offset='.5' stop-color='%23ff2bd6'/%3E%3Cstop offset='1' stop-color='%237a00ff' stop-opacity='.2'/%3E%3C/linearGradient%3E%3Cfilter id='f' x='-40%25' y='-40%25' width='180%25' height='180%25'%3E%3CfeGaussianBlur stdDeviation='2' result='b'/%3E%3CfeMerge%3E%3CfeMergeNode in='b'/%3E%3CfeMergeNode in='SourceGraphic'/%3E%3C/feMerge%3E%3C/filter%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='%230a0a0f'/%3E%3Cpath d='M32 6L8 54H22L32 32L42 54H56Z' fill='url(%23c)'/%3E%3Cellipse cx='32' cy='55' rx='24' ry='4' fill='%23ff2bd6' opacity='.5'/%3E%3Ccircle cx='32' cy='8' r='4' fill='%23fff' filter='url(%23f)'/%3E%3C/svg%3E">
 <!--
   The shared AUTOBLINK dashboard. The host, the emulator and the ESP32 serve this file.
   It speaks protocol v1 over one WebSocket at /ws (see host/src/web/mod.rs).
@@ -143,11 +145,82 @@ input.num.text{width:150px;text-align:left}
 #p-scenes .hint{color:var(--dim);font-size:11px;margin-left:auto}
 #p-scenes select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
 #p-scenes input.num{width:52px}
+/* DMX live strip */
+.live{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:8px 16px;background:#151524;border-bottom:1px solid var(--border)}
+#boxlink{color:var(--accent)}
+.live .fader{display:flex;align-items:center;gap:10px;flex:1 1 220px;max-width:420px}
+.live .fader b{font-size:11px;letter-spacing:1.4px;color:var(--muted);font-weight:700}
+.live input[type=range]{flex:1;height:28px;min-width:0}
+.live .fader .num{min-width:3.2em;text-align:right}
+.live .big{min-width:96px;height:44px;border-radius:8px;border:1px solid var(--border);background:#1b1b2e;color:var(--text);font-weight:700;letter-spacing:1px;font-size:14px;touch-action:none}
+.live .big.on{background:var(--danger);border-color:var(--danger);color:#fff}
+.live .now{display:flex;flex-wrap:wrap;gap:6px;align-items:center;color:var(--muted);font-size:11px}
+.live .now .chip{cursor:default}
+/* look editor */
+#lookedit select,#p-setup select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
+.editor{margin:-4px 0 14px;padding:12px;border:1px solid var(--accent);border-radius:8px;background:#0b1820}
+.editor h3{font-size:12px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center}
+.editor h3 .seg{margin-left:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.card{background:#10101a;border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px;color:var(--muted);min-width:0}
+.card.off{opacity:.45}
+.card .t{display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:12px;color:var(--text)}
+.card .sws{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.card label{display:flex;gap:6px;align-items:center}
+.card input[type=range]{flex:1;min-width:0}
+.card .pills{display:flex;flex-wrap:wrap;gap:4px}
+.card .par{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
+.pill{padding:1px 9px;border-radius:10px;background:#2a2a3a;font-size:11px;color:var(--muted)}
+.pill.on{background:var(--accent);color:#000;border-color:var(--accent)}
+.swt{width:20px;height:20px;min-width:0;padding:0;border-radius:50%}
+.swt.on{outline:2px solid var(--text);outline-offset:1px}
+.card input[type=color]{width:28px;height:22px;padding:0;border:1px solid var(--border);border-radius:4px;background:none}
+.card input.num{width:52px}
+/* lights setup */
+#p-setup>summary h2 .sum{text-transform:none;letter-spacing:0;color:var(--dim);font-size:12px}
+#p-setup .cardrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:flex-start}
+#p-setup .fxc{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
+#p-setup .oflbox{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
+#p-setup .oflbox[hidden],#p-setup .ofldet[hidden]{display:none}
+#p-setup .oflbox .line,#p-setup .ofldet .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+#p-setup #oflq{width:240px;text-align:left}
+#p-setup .oflres{display:flex;flex-direction:column;max-height:180px;overflow:auto}
+#p-setup .oflres button{text-align:left;border:0;background:none;color:var(--text);padding:2px 4px}
+#p-setup .oflres button:hover{background:#1c1c2a}
+#p-setup .ofldet{display:flex;flex-direction:column;gap:6px}
+#p-setup .ofldet .chs{color:var(--text);word-break:break-word}
+#p-setup button:disabled{opacity:.4;cursor:default}
+#p-setup .fxc.bad{border-color:var(--danger)}
+#p-setup .fxc .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+#p-setup .fxc .rng.bad{color:var(--danger);font-weight:700}
+#p-setup input.name{width:110px;text-align:left}
+#p-setup input.num{width:52px}
+#p-setup .posrow{display:flex;flex-direction:column;gap:2px}
+#p-setup .posrow label{display:flex;gap:6px;align-items:center}
+#p-setup .posrow input[type=range]{width:150px}
+#p-setup .posrow b{color:var(--text);font-weight:600}
+#p-setup .hint{color:var(--dim);font-size:11px}
+#p-setup .section button,#p-setup .section select{margin-left:6px}
 .palette{display:flex;flex-wrap:wrap;gap:6px;padding:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
 .chip{display:inline-flex;flex-direction:column;align-items:flex-start;min-width:64px;padding:4px 8px 5px;border-radius:6px;background:#10303a;border:1px solid #0f5866;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;position:relative}
 .chip b{font-size:15px;color:var(--accent);line-height:1.1}
 .chip small{font-size:10px;color:var(--text);opacity:.85;white-space:nowrap;min-height:1.2em}
 .chip i{position:absolute;top:3px;right:6px;font-style:normal;font-size:9px;color:var(--dim)}
+.chip{--nc:#0f5866}
+.chip.named::after{content:'';position:absolute;left:0;top:0;border:7px solid transparent;border-left-color:var(--nc);border-top-color:var(--nc);border-top-left-radius:6px;pointer-events:none}
+.chip.mini.named::after{border-width:5px}
+.chip.rainbow::after{content:'';position:absolute;left:0;top:0;width:14px;height:14px;border-top-left-radius:6px;background:conic-gradient(from 180deg,#e33,#fd0,#2c2,#2ce,#36f,#a3f,#e33);clip-path:polygon(0 0,100% 0,0 100%);pointer-events:none}
+.chip.mini.rainbow::after{width:10px;height:10px}
+.chip .bulb{position:absolute;right:5px;top:14px;font-size:10px;pointer-events:none}
+.chip .edit{position:absolute;right:4px;bottom:2px;font-size:11px;color:var(--muted);cursor:pointer;padding:0 2px}
+.chip .edit:hover{color:var(--accent)}
+.chip.editing{outline:2px solid var(--accent);outline-offset:1px}
+.chip .hb{margin-left:4px;padding:0 4px;border-radius:4px;background:#000a;color:var(--flash);font-size:10px;font-weight:700;align-self:center}
+.chip.live .hb{background:#0003;color:#000}
+.holdpop{position:absolute;z-index:4;top:100%;left:0;margin-top:4px;width:260px;padding:10px;border-radius:8px;background:#1b1b2e;border:1px solid var(--flash);box-shadow:0 8px 24px #000a;font-size:11px;color:var(--muted);cursor:default}
+.holdpop b{color:var(--text)}
+.holdpop .pills{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:6px 0}
+.holdpop p{line-height:1.4}
 .chip.extra{background:#24163a;border-color:#5b3a8a}
 .chip.extra b{color:#c9a0ff}
 .addnote{display:inline-flex;gap:4px;align-items:center;padding:4px 6px;border:1px dashed var(--dim);border-radius:6px}
@@ -158,6 +231,7 @@ input.num.text{width:150px;text-align:left}
 .chip.mini{min-width:0;flex-direction:row;gap:5px;align-items:baseline;padding:3px 7px}
 .chip.mini b{font-size:13px}
 .chip.mini small{min-height:0}
+.chip:not(.mini) small{padding-right:12px}
 .chip .x{font-style:normal;color:var(--dim);font-size:12px;margin-left:2px;cursor:pointer;padding:0 2px}
 .chip.live{background:var(--flash);border-color:var(--flash)}
 .chip.live b,.chip.live small,.chip.live .x{color:#000}
@@ -177,7 +251,8 @@ input.num.text{width:150px;text-align:left}
 @keyframes evhit{from{color:var(--flash);text-shadow:0 0 8px var(--flash)}}
 .ev.cur{background:rgba(255,208,0,.16);color:var(--flash);box-shadow:inset 3px 0 0 var(--flash)}
 .ev.cur small{color:var(--muted)}
-.drop{display:flex;flex-wrap:wrap;gap:5px;min-height:34px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:#0d0d16;align-items:center}
+.ev .guess{text-transform:none;letter-spacing:.3px;font-weight:400;color:var(--muted)}
+.drop{position:relative;display:flex;flex-wrap:wrap;gap:5px;min-height:34px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:#0d0d16;align-items:center}
 .drop.empty::after{content:'drop a preset';color:var(--dim);font-size:11px}
 .drop.active{border-color:var(--flash);box-shadow:0 0 10px rgba(255,208,0,.35)}
 .drop.target{border:1px dashed var(--accent);background:#0c1d24}
@@ -207,6 +282,13 @@ input.num.text{width:150px;text-align:left}
   <b id="state" class="stop">■ STOP</b>
   <span id="toast"></span>
 </header>
+<div id="boxbar" class="live" hidden><span>The live controls are on the page of the box.</span> <a id="boxlink" target="_blank" rel="noopener">Open the box page</a></div>
+<div id="live" class="live" data-cap="dmx" hidden>
+  <div class="fader" title="The master level of all lights."><b>MASTER</b><input id="ltmaster" type="range" min="0" max="255" value="255"><span id="ltpct" class="num">100%</span></div>
+  <button id="ltstrobe" class="big" title="Hold to strobe all lights.">STROBE</button>
+  <button id="ltfog" class="big" title="Run the fog machine once.">FOG</button>
+  <div id="ltlayers" class="now" title="The looks that play now."></div>
+</div>
 <section id="takeover" class="panel" hidden>
   <h2>Another screen is connected</h2>
   <p>The box sends its status to one screen at a time.</p>
@@ -260,16 +342,17 @@ input.num.text{width:150px;text-align:left}
   </section>
 
   <details id="p-scenes" class="panel wide" data-cap="scenes" open>
-    <summary><h2>DMX Scenes</h2></summary>
+    <summary><h2 id="sctitle">DMX Scenes</h2></summary>
     <div class="scfg">
       <label>Scenes <button id="scon" class="sw"></button></label>
       <label title="The MIDI channel of the DMX controller.">Channel <input id="scch" class="num" inputmode="numeric"></label>
       <label title="The note of preset 1. Preset 2 is the next note.">First note <input id="scfirst" class="num" inputmode="numeric"></label>
       <label title="The number of presets, 1 to 32.">Presets <input id="sccount" class="num" inputmode="numeric"></label>
       <label title="On: the controller shows one preset at a time, and a note off can end the preset that shows. A flash then ends before the next note, and the held scene comes back after a flash or a pulse. Off: the presets are layers, and each flash keeps its full decay.">One preset at a time <button id="scone" class="sw"></button></label>
-      <span class="hint">Drag a preset onto an event · Shift-click for a range · Click a preset to test it · Double-click to rename · Add a note outside the range at the end of the presets</span>
+      <span class="hint">Drag a preset onto an event · Shift-click for a range · Click a preset to test it · Double-click to rename · Add a note outside the range at the end of the presets<span data-cap="dmx" hidden> · 💡 has a DMX look · ✎ opens the look</span></span>
     </div>
     <div id="palette" class="palette"></div>
+    <div id="lookedit" class="editor" hidden></div>
     <div id="slots" class="slots"></div>
     <div class="legend">
       <span><b>on trigger</b> next preset each time the event fires</span>
@@ -279,6 +362,24 @@ input.num.text{width:150px;text-align:left}
       <span><b>hold</b> note stays on until the next scene</span>
       <span><b>flash</b> note goes off after the decay</span>
     </div>
+  </details>
+
+  <details id="p-setup" class="panel wide" data-cap="dmx" hidden>
+    <summary><h2>Lights setup <span id="stsum" class="sum"></span></h2></summary>
+    <div id="ltsrc" class="hint"></div>
+    <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button></div>
+    <div id="ltofl" class="oflbox" hidden>
+      <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span></div>
+      <div id="oflres" class="oflres"></div>
+      <div id="ofldet" class="ofldet" hidden></div>
+    </div>
+    <div id="ltpatch" class="cardrow"></div>
+    <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
+    <div id="ltgroups" class="cardrow"></div>
+    <div class="section" title="A position is a pan and a tilt for each moving head. A row of a look can use one.">Positions <button id="ltaddpos">+ Position</button></div>
+    <div id="ltpos" class="cardrow"></div>
+    <div class="section">Idle look</div>
+    <div id="ltidle" class="cardrow"></div>
   </details>
 
   <details id="p-settings" class="panel wide" data-cap="settings" open>
@@ -344,9 +445,15 @@ function toast(text) {
   toastTimer = setTimeout(() => set('toast', ''), 4000);
 }
 
+// The tab icon blinks on each master beat: the light cone turns yellow for 100 ms.
+const ICON = $('icon').href;
+const ICON_LIT = ICON.replace("offset='.5' stop-color='%23ff2bd6'", "offset='.5' stop-color='%23ffd000'")
+  .replace("opacity='.5'", "opacity='1'").replace("r='4'", "r='6'");
+
 function flash() {
   $('bpm').classList.add('flash'); $('beats').classList.add('flash');
-  setTimeout(() => { $('bpm').classList.remove('flash'); $('beats').classList.remove('flash'); }, 100);
+  $('icon').href = ICON_LIT;
+  setTimeout(() => { $('bpm').classList.remove('flash'); $('beats').classList.remove('flash'); $('icon').href = ICON; }, 100);
 }
 
 function onHello(m) {
@@ -355,10 +462,50 @@ function onHello(m) {
   set('version', 'v' + m.version + (m.device && m.device !== 'host' ? ' · ' + m.device : ''));
   set('fwcur', 'v' + m.version);
   document.querySelectorAll('[data-cap]').forEach((e) => { e.hidden = !caps.has(e.dataset.cap); });
+  if (!showTimer) showFrom = undefined; // a new connection loads the show again
+  syncDmx();
+}
+
+// The show lives on the box when the host finds one, else on the server of this page (with the
+// capability dmx). Only the host page has a status.box.
+const boxIp = () => (status && status.box) || '';
+const showBase = () => (boxIp() ? 'http://' + boxIp() : BASE);
+let showFrom; // undefined: not decided. null: no DMX panels. Else the base of the show.
+
+/** Shows or hides the DMX panels and loads the show again when its endpoint changes. */
+function syncDmx() {
+  if (!caps) return;
+  const box = boxIp(), own = caps.has('dmx');
+  const avail = own || !!box;
+  $('p-setup').hidden = !avail;
+  $('live').hidden = !own || !!box || !$('takeover').hidden;
+  $('boxbar').hidden = !box;
+  if (box) $('boxlink').href = 'http://' + box + '/';
+  set('sctitle', avail ? 'DMX Scenes & Looks' : 'DMX Scenes');
+  const lan = !['127.0.0.1', 'localhost'].includes(location.hostname) && !BOX;
+  set('ltsrc', box ? 'Editing the show of the box at ' + box
+    + '. The preset numbers and names are those of this computer. The box fires its own presets.'
+    + (lan ? ' Open this page at http://127.0.0.1:' + location.port + ' to save to the box.' : '')
+    : 'Editing the show of ' + (BOX ? 'the box at ' + BOX : 'this computer (Art-Net)'));
+  // The first status decides the endpoint, so that the page loads one show only.
+  if (!status) return;
+  const from = avail ? showBase() : null;
+  if (from === showFrom) return;
+  const was = showFrom;
+  const had = was !== undefined && was !== null;
+  showFrom = from;
+  // An edit that waits for its save goes to the old endpoint first.
+  if (showTimer && had) { clearTimeout(showTimer); showPost(true, was); }
+  if (from !== null) {
+    if (had) toast('Now editing the show of ' + (box ? 'the box' : 'this computer'));
+    loadShow();
+  }
 }
 
 function onStatus(s) {
+  const boxWas = boxIp();
   status = s;
+  if (boxIp() !== boxWas || showFrom === undefined) syncDmx();
   const m = s.master;
   set('source', s.source || '—');
   set('mode', s.mode || '—');
@@ -384,6 +531,12 @@ function onStatus(s) {
 
   if (s.output) renderOutput(s.output);
   if (scenes) renderSceneLive(s.scene);
+  if (s.dmx) dmxLast = s.dmx; // some status messages have no dmx field
+  // The server released the strobe: a local hold that is not under the pointer is stale.
+  if (s.dmx && !s.dmx.strobe_hold && strobeHeld && !strobeDown) strobeHeld = false;
+  const ms = $('ltmaster');
+  if (dmxLast && document.activeElement !== ms && !ms.matches(':active')) { ms.value = dmxLast.master; masterPct(); }
+  renderLayers();
   if (s.decks) renderDecks(s);
   if (s.ota) renderOta(s.ota);
   const up = s.system && s.system.uptime_s;
@@ -765,6 +918,7 @@ const setRows = new Map();
 const setGroups = new Map();
 let group = null, groupName = null;
 function onSettings(m) {
+  if (releaseLost) { releaseLost = false; liveSend(false); } // only the active page gets this message
   for (const it of m.items) {
     let row = setRows.get(it.idx);
     if (!row) {
@@ -893,6 +1047,7 @@ function onBeat(m) {
 // Only the ESP32 sends "busy": another page has the status. The host never sends it.
 function onBusy() {
   document.querySelector('main').hidden = true;
+  $('live').hidden = true;
   $('takeover').hidden = false;
   set('conn', 'waiting');
 }
@@ -928,27 +1083,70 @@ const sceneDraft = {}; // the settings of the rows without presets
 const sceneRowEls = new Map();
 
 const SCENE_RHYTHM = ['beat', 'downbeat', 'phrase_change', 'fill'];
+const HOLD_BEATS = [[0, '—'], [0.25, '¼'], [0.5, '½'], [1, '1'], [2, '2'], [4, '4'], [8, '8']];
+let holdPop = null; // { ev, pos }: the row entry that has its hold popover open
+let lookOpen = null; // the preset whose look the editor shows
+
+// Colour words in English and German. The first word that matches wins.
+// A letter must not touch the word, but a German ending (e, en, er, es) may follow it.
+const colourRe = (words) => new RegExp('(?<![\\p{L}])(?:' + words + ')(?:e|en|er|es)?(?![\\p{L}])', 'u');
+const NAME_COLOURS = [
+  [colourRe('rainbow|regenbogen|rgb|multi|disco'), 'rainbow'],
+  [colourRe('uv|black ?light|schwarzlicht|violet|violett|purple|lila'), '#a3f'],
+  [colourRe('magenta|pink|rosa'), '#f3a'],
+  [colourRe('red|rot'), '#e33'],
+  [colourRe('amber|orange|warm'), '#f80'],
+  [colourRe('yellow|gelb|gold'), '#fd0'],
+  [colourRe('green|grün|gruen|lime'), '#2c2'],
+  [colourRe('cyan|türkis|tuerkis|turquoise|aqua|ice|cold|kalt'), '#2ce'],
+  [colourRe('blue|blau|navy'), '#36f'],
+  [colourRe('white|weiß|weiss|strobe|blinder|flash'), '#ddd'],
+  [colourRe('fog|smoke|nebel|haze|dunst'), '#777'],
+  [colourRe('blackout|black|dark|aus|off'), '#222'],
+];
+function nameColour(name) {
+  const s = (name || '').toLowerCase();
+  for (const [re, c] of NAME_COLOURS) if (re.test(s)) return c;
+  return null;
+}
+
+/** The text of a hold badge: "2♩" or "½♩". An empty text means no hold. */
+function holdText(v) {
+  if (!(v > 0)) return '';
+  const f = HOLD_BEATS.find(([b]) => b === v);
+  return (f ? f[1] : String(+v.toFixed(2))) + '♩';
+}
+
+/** Gives a row one hold for each preset. */
+function alignHolds(r) {
+  r.holds = r.presets.map((_, k) => (r.holds && r.holds[k]) || 0);
+  return r;
+}
 
 /** The defaults of a new row: a phrase row steps every 2 bars, a rhythm row holds its note. */
 function sceneRow(ev) {
   const phrase = SCENE_EVENTS.indexOf(ev) < 6;
-  return scenes.rows.find((r) => r.event === ev)
+  return alignHolds(scenes.rows.find((r) => r.event === ev)
     || sceneDraft[ev] || (sceneDraft[ev] = {
-      event: ev, presets: [], advance: phrase ? 2 : 0, order: 'up',
-      gate: SCENE_RHYTHM.includes(ev) ? 'hold' : 'pulse', decay: { beats: 0.5 } });
+      event: ev, presets: [], holds: [], advance: phrase ? 2 : 0, order: 'up',
+      gate: SCENE_RHYTHM.includes(ev) ? 'hold' : 'pulse', decay: { beats: 0.5 } }));
 }
 
 function sceneSave() {
   scenes.rows = SCENE_GROUPS.flatMap((g) => g[3]).map(([ev]) => sceneRow(ev)).filter((r) => r.presets.length);
-  send(Object.assign({ type: 'scenes_set' }, scenes));
+  // The box has little room for the command, so a row without holds sends none.
+  const rows = scenes.rows.map((r) => (r.holds.some((v) => v > 0) ? r : Object.assign({}, r, { holds: undefined })));
+  send(Object.assign({ type: 'scenes_set' }, scenes, { rows }));
   renderScenes();
 }
 
 /** Changes a row. A row that gets presets moves from the draft into the settings. */
 function sceneEdit(ev, f) {
   const r = sceneRow(ev);
+  holdPop = null;
   f(r);
   r.presets = r.presets.slice(0, ROW_MAX);
+  r.holds = alignHolds(r).holds.slice(0, ROW_MAX);
   if (r.presets.length && !scenes.rows.includes(r)) { scenes.rows.push(r); delete sceneDraft[ev]; }
   if (!r.presets.length) { scenes.rows = scenes.rows.filter((x) => x !== r); sceneDraft[ev] = r; }
   sceneSave();
@@ -958,16 +1156,21 @@ function onScenes(m) {
   delete m.type;
   scenes = m;
   // Do not rebuild under an input that has the focus.
-  if ($('p-scenes').contains(document.activeElement) && document.activeElement.tagName === 'INPUT') scenePending = true;
+  const typing = document.activeElement && document.activeElement.tagName === 'INPUT';
+  if ($('p-scenes').contains(document.activeElement) && typing) scenePending = true;
   else renderScenes();
+  if (!(typing && $('p-setup').contains(document.activeElement))) renderLights();
 }
 
 function sceneChip(i, mini) {
   const x = i >= EXTRA_BASE ? scenes.extra[i - EXTRA_BASE] : null;
   const note = x ? x.note : scenes.first_note + i;
   const label = x ? x.label : (scenes.labels[i] || '');
-  return h('span', 'chip' + (mini ? ' mini' : '') + (x ? ' extra' : ''),
+  const nc = x ? nameColour(label) : lookColor(i) || nameColour(label);
+  const c = h('span', 'chip' + (mini ? ' mini' : '') + (x ? ' extra' : '') + (nc === 'rainbow' ? ' rainbow' : nc ? ' named' : ''),
     !mini && h('i', null, 'n' + note), h('b', null, x ? '♪' + note : String(i + 1)), h('small', null, label));
+  if (nc && nc !== 'rainbow') c.style.setProperty('--nc', nc);
+  return c;
 }
 
 /** The form at the end of the palette: a note outside the range, with an optional name. */
@@ -1003,6 +1206,8 @@ function sceneAddForm() {
 function sceneRemoveExtra(k) {
   const gone = EXTRA_BASE + k;
   for (const r of [...scenes.rows, ...Object.values(sceneDraft)]) {
+    alignHolds(r);
+    r.holds = r.holds.filter((_, k) => r.presets[k] !== gone);
     r.presets = r.presets.filter((p) => p !== gone).map((p) => (p > gone ? p - 1 : p));
   }
   scenes.extra.splice(k, 1);
@@ -1036,6 +1241,15 @@ function renderScenes() {
     const c = sceneChip(i, false);
     c.classList.toggle('sel', sceneSel.has(i));
     c.title = 'Note ' + (scenes.first_note + i) + '. Click to test it.';
+    c.classList.toggle('editing', lookOpen === i);
+    if (show) {
+      if (show.looks[i]) c.append(h('span', 'bulb', '💡'));
+      const ed = h('span', 'edit', '✎');
+      ed.title = lookOpen === i ? 'Close the look of this preset.' : 'Edit the DMX look of this preset.';
+      ed.addEventListener('pointerdown', (e) => e.stopPropagation());
+      ed.addEventListener('click', () => { lookOpen = lookOpen === i ? null : i; renderScenes(); renderLights(); });
+      c.append(ed);
+    }
     sceneDrag(c, { from: 'palette', idx: i });
     chips.push(c);
   }
@@ -1084,27 +1298,35 @@ function sceneClosed() {
 
 function sceneRowView(ev, label, sub) {
   const r = sceneRow(ev);
-  const name = h('div', 'ev', label, h('small', null, sub));
+  // The page shows "(guess)" while the bucket of this row comes from the waveform, not from the
+  // phrases of the player.
+  const guess = h('span', 'guess', ' (guess)');
+  guess.hidden = true;
+  guess.title = 'The track has no rekordbox phrases. The bucket comes from the waveform.';
+  const name = h('div', 'ev', label, guess, h('small', null, sub));
   const drop = h('div', 'drop' + (r.presets.length ? '' : ' empty'));
   drop.dataset.ev = ev;
   r.presets.forEach((p, pos) => {
     const c = sceneChip(p, true);
+    if (r.holds[pos] > 0) c.append(h('span', 'hb', holdText(r.holds[pos])));
+    c.title = 'Click to set how long this preset holds.';
     const x = h('em', 'x', '×');
     x.title = 'Remove';
     x.addEventListener('pointerdown', (e) => e.stopPropagation());
-    x.addEventListener('click', () => sceneEdit(ev, (r) => r.presets.splice(pos, 1)));
+    x.addEventListener('click', () => sceneEdit(ev, (r) => rowRemove(r, pos)));
     c.append(x);
     sceneDrag(c, { from: 'row', ev, pos });
     drop.append(c);
   });
   const info = h('span', 'info');
   drop.append(info);
+  if (holdPop && holdPop.ev === ev && r.presets[holdPop.pos] !== undefined) drop.append(holdPopover(ev, r, holdPop.pos));
   // Tap fallback: with a selection in the palette, a click on a row adds it.
   drop.addEventListener('click', (e) => {
     if (e.target !== drop || !sceneSel.size) return;
     const add = [...sceneSel].sort((a, b) => a - b);
     sceneSel.clear();
-    sceneEdit(ev, (r) => r.presets.push(...add));
+    sceneEdit(ev, (r) => rowAdd(r, add));
   });
 
   const parts = [seg([[false, 'on trigger', 'The next preset each time the event fires.'], [true, 'every', 'The next preset every N bars.']],
@@ -1129,8 +1351,32 @@ function sceneRowView(ev, label, sub) {
   })));
   if (r.gate === 'flash') parts.push(...sceneDecay(ev, r));
   const ctl = h('div', 'ctl' + (r.presets.length ? '' : ' dim'), ...parts);
-  sceneRowEls.set(ev, { name, drop, info });
+  sceneRowEls.set(ev, { name, drop, info, guess });
   return [name, drop, ctl];
+}
+
+/** Row edits that keep the holds in line with the presets. */
+function rowAdd(r, list, hold = 0) {
+  for (const p of list) { r.presets.push(p); r.holds.push(hold); }
+}
+function rowRemove(r, pos) {
+  r.presets.splice(pos, 1);
+  r.holds.splice(pos, 1);
+}
+
+/** The popover of the hold of one entry in a row. */
+function holdPopover(ev, r, pos) {
+  const p = r.presets[pos];
+  const x = p >= EXTRA_BASE ? scenes.extra[p - EXTRA_BASE] : null;
+  const name = (x ? x.label : scenes.labels[p]) || (x ? '♪' + x.note : 'Preset ' + (p + 1));
+  const pills = HOLD_BEATS.map(([v, t]) => {
+    const b = h('button', 'pill' + (v === r.holds[pos] ? ' on' : ''), t);
+    b.title = v ? v + (v === 1 ? ' beat' : ' beats') : 'No hold';
+    b.addEventListener('click', () => sceneEdit(ev, (row) => { row.holds[pos] = v; }));
+    return b;
+  });
+  return h('div', 'holdpop', h('b', null, name + ' · hold'), h('div', 'pills', ...pills, 'beats'),
+    h('p', null, 'While ' + name + ' holds, the row waits. The next trigger starts the next preset when ' + name + ' ends.'));
 }
 
 /** The decay of a flash: milliseconds in an input, or beats in a list. */
@@ -1171,7 +1417,10 @@ function renderSceneLive(sc) {
   sceneEvents = events || null;
   for (const ev of SCENE_EVENTS.slice(0, 6)) {
     const el = sceneRowEls.get(ev);
-    if (el) el.name.classList.toggle('cur', !!sc && sc.phrase === ev);
+    if (!el) continue;
+    const cur = !!sc && sc.phrase === ev;
+    el.name.classList.toggle('cur', cur);
+    el.guess.hidden = !(cur && sc.guessed);
   }
   for (const [ev, el] of sceneRowEls) {
     const on = !!sc && sc.row === ev && scenes.enabled;
@@ -1241,6 +1490,12 @@ function sceneRename(i) {
 let sceneLastClick = null;
 
 function sceneClick(src, e) {
+  if (src.from === 'row') {
+    const same = holdPop && holdPop.ev === src.ev && holdPop.pos === src.pos;
+    holdPop = same ? null : { ev: src.ev, pos: src.pos };
+    renderScenes();
+    return;
+  }
   if (src.from !== 'palette') return;
   const i = src.idx;
   const now = Date.now();
@@ -1269,27 +1524,37 @@ function sceneDrop(src, target, e) {
   if (src.from === 'palette') {
     if (!to) return;
     sceneSel.clear();
-    sceneEdit(to, (r) => r.presets.push(...src.presets));
+    sceneEdit(to, (r) => rowAdd(r, src.presets));
     return;
   }
   const preset = sceneRow(src.ev).presets[src.pos];
+  const hold = sceneRow(src.ev).holds[src.pos];
   if (to === src.ev) {
     // Reorder: put the chip before the chip under the pointer, or at the end.
     const under = document.elementFromPoint(e.clientX, e.clientY);
     const chip = under && under.closest('.drop .chip');
     const chips = [...target.querySelectorAll('.chip')];
     sceneEdit(to, (r) => {
-      r.presets.splice(src.pos, 1);
+      rowRemove(r, src.pos);
       let at = chip ? chips.indexOf(chip) : r.presets.length;
       if (chip && at > src.pos) at -= 1;
       r.presets.splice(at, 0, preset);
+      r.holds.splice(at, 0, hold);
     });
     return;
   }
   // A chip that leaves its row moves to the other row, or goes away when it lands outside a row.
-  sceneEdit(src.ev, (r) => r.presets.splice(src.pos, 1));
-  if (to) sceneEdit(to, (r) => r.presets.push(preset));
+  sceneEdit(src.ev, (r) => rowRemove(r, src.pos));
+  if (to) sceneEdit(to, (r) => rowAdd(r, [preset], hold));
 }
+
+// A click outside the hold popover, or Escape, closes it. A click on a row chip toggles it.
+document.addEventListener('pointerdown', (e) => {
+  if (holdPop && !e.target.closest('.holdpop, .drop .chip')) { holdPop = null; renderScenes(); }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && holdPop) { holdPop = null; renderScenes(); }
+});
 
 $('scon').addEventListener('click', () => { if (scenes) { scenes.enabled = !scenes.enabled; sceneSave(); } });
 $('scone').addEventListener('click', () => { if (scenes) { scenes.one_at_a_time = !scenes.one_at_a_time; sceneSave(); } });
@@ -1310,6 +1575,638 @@ for (const [id, apply] of [
 }
 $('p-scenes').addEventListener('focusout', () => setTimeout(() => { if (scenePending) renderScenes(); }));
 
+// ---- DMX lights: the patch, the groups and the looks of the show ----
+const FIXTURE_TYPES = { dimmer: ['dimmer'], rgb: ['red', 'green', 'blue'], rgb_dimmer: ['dimmer', 'red', 'green', 'blue'], rgbw: ['red', 'green', 'blue', 'white'], rgbw_dimmer: ['dimmer', 'red', 'green', 'blue', 'white'], strobe: ['dimmer', 'strobe'], fog: ['fog'], moving_head: ['pan', 'tilt', 'dimmer', 'red', 'green', 'blue'], moving_head_16: ['pan', 'pan_fine', 'tilt', 'tilt_fine', 'dimmer', 'red', 'green', 'blue'] };
+const SWATCHES = [[255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255], [255, 255, 255]];
+const EVERY = [['beat', 'beat'], ['half', '½ beat'], ['bar', 'bar']];
+const EFFECTS = ['none', 'flash', 'pulse', 'chase', 'random', 'strobe', 'fog'];
+let show = null, strobeHeld = false, strobeDown = false, releaseLost = false, showTimer = 0, dmxLast = null, layerKey = '';
+
+const chanLen = (f) => f.channels.length;
+const ftype = (f) => Object.keys(FIXTURE_TYPES).find((k) => FIXTURE_TYPES[k].join() === f.channels.join()) || 'custom';
+const effKind = (e) => (e.effect === 'none' ? 'none' : Object.keys(e.effect)[0]);
+const rgbHex = (c) => '#' + c.slice(0, 3).map((v) => pad2(v.toString(16))).join('');
+
+function nextAddress() {
+  return show.fixtures.reduce((m, f) => Math.max(m, f.address + chanLen(f)), 1);
+}
+
+/** True when the lights overlap on the DMX line, or end after channel 512. */
+function addressBad(i) {
+  const f = show.fixtures[i];
+  return f.address + chanLen(f) > 513 || show.fixtures.some((g, j) => j !== i
+    && f.address < g.address + chanLen(g) && g.address < f.address + chanLen(f));
+}
+
+async function loadShow() {
+  const base = showBase();
+  try {
+    const r = await fetch(base + '/show');
+    if (base !== showBase()) return;
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    if (base !== showBase()) return;
+    show = j;
+    // The host keeps the last show that it read from the box. A failure of this copy is not an error.
+    if (base !== BASE) fetch(BASE + '/show', { method: 'POST', body: JSON.stringify(j) }).catch(() => {});
+    if (!show.positions) show.positions = [];
+    renderLights();
+    renderScenes();
+  } catch (e) {
+    if (base !== showBase()) return;
+    // Do not keep the show of another endpoint: the next edit would overwrite the wrong show.
+    show = null;
+    lookOpen = null;
+    $('lookedit').hidden = true;
+    for (const id of ['ltpatch', 'ltgroups', 'ltpos', 'ltidle']) $(id).replaceChildren();
+    renderScenes();
+    toast('The show did not load: ' + e.message);
+  }
+}
+
+/** Saves the show 1 s after the last change. A plain POST is a simple CORS request. */
+function showSave() {
+  clearTimeout(showTimer);
+  showTimer = setTimeout(() => showPost(true, showBase()), 1000);
+}
+
+async function showPost(retry, base) {
+  showTimer = 0;
+  if (!show) return;
+  try {
+    const body = JSON.stringify(show);
+    const r = await fetch(base + '/show', { method: 'POST', body });
+    if (r.status === 503 && retry && base === showBase()) { await new Promise((ok) => setTimeout(ok, 1000)); return showPost(false, base); }
+    if (!r.ok) return toast('The show is not saved: ' + r.status + ' ' + (await r.text()).trim());
+    // The host keeps a copy of the show of the box. A failure of this copy is not an error.
+    if (base !== BASE) fetch(BASE + '/show', { method: 'POST', body }).catch(() => {});
+  } catch { toast('The show is not saved: no connection'); }
+}
+
+/** Runs an edit, saves, and draws the panel again. */
+function showEdit(f, redraw = true) {
+  f();
+  showSave();
+  if (redraw) { renderLights(); renderScenes(); }
+}
+
+function pick(options, value, onPick) {
+  const s = h('select', null, ...options.map(([v, t]) => { const o = h('option', null, t); o.value = v; return o; }));
+  s.value = value;
+  s.addEventListener('change', () => onPick(s.value));
+  return s;
+}
+
+function numIn(min, max, value, title, onSet) {
+  const i = h('input', 'num');
+  i.inputMode = 'numeric';
+  i.value = value;
+  i.title = title;
+  i.addEventListener('change', () => {
+    const v = Math.min(max, Math.max(min, parseInt(i.value, 10) || min));
+    i.value = v;
+    showEdit(() => onSet(v), false);
+  });
+  return i;
+}
+
+function textIn(value, title, onSet) {
+  const i = h('input', 'num name');
+  i.value = value;
+  i.title = title;
+  i.maxLength = 16;
+  i.addEventListener('input', () => showEdit(() => onSet(i.value), false));
+  return i;
+}
+
+const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+
+function renderLights() {
+  if (!show || !scenes) return;
+  const patch = show.fixtures.map((f, i) => {
+    const t = ftype(f);
+    const types = Object.keys(FIXTURE_TYPES).map((k) => [k, k.replace('_', ' ')]);
+    if (t === 'custom') types.push(['custom', 'custom']);
+    const bad = addressBad(i);
+    const range = h('span', 'rng' + (bad ? ' bad' : ''), 'DMX ' + f.address + (chanLen(f) > 1 ? '–' + (f.address + chanLen(f) - 1) : ''));
+    const adr = numIn(1, 512, f.address, 'The first DMX channel, 1 to 512.', (v) => { f.address = v; renderLights(); });
+    adr.classList.toggle('bad', bad);
+    const del = h('button', null, '×');
+    del.title = 'Remove this light.';
+    del.addEventListener('click', () => showEdit(() => {
+      show.fixtures.splice(i, 1);
+      for (const p of show.positions) p.aims = p.aims.filter((a) => a.fixture !== i).map((a) => (a.fixture > i ? { ...a, fixture: a.fixture - 1 } : a));
+      for (const g of show.groups) g.fixtures = g.fixtures.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));
+    }));
+    return h('div', 'fxc' + (bad ? ' bad' : ''),
+      h('div', 'line', textIn(f.name, 'The name of the light.', (v) => { f.name = v; }), del),
+      h('div', 'line', pick(types, t, (v) => showEdit(() => { if (v !== 'custom') { f.channels = [...FIXTURE_TYPES[v]]; delete f.ofl; } })), adr),
+      h('div', 'line', range, h('span', null, chanLen(f) + ' ch'), bad && h('span', 'rng bad', 'overlap')),
+      f.ofl && h('div', 'line', h('span', null, 'OFL ' + f.ofl.replace('#', ' · '))));
+  });
+  $('ltpatch').replaceChildren(...patch);
+
+  $('ltgroups').replaceChildren(...show.groups.map((g, gi) => {
+    const del = h('button', null, '×');
+    del.title = 'Remove this group.';
+    del.addEventListener('click', () => showEdit(() => {
+      show.groups.splice(gi, 1);
+      for (const l of show.looks) {
+        if (!l) continue;
+        l.rows = l.rows.filter((r) => r.group !== gi);
+        for (const r of l.rows) if (r.group > gi) r.group--;
+      }
+    }));
+    const tg = h('span', 'seg tg', ...show.fixtures.map((f, i) => {
+      const b = h('button', g.fixtures.includes(i) ? 'on' : null, f.name || 'Light ' + (i + 1));
+      b.addEventListener('click', () => showEdit(() => {
+        g.fixtures = g.fixtures.includes(i) ? g.fixtures.filter((x) => x !== i) : [...g.fixtures, i].sort((a, b2) => a - b2);
+      }));
+      return b;
+    }));
+    return h('div', 'fxc', h('div', 'line', textIn(g.name, 'The name of the group.', (v) => { g.name = v; }), del), tg);
+  }));
+
+  renderPositions();
+  renderLook();
+  const withLook = [['', 'none'], ...show.looks.map((l, i) => (l ? [String(i), (i + 1) + ' ' + (scenes.labels[i] || '')] : null)).filter(Boolean)];
+  const idle = show.idle !== null && show.looks[show.idle] ? show.idle : null;
+  $('ltidle').replaceChildren(pick(withLook, idle === null ? '' : String(idle),
+    (v) => showEdit(() => { show.idle = v === '' ? null : +v; })),
+  ...(idle !== null && idle < scenes.count ? [sceneChip(idle, true)] : []),
+  h('span', 'hint', 'The look that plays when no scene plays. Only a preset with a look can be the idle look.'));
+  set('stsum', '· ' + plural(show.fixtures.length, 'light', 'lights') + ' · ' + plural(show.groups.length, 'group', 'groups')
+    + ' · idle look: ' + (idle === null ? 'none' : (idle + 1) + (scenes.labels[idle] ? ' ' + scenes.labels[idle] : '')));
+  layerKey = '';
+  renderLayers();
+}
+
+const CENTER = 32768;
+const isHead = (f) => f.channels.includes('pan') || f.channels.includes('tilt');
+let aimAt = 0, aimTimer = 0, aimPending = null;
+
+/** Moves a head at once. At most 20 messages for each second go out, and the last value of each head always goes. */
+function aimSend(fixture, a) {
+  clearTimeout(aimTimer);
+  const go = (f, v) => { aimAt = Date.now(); send({ type: 'dmx_aim', fixture: f, pan: v.pan, tilt: v.tilt }); };
+  // A pending value of another head goes out at once, so that the new value cannot replace it.
+  if (aimPending && aimPending.fixture !== fixture) go(aimPending.fixture, aimPending.a);
+  aimPending = { fixture, a };
+  const wait = 50 - (Date.now() - aimAt);
+  if (wait <= 0) { aimPending = null; go(fixture, a); } else aimTimer = setTimeout(() => { aimPending = null; go(fixture, a); }, wait);
+}
+
+/** The position cards: one pan slider and one tilt slider for each moving head. */
+function renderPositions() {
+  const heads = show.fixtures.map((f, i) => [f, i]).filter(([f]) => isHead(f));
+  $('ltaddpos').disabled = !heads.length;
+  $('ltpos').replaceChildren(...(show.positions.length || !heads.length ? [] : [h('span', 'hint', 'Add a position to aim the moving heads.')]),
+    ...(heads.length ? show.positions.map((p, pi) => {
+      const del = h('button', null, '×');
+      del.title = 'Remove this position.';
+      del.addEventListener('click', () => showEdit(() => {
+        show.positions.splice(pi, 1);
+        for (const l of show.looks) {
+          if (!l) continue;
+          for (const r of l.rows) {
+            if (r.position === pi) delete r.position;
+            else if (r.position > pi) r.position--;
+          }
+        }
+      }));
+      const aimOf = (i) => p.aims.find((a) => a.fixture === i) || { fixture: i, pan: CENTER, tilt: CENTER };
+      const rows = heads.map(([f, i]) => {
+        const axis = (label, key) => {
+          const s = h('input');
+          s.type = 'range'; s.min = 0; s.max = 65535; s.step = 256; s.value = aimOf(i)[key];
+          s.title = label + ' of ' + (f.name || 'Light ' + (i + 1)) + ', 0 to 65535.';
+          s.addEventListener('input', () => {
+            const a = aimOf(i);
+            aimSend(i, { ...a, [key]: +s.value });
+          });
+          s.addEventListener('change', () => {
+            const a = aimOf(i);
+            a[key] = +s.value;
+            showEdit(() => { if (!p.aims.includes(a)) p.aims.push(a); }, false);
+            aimSend(i, a);
+          });
+          return h('label', null, label, s);
+        };
+        const mid = h('button', null, 'Center');
+        mid.title = 'Aim this head at the middle.';
+        mid.addEventListener('click', () => {
+          const a = aimOf(i);
+          a.pan = CENTER; a.tilt = CENTER;
+          showEdit(() => { if (!p.aims.includes(a)) p.aims.push(a); });
+          aimSend(i, a);
+        });
+        return h('div', 'posrow', h('b', null, f.name || 'Light ' + (i + 1)), axis('Pan', 'pan'), axis('Tilt', 'tilt'), mid);
+      });
+      return h('div', 'fxc', h('div', 'line', textIn(p.name, 'The name of the position.', (v) => { p.name = v; }), del), ...rows);
+    }) : []));
+}
+
+$('ltaddpos').addEventListener('click', () => {
+  if (!show || show.positions.length >= 8) return toast('8 positions is the maximum.');
+  showEdit(() => show.positions.push({ name: 'Position ' + (show.positions.length + 1), aims: [] }));
+});
+
+/** The look editor under the palette. It shows the look of the preset that has the ✎ open. */
+function renderLook() {
+  const box = $('lookedit');
+  if (lookOpen !== null && lookOpen >= scenes.count) lookOpen = null;
+  box.hidden = lookOpen === null;
+  if (lookOpen === null) return;
+  const i = lookOpen;
+  const look = show.looks[i] || null;
+  const own = () => {
+    while (show.looks.length <= i) show.looks.push(null);
+    return show.looks[i] || (show.looks[i] = { fade: 'cut', rows: [] });
+  };
+  const test = h('button', null, 'Preview');
+  test.hidden = !!boxIp();
+  test.title = 'Send this preset to the lights, as a click on the preset does.';
+  test.addEventListener('click', () => send({ type: 'scene_test', preset: i }));
+  const clear = h('button', null, 'Clear');
+  clear.title = 'Remove the look of this preset.';
+  clear.addEventListener('click', () => showEdit(() => {
+    show.looks[i] = null;
+    if (show.idle === i) show.idle = null;
+  }));
+  const mini = sceneChip(i, true);
+  mini.classList.add('editing');
+  const head = h('h3', null, mini, 'Look of preset ' + (i + 1),
+    seg([['cut', 'cut', 'The look changes at once.'], ['beat', '1 beat', 'The look fades in 1 beat.'], ['bar', '1 bar', 'The look fades in 1 bar.']],
+      look ? look.fade : null, (v) => showEdit(() => { own().fade = v; })),
+    test, clear);
+  const cards = show.groups.map((g, gi) => {
+    const r = look && look.rows.find((x) => x.group === gi);
+    const on = h('button', 'pill' + (r ? ' on' : ''), r ? 'on' : 'off');
+    on.title = 'Use this group in the look.';
+    on.addEventListener('click', () => showEdit(() => {
+      const l = own();
+      if (r) l.rows = l.rows.filter((x) => x.group !== gi);
+      else l.rows.push({ group: gi, color: [255, 0, 0, 0], intensity: 255, effect: 'none', cooldown_s: 0 });
+    }));
+    const title = h('div', 't', g.name || 'Group ' + (gi + 1), on);
+    return r ? h('div', 'card', title, ...lookRowCtl(r, g)) : h('div', 'card off', title, h('div', null, 'Not in this look.'));
+  });
+  box.replaceChildren(head, h('div', 'cards', ...(show.groups.length ? cards : [h('span', 'hint', 'Add a group first.')])));
+}
+
+/** The controls of one row of a look. */
+function lookRowCtl(r, g) {
+  const rd = (f) => showEdit(f, false);
+  const hasWhite = g.fixtures.some((i) => show.fixtures[i] && show.fixtures[i].channels.includes('white'));
+  const sw = SWATCHES.map((c) => {
+    const b = h('button', 'swt' + (r.color[0] === c[0] && r.color[1] === c[1] && r.color[2] === c[2] ? ' on' : ''));
+    b.style.background = rgbHex(c);
+    b.title = rgbHex(c);
+    b.addEventListener('click', () => showEdit(() => { r.color = [...c, r.color[3]]; }));
+    return b;
+  });
+  const col = h('input');
+  col.type = 'color';
+  col.value = rgbHex(r.color);
+  col.title = 'Pick another colour.';
+  col.addEventListener('input', () => rd(() => {
+    r.color = [1, 3, 5].map((k) => parseInt(col.value.slice(k, k + 2), 16)).concat(r.color[3]);
+  }));
+  col.addEventListener('change', () => { renderLights(); renderScenes(); });
+  const out = [h('div', 'sws', ...sw, col)];
+  const range = (label, min, max, v, title, set) => {
+    const s = h('input');
+    s.type = 'range'; s.min = min; s.max = max; s.value = v; s.title = title;
+    s.addEventListener('input', () => rd(() => set(+s.value)));
+    return h('label', null, label, s);
+  };
+  if (hasWhite) out.push(range('White', 0, 255, r.color[3], 'The white level, 0 to 255.', (v) => { r.color[3] = v; }));
+  out.push(range('Level', 0, 255, r.intensity, 'The intensity, 0 to 255.', (v) => { r.intensity = v; }));
+  const kind = effKind(r);
+  out.push(h('div', 'pills', ...EFFECTS.map((k) => {
+    const b = h('button', 'pill' + (k === kind ? ' on' : ''), k);
+    b.addEventListener('click', () => showEdit(() => {
+      r.effect = { none: 'none', strobe: { strobe: { rate: 128, beats: 1 } }, fog: { fog: { ms: 1000 } } }[k] || { [k]: { every: 'beat' } };
+      if (k === 'strobe') r.cooldown_s = 4;
+      else if (k === 'fog') r.cooldown_s = 30;
+    }));
+    return b;
+  })));
+  const par = [];
+  if (['flash', 'pulse', 'chase', 'random'].includes(kind)) {
+    par.push(h('label', null, 'every ', pick(EVERY, r.effect[kind].every, (v) => rd(() => { r.effect[kind].every = v; }))));
+  }
+  if (kind === 'strobe') {
+    par.push(h('label', null, 'rate ', numIn(0, 255, r.effect.strobe.rate, 'The strobe rate, 0 to 255.', (v) => { r.effect.strobe.rate = v; })),
+      h('label', null, 'beats ', numIn(1, 16, r.effect.strobe.beats, 'How many beats the strobe runs, 1 to 16.', (v) => { r.effect.strobe.beats = v; })));
+  }
+  if (kind === 'fog') {
+    par.push(h('label', null, 'ms ', numIn(100, 10000, r.effect.fog.ms, 'How long the fog runs, 100 to 10000 ms.', (v) => { r.effect.fog.ms = v; })));
+  }
+  if (kind === 'strobe' || kind === 'fog') {
+    par.push(h('label', null, 'cooldown s ', numIn(0, 600, r.cooldown_s, 'The seconds before the effect can start again, 0 to 600.', (v) => { r.cooldown_s = v; })));
+  }
+  if (par.length) out.push(h('div', 'par', ...par));
+  if (g.fixtures.some((i) => show.fixtures[i] && isHead(show.fixtures[i]))) {
+    out.push(h('div', 'pills', h('span', null, 'position'), ...[[undefined, 'none'], ...show.positions.map((p, pi) => [pi, p.name || 'Position ' + (pi + 1)])].map(([v, t]) => {
+      const b = h('button', 'pill' + (r.position === v ? ' on' : ''), t);
+      b.addEventListener('click', () => showEdit(() => { if (v === undefined) delete r.position; else r.position = v; }));
+      return b;
+    })));
+    const sk = r.shape && r.shape !== 'none' ? Object.keys(r.shape)[0] : 'none';
+    out.push(h('div', 'pills', h('span', null, 'shape'), ...[['none', 'none'], ['circle', 'circle'], ['figure8', 'figure 8'], ['sweep', 'sweep']].map(([k, t]) => {
+      const b = h('button', 'pill' + (k === sk ? ' on' : ''), t);
+      b.addEventListener('click', () => showEdit(() => {
+        if (k === 'none') r.shape = 'none';
+        else r.shape = { [k]: sk === 'none' ? { beats: 4, size: 128 } : { ...r.shape[sk] } };
+      }));
+      return b;
+    })));
+    if (sk !== 'none') {
+      const sh = r.shape[sk];
+      out.push(h('div', 'pills', h('span', null, 'beats'), ...[1, 2, 4, 8, 16].map((n) => {
+        const b = h('button', 'pill' + (sh.beats === n ? ' on' : ''), String(n));
+        b.addEventListener('click', () => showEdit(() => { sh.beats = n; }));
+        return b;
+      })));
+      out.push(range('Size', 0, 255, sh.size, 'The size of the shape, 0 to 255. 255 is a quarter of the full range.', (v) => { sh.size = v; }));
+    }
+  }
+  return out;
+}
+
+/** The corner colour of a preset that has a look: the colour of its first row. */
+function lookColor(i) {
+  const l = show && show.looks[i];
+  if (!l) return null;
+  const c = l.rows[0] ? l.rows[0].color : [128, 128, 128];
+  return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+}
+
+function renderLayers() {
+  const on = dmxLast && scenes ? dmxLast.layers.filter((i) => i < EXTRA_BASE) : [];
+  const key = dmxLast && scenes ? on.map((i) => i + (scenes.labels[i] || '') + (lookColor(i) || '')).join('|') + '/' + on.length : '';
+  if (key !== layerKey) {
+    layerKey = key;
+    $('ltlayers').replaceChildren(h('span', null, on.length ? 'NOW' : 'No look plays'), ...on.map((i) => sceneChip(i, true)));
+    if (dmxLast && dmxLast.artnet) $('ltlayers').append(h('span', null, '+ Art-Net'));
+  }
+  strobeClass();
+}
+
+function strobeClass() {
+  const held = strobeHeld || !!(dmxLast && dmxLast.strobe_hold);
+  $('ltstrobe').classList.toggle('on', held);
+  // A library fetch blocks the web server of the box, so the release of the strobe cannot arrive.
+  $('ltlib').disabled = held;
+  if (held) { $('ltofl').hidden = true; clearTimeout(oflTimer); }
+}
+
+const masterPct = () => set('ltpct', Math.round(+$('ltmaster').value / 2.55) + '%');
+
+function liveSend(strobe) {
+  strobeHeld = strobe;
+  strobeClass();
+  // When the box accepts this page, the page sends the lost release again.
+  if (!strobe && (!ws || ws.readyState !== 1)) releaseLost = true;
+  send({ type: 'dmx_live', master: +$('ltmaster').value, strobe });
+}
+$('ltmaster').addEventListener('input', () => { masterPct(); liveSend(strobeHeld); });
+$('ltstrobe').addEventListener('pointerdown', (e) => { strobeDown = true; $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
+for (const t of ['pointerup', 'pointercancel']) $('ltstrobe').addEventListener(t, () => { strobeDown = false; liveSend(false); });
+$('ltfog').addEventListener('click', () => send({ type: 'dmx_fog' }));
+$('ltaddfx').addEventListener('click', () => {
+  if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
+  showEdit(() => show.fixtures.push({ name: 'Light ' + (show.fixtures.length + 1), address: nextAddress(), channels: [...FIXTURE_TYPES.rgb] }));
+});
+$('ltaddgr').addEventListener('click', () => {
+  if (!show || show.groups.length >= 8) return toast('8 groups is the maximum.');
+  showEdit(() => show.groups.push({ name: 'Group ' + (show.groups.length + 1), fixtures: [] }));
+});
+
+// ---- Add a light from the Open Fixture Library ----
+let oflTimer = 0;
+const OFL_COLORS = { Red: 'red', Green: 'green', Blue: 'blue', White: 'white', 'Warm White': 'white', 'Cold White': 'white', Amber: 'amber', UV: 'uv' };
+const OFL_RES = { '8bit': 0, '16bit': 1, '24bit': 2 };
+
+/** The number of fine bytes of a channel: its DMX values are in this resolution. */
+const oflExtra = (c) => (c.dmxValueResolution in OFL_RES ? OFL_RES[c.dmxValueResolution] : (c.fineChannelAliases || []).length);
+
+/** The default value of an OFL channel as one DMX byte. The value is in the resolution of the channel. */
+function oflDefault(c) {
+  let v = c.defaultValue;
+  if (typeof v === 'string' && /^\d+(\.\d+)?%$/.test(v)) return Math.round(parseFloat(v) * 2.55);
+  if (typeof v !== 'number') return 0;
+  const extra = oflExtra(c);
+  v = Math.floor(v / 256 ** extra);
+  return Math.min(255, Math.max(0, v));
+}
+
+/** Maps the channels of one mode of an OFL fixture to the channels of the show. */
+function oflChannels(fixture, modeName) {
+  const avail = fixture.availableChannels || {};
+  const fine = new Set();
+  // The fine alias of a Pan or Tilt channel is a fine channel of the show.
+  const fineKind = {};
+  // The capability that covers the top value of a channel decides its type.
+  const capOf = (c) => {
+    const caps = c.capabilities || (c.capability ? [c.capability] : []);
+    const top = 256 ** (oflExtra(c) + 1) - 1;
+    return caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= top && k.dmxRange[1] >= top) || caps[0];
+  };
+  for (const c of Object.values(avail)) {
+    const t = capOf(c);
+    for (const a of c.fineChannelAliases || []) {
+      fine.add(a);
+      if (t && (t.type === 'Pan' || t.type === 'Tilt')) fineKind[a] = t.type === 'Pan' ? 'pan_fine' : 'tilt_fine';
+    }
+  }
+  const mode = (fixture.modes || []).find((m) => m.name === modeName);
+  const notes = [];
+  let unknown = false;
+  const note = (t) => { if (!notes.includes(t)) notes.push(t); };
+  const pixelNote = () => note('pixel channels are not supported yet');
+  const matrix = fixture.matrix || {};
+  const leaves = (a) => (Array.isArray(a) ? a.flatMap(leaves) : (a === null ? [] : [String(a)]));
+  // Each template channel by the names that it gets for the pixels and for the pixel groups.
+  const tmpl = {};
+  const tmplFine = new Set();
+  // Without pixel keys, OFL makes them from the pixel count: "1" to "n", or "(x, y, z)" for a grid.
+  const keys = leaves(matrix.pixelKeys || []);
+  const pc = matrix.pixelCount;
+  if (!matrix.pixelKeys && Array.isArray(pc) && pc.length === 3 && pc.every((n) => Number.isInteger(n) && n > 0) && pc[0] * pc[1] * pc[2] <= 1024) {
+    // OFL names a pixel by its own coordinate on each axis that has more than one pixel.
+    const axes = [0, 1, 2].filter((i) => pc[i] > 1).length;
+    for (let z = 1; z <= pc[2]; z++) for (let y = 1; y <= pc[1]; y++) for (let x = 1; x <= pc[0]; x++) {
+      const parts = [x, y, z].filter((_, i) => pc[i] > 1);
+      keys.push(axes <= 1 ? String(x * y * z) : '(' + parts.join(', ') + ')');
+    }
+  }
+  const pixelNames = [...keys, ...Object.keys(matrix.pixelGroups || {})];
+  for (const [tn, tc] of Object.entries(fixture.templateChannels || {})) {
+    for (const a of tc.fineChannelAliases || []) tmplFine.add(a);
+    for (const k of pixelNames) {
+      tmpl[tn.replace('$pixelKey', k)] = tc;
+      for (const a of tc.fineChannelAliases || []) fine.add(a.replace('$pixelKey', k));
+    }
+  }
+  // The number of pixels that a matrix insert repeats for.
+  const pixels = (repeatFor) => {
+    if (Array.isArray(repeatFor)) return repeatFor.length;
+    if (repeatFor === 'eachPixelGroup') return Object.keys(matrix.pixelGroups || {}).length;
+    if (Array.isArray(matrix.pixelCount)) return matrix.pixelCount.reduce((n, x) => n * x, 1);
+    return leaves(matrix.pixelKeys || []).length;
+  };
+  // The channel of the show for one OFL channel.
+  const map = (c) => {
+    const caps = c.capabilities || (c.capability ? [c.capability] : []);
+    const extra = oflExtra(c);
+    const cap = capOf(c);
+    const type = cap && cap.type;
+    if (type === 'Intensity') return 'dimmer';
+    if (type === 'Pan') return 'pan';
+    if (type === 'Tilt') return 'tilt';
+    if (type === 'ColorIntensity' && OFL_COLORS[cap.color]) return OFL_COLORS[cap.color];
+    if (type === 'ShutterStrobe') {
+      // The engine sends Strobe 0 while no strobe runs. A shutter that is closed at 0 needs another channel type.
+      if (caps.some((k) => k.type === 'Intensity')) return 'dimmer';
+      const first = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] === 0) || caps[0];
+      if (first && first.type === 'ShutterStrobe' && first.shutterEffect === 'Closed') {
+        const open = caps.find((k) => k.type === 'ShutterStrobe' && k.shutterEffect === 'Open' && Array.isArray(k.dmxRange));
+        note('shutter kept open, no strobe');
+        return { fixed: open ? Math.min(255, Math.floor(open.dmxRange[0] / 256 ** extra)) : oflDefault(c) };
+      }
+      return 'strobe';
+    }
+    if (type === 'Fog' || type === 'FogOutput') return 'fog';
+    return { fixed: oflDefault(c) };
+  };
+  const channels = ((mode && mode.channels) || []).flatMap((name) => {
+    if (name === null) return [{ fixed: 0 }];
+    if (typeof name !== 'string') {
+      // A matrix insert stands for one group of template channels for each pixel.
+      const names = name.templateChannels || [];
+      const px = pixels(name.repeatFor);
+      const one = names.map((t) => {
+        if (t === null || tmplFine.has(t)) return { fixed: 0 };
+        const c = (fixture.templateChannels || {})[t] || avail[t];
+        if (c) return map(c);
+        pixelNote();
+        return { fixed: 0 };
+      });
+      if (!(px * one.length > 0)) unknown = true;
+      if (!(px > 0)) return [];
+      return name.channelOrder === 'perChannel' ? one.flatMap((m) => Array.from({ length: px }, () => m)) : Array.from({ length: px }, () => one).flat();
+    }
+    if (fine.has(name)) return [fineKind[name] || { fixed: 0 }];
+    const c = avail[name] || tmpl[name];
+    if (!c) {
+      // A name that is no channel of the fixture is a switching channel, or a pixel channel that the template channels do not describe.
+      if (fixture.templateChannels && name.split(' ').some((w) => pixelNames.includes(w))) pixelNote();
+      return [{ fixed: 0 }];
+    }
+    return [map(c)];
+  });
+  if (unknown) notes.push('The pixel count of this mode is unknown.');
+  return { channels, notes, unknown };
+}
+
+const ofl = { busy: false, want: null, seq: 0, key: '', fx: null, mode: null };
+
+/** Runs one request at a time. A newer call replaces the call that waits, and the reply of an older call is dropped. */
+async function oflGet(path, onOk) {
+  if (ofl.busy) { ofl.want = () => oflGet(path, onOk); return; }
+  ofl.busy = true;
+  $('ltstrobe').disabled = true;
+  const seq = ++ofl.seq;
+  set('oflst', 'searching…');
+  let fail = '';
+  let data;
+  try {
+    const r = await fetch(showBase() + path, { signal: AbortSignal.timeout(45000) });
+    const body = await r.text();
+    if (!r.ok) {
+      fail = r.status === 502 && path.startsWith('/ofl/search')
+        ? "Too many results or no internet. Type more, or check the box's internet."
+        : 'The library failed: ' + r.status + ' ' + body.trim().slice(0, 120);
+    } else {
+      try { data = JSON.parse(body); } catch { /* data stays undefined */ }
+      if (data === null || typeof data !== 'object') fail = 'The library sent no JSON.';
+    }
+  } catch (e) { fail = 'The library did not answer: ' + (e.name === 'TimeoutError' ? 'timeout' : 'no connection'); }
+  ofl.busy = false;
+  $('ltstrobe').disabled = false;
+  const stale = seq !== ofl.seq || ofl.want;
+  if (!ofl.want && !stale) set('oflst', '');
+  if (!stale) { if (fail) toast(fail); else onOk(data); }
+  const w = ofl.want;
+  ofl.want = null;
+  if (w) w();
+}
+
+function oflSearch() {
+  if ($('ltofl').hidden || $('ltlib').disabled) return;
+  const q = $('oflq').value.trim();
+  $('ofldet').hidden = true;
+  if (q.length < 3) {
+    ofl.seq++; ofl.want = null;
+    $('oflres').replaceChildren();
+    set('oflst', q ? 'Type at least 3 letters.' : '');
+    return;
+  }
+  oflGet('/ofl/search?q=' + encodeURIComponent(q), (list) => {
+    if (!Array.isArray(list)) return toast('The library sent no list.');
+    $('oflres').replaceChildren(...list.slice(0, 20).filter((x) => x && typeof x.key === 'string').map((x) => {
+      const b = h('button', null, String(x.name || x.key));
+      b.title = x.key;
+      b.addEventListener('click', () => oflPick(x.key));
+      return b;
+    }));
+    set('oflst', list.length ? '' : 'Nothing found.');
+  });
+}
+
+function oflPick(key) {
+  oflGet('/ofl/fixture?key=' + encodeURIComponent(key), (fx) => {
+    if (!Array.isArray(fx.modes) || !fx.modes.length) return toast('The library sent no modes.');
+    ofl.key = key; ofl.fx = fx; ofl.mode = fx.modes[0].name;
+    oflDetail();
+  });
+}
+
+function oflDetail() {
+  const fx = ofl.fx;
+  const m = oflChannels(fx, ofl.mode);
+  const pills = h('span', 'seg tg', ...fx.modes.map((md) => {
+    const b = h('button', md.name === ofl.mode ? 'on' : null, String(md.name) + ' · ' + (md.channels || []).length + ' ch');
+    b.addEventListener('click', () => { ofl.mode = md.name; oflDetail(); });
+    return b;
+  }));
+  const text = m.channels.map((c, i) => (i + 1) + ' ' + (typeof c === 'string' ? c : 'fixed ' + c.fixed)).join(' · ');
+  const add = h('button', null, 'Add');
+  const tooMany = m.channels.length > 32 || !m.channels.length || m.unknown;
+  add.disabled = tooMany;
+  add.addEventListener('click', () => {
+    if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
+    showEdit(() => show.fixtures.push({ name: String(fx.shortName || fx.name || ofl.key).slice(0, 16), address: nextAddress(), channels: [...m.channels], ofl: ofl.key + '#' + ofl.mode }));
+    $('ltofl').hidden = true;
+  });
+  $('ofldet').replaceChildren(
+    h('div', 'line', h('b', null, String(fx.name || ofl.key)), pills),
+    h('div', 'chs', text),
+    ...m.notes.map((n) => h('div', null, 'Note: ' + n)),
+    tooMany && !m.unknown && h('div', null, m.channels.length ? 'A light can have 32 channels at most.' : 'This mode has no channels.'),
+    h('div', 'line', add));
+  $('ofldet').hidden = false;
+}
+
+$('ltlib').addEventListener('click', () => {
+  const box = $('ltofl');
+  box.hidden = !box.hidden;
+  if (!box.hidden) $('oflq').focus();
+});
+$('oflq').addEventListener('input', () => { clearTimeout(oflTimer); oflTimer = setTimeout(oflSearch, 300); });
+
 const handlers = { scenes: onScenes, hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => { otaDone(); toast(m.text); } };
 
 function connect() {
@@ -1328,6 +2225,7 @@ function connect() {
     if ((m.type === 'status' || m.type === 'settings') && !$('takeover').hidden) {
       $('takeover').hidden = true;
       document.querySelector('main').hidden = false;
+      syncDmx();
       set('conn', 'live');
     }
     const f = handlers[m.type];

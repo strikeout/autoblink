@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod dmx;
 mod link;
 mod logbuf;
 mod midi;

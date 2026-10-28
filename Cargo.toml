@@ -4,6 +4,7 @@ members = [
   "host",
   "esp32-emulator",
   "crates/autoblink-core-midi",
+  "crates/autoblink-core-dmx",
   "crates/autoblink-core-prolink",
   "crates/autoblink-core-dbserver",
 ]
@@ -13,7 +14,7 @@ members = [
 exclude = ["esp32"]
 
 [workspace.package]
-version = "1.23.0"
+version = "1.29.0"
 edition = "2021"
 license = "Proprietary"
 authors = ["AUTOBLINK team"]

@@ -65,15 +65,16 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 
 | Crate | Role | Key modules |
 |---|---|---|
-| `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
+| `host` | Desktop app + shared library | `config`, `dmx`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `show.rs` (the `show` partition), `ofl.rs` (Open Fixture Library fetch), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
 | `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable. The host uses `scenes.rs` too. | `clock.rs`, `mapper.rs`, `scenes.rs` (DMX scenes), `settings.rs` (host setting indices) |
+| `crates/autoblink-core-dmx` | DMX looks of the firmware, host-testable | `show.rs` (show model and limits), `render.rs` (look into universe), `clock.rs` (beat clock), `effect.rs` (intensity and bar effects), `lights.rs` (engine), `artnet.rs` (ArtDmx parse and build), `merge.rs` (HTP and LTP merge) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
 
-`pub mod config link logbuf midi prolink runtime settings state web`
+`pub mod app config dmx link logbuf midi osc prolink runtime settings state web`
 
 Plus `pub fn interface_priority()` for network interface ranking.
 
@@ -126,10 +127,10 @@ All have `#[cfg(not(windows))]` guards around reuse_port calls.
 - **`cargo test --locked`** runs tests across all crates
 - No dedicated test infrastructure found (no `tests/` directory, no fixtures)
 - Do the builds on your computer. GitHub runs only quick checks.
-- Before a push, run `sh scripts/check.sh`. It runs the checks of CI. When the branch changes `esp32/`, `crates/` or `webui/`, it also builds the firmware with and without `dmx`.
+- Before a push, run `sh scripts/check.sh`. It runs the checks of CI. When the branch changes `esp32/`, `crates/` or `webui/`, it also builds the firmware with and without `dmx`. The feature `dmx` is a default feature, so `--no-default-features` builds without it.
 - `ci.yml` runs for each pull request and each merge to `main`. One Linux job checks the format, runs clippy with `-D warnings` and runs the tests. A change to Markdown or `docs/` only does not start it.
 - The Windows and macOS jobs of `ci.yml` run `cargo check` only after a merge to `main` or on a manual start.
-- `esp32-ci.yml` builds the firmware without `dmx` only after a merge to `main` or on a manual start. No test runs on the device.
+- `esp32-ci.yml` builds the default firmware (with `dmx`) only after a merge to `main` or on a manual start. No test runs on the device.
 - To start a workflow on a branch, run `gh workflow run ci.yml --ref <branch>` or `gh workflow run esp32-ci.yml --ref <branch>`.
 - The release workflows (`release.yml`, `esp32-release.yml`) start from a tag. They build all targets.
 - Coverage gaps: packet parsing, state machine transitions, BPM smoothing, MIDI clock transport
@@ -158,10 +159,11 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - A router at 192.168.1.1 is often the DNS server too. The box has that address on its own WiFi network, so the DNS query goes to the box itself. In that case, the `ota` thread sets the DNS server to 1.1.1.1.
 - `EspOta::get_running_slot` of esp-idf-svc 0.53 fails with `ESP_ERR_INVALID_SIZE` on this firmware. Read the label from `esp_ota_get_running_partition` instead.
 - The flash writes can make the MIDI clock stutter. The page warns when a deck plays. It does not refuse the update.
+- Each show save erases flash sectors. This pauses the DMX frames and can make the MIDI clock stutter, like an OTA write.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller. Version 1.20.0 used 83 %.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.29.0 uses 85 % (1 677 280 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
 ### Web page without a flash
@@ -184,7 +186,76 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The scene setting `one_at_a_time` (default on) is for a controller that shows one preset at a time. A note off of such a controller can end a preset with a different note. With the setting on, a flash ends before the next note on. The held scene comes back after a flash or a pulse. The engine sends no note off before a note on of the same note. Such a note off turns the light off for a moment.
 - Index 33 is after the OSC rows, so that the other indices stay. The page puts a row into the group of its section.
 - A row entry of 32 and up is an extra note (`scenes::EXTRA_BASE`): 32 is `extra[0]`. The page moves the entries when it removes an extra note.
+- `Row::holds` gives each entry of a row a hold in beats (0 is no hold). The page sends it only when a row has a hold, so `scenes_set` stays below `MAX_COMMAND_LEN`. The page keeps `holds` aligned with `presets` when it adds, removes or moves an entry.
+- An entry with a hold sends its note off after the hold, whatever the gate of the row. During the hold, the triggers of the row wait in one pending trigger. When the hold ends, the next entry fires at once. A scene row drops its pending trigger when another row has become the current scene.
+- After a flash or a pulse, `restore_held` sends the note of the newest held entry again (with `one_at_a_time`). The light can then show the entry of an older scene row while the page shows the newer scene.
 - The status field `scene.events` counts each event in the order of `Event::ALL`, also without presets and while the scenes are off. The page keeps the same order in `SCENE_EVENTS`.
+- The drop guess (`autoblink_core_midi::guess::DropGuess`) gives a bucket (Intro, Groove, Build, Drop, Break, Outro) to a track without rekordbox phrases. The engine uses it only when `SceneInput::phrase` is `None`. Phrases always win.
+- The profile is the sum of the 6 PWV4 bytes of a column divided by 6. It is folded to at most 600 columns (`u8`) and smoothed with a moving average of 4 columns on each side. The page does not receive it.
+- The thresholds come from the profile of the track: `hi` is the 70th percentile, `lo` is the 30th percentile, and `mid` is the median. Before the first column and after the last column at or above `mid`, the bucket is Intro or Outro. Drop is at or above `hi`. Break is at or below `lo`. Build is a column below `hi` where the next 2 % of the track reaches `hi`. The rest is Groove. A Drop or a Break stays while the energy is within 8 of its threshold (hysteresis). When `hi - lo` is below 24, the track gives only Intro, Groove and Outro. A loudly mastered track therefore gives no Drop guess.
+- The engine fires the guessed bucket only at a block start: `phrase16 == 1` after a value other than 1. It fires only when the bucket differs from the last bucket that the guess fired for this track. A new track or a new master deck resets it, and the first tick of a new track or master deck also fires when `phrase16` is already 1. Play without a Play row fires the guess again at once. A master change to a deck without phrases keeps the old scene until the next block start, whereas a real phrase fires at once (the Master change row). A fire at a block start decides the coming block. Thus both feeders classify half a block ahead: they add 8 beats (`8 * 60 000 / bpm` ms) to the playhead (`DropGuess::bucket_ahead`). The history of the hysteresis (`prev_guess`) belongs to the pair of master deck and track. Each fetch logs the thresholds (`hi`, `lo`, `mid` and the first and last `mid` column), so that the owner can tune `MIN_SPREAD` and `HYSTERESIS`.
+- The look-ahead of 8 beats covers 5 smoothed columns only while `len_ms * bpm` is at most 57.6e6 (about 7.5 minutes at 128 BPM). A longer track fires one block late. The upgrade is an offset of the larger of 8 beats and 5 columns, below 16 beats, or a Drop test on the unsmoothed profile.
+- The page shows "(guess)" at the row of the current bucket when the status field `scene.guessed` is true.
+- The guess is built once for each track. The box builds it in the `dbserver` thread before it takes the lock (about 4 KB of heap for a short time, `tracks.rs`). The host builds it in `set_overview` (`host/src/state/dj_state.rs`). Without a preview of 32 columns, there is no guess.
+
+### DMX show
+
+- The `show` partition holds the DMX show (`show, data, undefined, 0x3F0000, 0x10000` in `esp32/partitions.csv`). Its content is JSON. A u32 length comes first. The firmware writes the length last, so a write that stops early leaves no show. The box then starts with an empty show until the page saves again.
+- OTA does not change the partition table. Flash a box once over USB to add the partition.
+- Do not use the subtype `0x40` for the partition. It panics espflash 4.6.0. The table uses the named subtype `undefined`.
+- `GET /show` serializes the running show. `POST /show` is a CORS simple request with an Origin check. It answers 413 when the body is larger than 60 000 bytes. It answers 503 when the body is larger than half of the largest free heap block. The reader bounds the lists of the show while it reads them.
+- The firmware sends the capability `dmx` and the status field `dmx`. The page sends the WebSocket commands `dmx_live`, `dmx_fog` and `dmx_aim`.
+- The `dmx` thread has priority 6 on core 1. Its stack is 7 KB since 1.29.0 (6 KB before). This size is an estimate. Measure it with `/mem` on a box.
+- Three senders use one queue of depth 32 to the `dmx` thread: `midi`, `prolink-rx` and the HTTP task (`dmx_fog`). A full queue drops a message. A dropped Off keeps its layer on until the next Off of that preset. An On does not remove the layer. A stop only hides it.
+- The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
+- The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
+- The HTTP task has 8 KB of stack. Nobody has measured it under `POST /show`.
+- A fixture has the channel kinds `pan`, `pan_fine`, `tilt` and `tilt_fine`. The generic types are `moving_head` (pan, tilt, dimmer, red, green, blue) and `moving_head_16` (with the fine channels). A head with only coarse channels gets the high byte of the 16-bit value.
+- The show holds up to 8 positions (`MAX_POSITIONS`, names of 16 characters). A position holds aims, and an aim is a 16-bit pan and tilt for one fixture. A head without an aim in the position sits at 32768 on each axis.
+- A look row can have `position` (an index) and `shape`. The shapes are `circle`, `figure8` and `sweep`. A shape has `beats` (1 to 32) and `size` (0 to 255). The amplitude is `size` x 64 units of the 16-bit range, so 255 is a quarter of the range.
+- The offset of a shape comes from `t = (i + phase) / beats + k / n`, where `i` is the beat index. `i` counts the beats from a bar line: `i = (beat in bar - 1 + 4 * bar number) mod beats`. A period of 4, 8 or 16 beats therefore starts on beat 1. Without bar information, `i` is the beat count mod beats. The effects with `Every::Bar` use the same fallback: the beat in the bar is the count mod 4. Fixture `k` of `n` in the group is `k / n` of a cycle ahead of the first one. Circle is (cos, sin) of 2 pi t. Figure8 is (sin, sin(2a) / 2). Sweep moves pan only, as sin. The sum of position and offset is clamped to 0 to 65535. It does not wrap. Without a beat, the offset is zero.
+- The WebSocket command `dmx_aim` (fixture below 32, pan, tilt) holds the pan and tilt of one head for `AIM_MS` (10 s, `crates/autoblink-core-dmx/src/lights.rs`). The aim overrides every layer and the idle look. The queue drops it when full. The page sends about 20 aims each second and always sends the last value.
+- A fade between two looks blends the coarse byte and the fine byte alone. A pan across a byte border can jump for a moment. The `ponytail:` comment in `lights.rs` names the fix: blend the 16-bit pairs.
+
+### Light library (Open Fixture Library)
+
+- The box is the proxy of the Open Fixture Library (OFL). The phone on the WiFi network of the box often has no internet. The firmware passes the JSON of OFL through and does not parse it (`esp32/src/ofl.rs`).
+- `GET /ofl/search?q=<text>` searches. The text has 1 to 64 characters, and the page asks only for 3 or more. A 1-letter search gives a reply of 48 KB, which the firmware refuses (502).
+- `GET /ofl/fixture?key=<manufacturer>/<model>` gets one light. The key must match `^[a-z0-9-]+/[a-z0-9-]+$`.
+- Both routes check the Origin and send `Access-Control-Allow-Origin: *`. The statuses are:
+  - 400: the value is bad.
+  - 403: the Origin is wrong.
+  - 502: OFL fails, the reply is too large, or the box has no internet.
+  - 503: the heap is low, or another fetch or an OTA check runs.
+  - 504: OFL does not answer in 10 s.
+- A fetch does not start below 80 KB free heap or a 32 KB largest block (`MIN_FREE`, `MIN_BLOCK`). TLS takes about 50 KB. The firmware cuts off a reply larger than 24 KB (`MAX_BODY`).
+- The fetch runs on the `ofl` thread (12 KB stack, priority 5, from `crate::spawn`). The HTTP handler joins the thread. Thus a fetch blocks the HTTP task. The page gets no status and no beats for up to tens of seconds. The MIDI clock and the DMX output keep running.
+- While `ofl::busy()` is true, the status thread sends no status, as during an OTA check. The page disables the library search while the strobe hold is on.
+- The certificate chain of OFL ends at ISRG Root X1. The common certificate bundle has it through the X2 cross-certificate.
+- The box needs internet: a joined WiFi network (indices 102 and 103), or an Ethernet network with a router.
+- `Fixture.ofl` holds `<key>#<mode>`, for example `eurolite/led-bar-6-qcl-rgbw#4-channel`. The core limits it to 96 characters.
+- The page maps the OFL channels to the kinds of the show. A pixel channel gets the kind of its template channel, so each pixel shows the same colour. A channel that no template describes becomes a fixed placeholder channel, so that the footprint stays right. A Pan or Tilt channel maps to `pan` or `tilt`, and its fine alias maps to `pan_fine` or `tilt_fine`. A mode with an unknown pixel count, or with more than 32 channels, the page does not add.
+- Nobody has measured the heap after many fetches on a box. Run `/mem` after ten fetches.
+
+### Art-Net in on the box
+
+- The `artnet` thread (`esp32/src/artnet.rs`) receives Art-Net on UDP port 6454 on all interfaces. It keeps universe 0 only and ignores a frame of another universe. Its stack is 4 KB and its priority is 5 (`crate::spawn`). This size is an estimate. Measure it with `/mem` on a box.
+- `main` starts the thread after the network and the Pro DJ Link threads. The OTA maintenance start does not reach that line, so it has no Art-Net.
+- The permanent heap for Art-Net is about 8 KB.
+- The box answers no ArtPoll. A desk must send to the IP address of the box (unicast) or to the subnet broadcast address.
+- Art-Net counts as live for 3 s after its last frame (`ARTNET_TIMEOUT_MS`). Without a live frame, the output is the engine alone.
+- The merge rule is in `autoblink_core_dmx::merge`. The channels of kind Dimmer, Red, Green, Blue, White, Amber, Uv and Strobe use HTP (the higher value wins). All other channels use LTP (the source that changed the channel last wins). The channels that no light patches and the Fog channel are LTP too. After a timeout, the first live frame claims every non-zero channel.
+- The `dmx` thread reads the frame with `try_lock`, so the `artnet` thread never blocks it. The status field `dmx.artnet` is true while Art-Net is live.
+
+### DMX engine on the host
+
+- The `[dmx]` section of the config file has `artnet_target` (an IPv4 address or IP:port, default port 6454) and `universe` (0 to 32767, default 0). Without `artnet_target`, or with a bad value, the engine does not start.
+- The engine task (`host/src/dmx.rs`) runs under `runtime::supervise`. It renders about every 25 ms and sends ArtDmx to the target.
+- The task is silent while it sees a box. A box is a Pro DJ Link device with the name `autoblink`. Its device number differs from the number of the host. Two hosts with the default device name therefore silence each other. Change `device_name` on one of them. With the same device number as the host, the host does not find the box and keeps sending. The host logs a warning at start when `artnet_target` is set and its device number is the default 7.
+- The host keeps a copy of the show in `show.json` in the folder of the config file. `GET /show` and `POST /show` work as on the box, with the same 60 000-byte limit.
+- The host takes `dmx_live`, `dmx_fog` and `dmx_aim` from the page. When the page that holds the strobe closes, the host releases the hold (`StrobeGuard` in `web/mod.rs`).
+- The status field `box` gives the IP address of the box, or null. The status field `dmx` comes from the engine.
+- When a box is on the network, the host page loads and saves the show of the box (`GET` and `POST` to the box). Open the host page at `127.0.0.1` or `localhost`, so that the box accepts the POST (`dev_origin`). The preset names on the host page are the names of the host. The page hides the Preview button.
 
 ### Debug logs
 
@@ -193,7 +264,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
-- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Measure these two.
+- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Measure these two. Measure `main` again after 1.29.0, because the `Box` builds in `dmx::start` can use its stack.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
 - The firmware keeps 600 columns of the waveform preview (`autoblink_core_dbserver::PREVIEW_COLUMNS`). The players send 1200.
 - The dbserver client reads the PWV4 preview and the PQTZ beat grid as a stream (`read_message_with`). It keeps only 600 preview columns and the beats of the phrase starts, the fill-ins and the end. A buffered grid and its parsed copy needed up to 72 KB for one fetch. Without phrases, the client does not request the beat grid.
@@ -227,7 +298,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 | IO33 | Status LED, with the label 485_EN on the board. While the master deck plays, it pulses for 120 ms on beat 1 and for 25 ms on the other beats. When no beat arrives for 2 s, it shows a blink code (see below). |
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
 | IO35 | UART2 RX. It is not used, but the UART driver needs a receive pin. |
-| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. Only with `--features dmx`. |
+| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. The `dmx` feature is on by default. |
 | IO36 | UART1 RX. It is not used, but the UART driver needs a receive pin. |
 
 The blink code of IO33 repeats every 2 s. The LED shows the first line that applies:
@@ -279,7 +350,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - The ESP32 MIDI output follows the host rules (`autoblink-core-midi`), with the phrase notes and CCs. It has no No Bass note, no MTC and no OSC.
 - The ESP32 page has no mixer section. The XDJ-AZ sends the EQ and fader positions only as USB MIDI, and the classic ESP32 has no USB host.
 - The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
-- The DMX output (`--features dmx`) flashes channel 1 on each beat. It has no settings yet.
+- The DMX output no longer flashes channel 1 on each beat. The `dmx` thread renders the looks of the show (see "DMX show").
 - The emulator has no `scenes` capability. The page hides the DMX Scenes panel there.
 - The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `autoblink-core-midi` yet.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`

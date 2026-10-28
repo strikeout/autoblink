@@ -34,6 +34,8 @@ use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::sys;
 
+#[cfg(feature = "dmx")]
+use crate::dmx::DmxMsg;
 use crate::State;
 
 /// The CCs go out at most this often.
@@ -74,6 +76,7 @@ pub fn start(
     state: Arc<State>,
     cfg: Arc<Mutex<MidiConfig>>,
     scenes_cfg: Arc<Mutex<ScenesConfig>>,
+    #[cfg(feature = "dmx")] dmx: Arc<Queue<DmxMsg>>,
 ) -> anyhow::Result<Arc<Queue<Beat>>> {
     let uart_cfg = config::Config::new().baudrate(Hertz(31_250));
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio35>, None::<Gpio17>, &uart_cfg)?;
@@ -93,6 +96,10 @@ pub fn start(
         let mut smoother = Smoother::default();
         let mut smoothed_bpm = 0.0;
         let mut last_master = 0u8;
+        // The last guess of the loop. The guess keeps a Drop or a Break near its threshold.
+        let mut prev_guess = None;
+        // The master deck and the track of `prev_guess`.
+        let mut guess_key = (0u8, 0u32);
         let mut next_pulse: Option<u64> = None;
         let mut next_cc = Instant::now();
 
@@ -156,12 +163,16 @@ pub fn start(
                     &mut send,
                 );
                 mapper.beat(&cfg, b.beat_in_bar, &mut send);
-                scenes.beat(
-                    &scenes_cfg.lock().unwrap(),
-                    state.now_ms(),
-                    b.beat_in_bar,
-                    &mut send,
-                );
+                let scenes_cfg = scenes_cfg.lock().unwrap();
+                scenes.beat(&scenes_cfg, state.now_ms(), b.beat_in_bar, &mut |o| {
+                    #[cfg(feature = "dmx")]
+                    to_dmx(&dmx, &scenes_cfg, o);
+                    send(o);
+                });
+                #[cfg(feature = "dmx")]
+                scenes.drain_fired(|e, p| {
+                    let _ = dmx.send_back(DmxMsg::Fired(e, p), 0);
+                });
             }
 
             let now_ms = state.now_ms();
@@ -189,18 +200,31 @@ pub fn start(
                         bpm: snap.bpm,
                         phrase: None,
                         bass_cut: None,
+                        guess: None,
+                        phrase16: m.phrase16,
                     };
-                    (snap, m.beat_count.map(|bc| (m.track.rekordbox_id, bc)))
+                    // The playhead and the length of the track, for the drop guess.
+                    let pos = m.playhead_ms.zip(m.track_len_ms);
+                    (snap, Some((m.track.rekordbox_id, m.beat_count, pos)))
                 })
             };
             // Lock the tracks only after the tracker is free.
-            if let Some((rbid, beat_count)) = track {
+            if let Some((rbid, beat_count, pos)) = track {
+                // A new master deck or a new track starts without a previous guess.
+                if (snap.device, rbid) != guess_key {
+                    guess_key = (snap.device, rbid);
+                    prev_guess = None;
+                }
                 let tracks = state.tracks.0.lock().unwrap();
-                snap.phrase = tracks
-                    .get(&snap.device)
-                    .filter(|t| t.rekordbox_id == rbid)
-                    .and_then(|t| t.structure.as_ref()?.as_ref().ok())
-                    .and_then(|ss| {
+                let data = tracks.get(&snap.device).filter(|t| t.rekordbox_id == rbid);
+                // Only a track without phrases has a guess.
+                scene_in.guess = data.and_then(|t| {
+                    let (p, l) = pos?;
+                    t.guess.as_ref()?.bucket_ahead(p, l, snap.bpm, prev_guess)
+                });
+                snap.phrase = beat_count
+                    .zip(data.and_then(|t| t.structure.as_ref()?.as_ref().ok()))
+                    .and_then(|(beat_count, ss)| {
                         let idx = current_phrase_idx(ss, beat_count)?;
                         let info = phrase_info(ss, idx, beat_count)?;
                         let entry = &ss.phrases[idx];
@@ -221,6 +245,7 @@ pub fn start(
                         })
                     });
             }
+            prev_guess = scene_in.guess;
             let master = (snap.device != 0).then_some(Master {
                 device: snap.device,
                 playing: snap.playing,
@@ -247,8 +272,18 @@ pub fn start(
                     if let Err(e) = uart.write(&buf[..n]) {
                         log::warn!("MIDI message not sent: {e}");
                     }
+                    #[cfg(feature = "dmx")]
+                    let _ = dmx.send_back(DmxMsg::Test(test), 0);
                 }
-                scenes.update(&scenes_cfg, state.now_ms(), &scene_in, &mut send);
+                scenes.update(&scenes_cfg, state.now_ms(), &scene_in, &mut |o| {
+                    #[cfg(feature = "dmx")]
+                    to_dmx(&dmx, &scenes_cfg, o);
+                    send(o);
+                });
+                #[cfg(feature = "dmx")]
+                scenes.drain_fired(|e, p| {
+                    let _ = dmx.send_back(DmxMsg::Fired(e, p), 0);
+                });
                 scenes.status(&scenes_cfg)
             };
 
@@ -272,4 +307,22 @@ pub fn start(
     })?;
     log::info!("MIDI output is on IO17");
     Ok(beats)
+}
+
+/// Queues a note of a preset for the `dmx` thread. Other messages and the extra notes go only to
+/// MIDI. A full queue drops the message, so that the MIDI thread does not wait.
+#[cfg(feature = "dmx")]
+fn to_dmx(dmx: &Queue<DmxMsg>, c: &ScenesConfig, o: Out) {
+    let preset = |ch: u8, note: u8| {
+        note.checked_sub(c.first_note)
+            .filter(|p| ch == c.channel && *p < c.count)
+    };
+    let msg = match o {
+        Out::NoteOn { ch, note, .. } => preset(ch, note).map(DmxMsg::On),
+        Out::NoteOff { ch, note } => preset(ch, note).map(DmxMsg::Off),
+        _ => None,
+    };
+    if let Some(m) = msg {
+        let _ = dmx.send_back(m, 0);
+    }
 }
