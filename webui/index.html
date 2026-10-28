@@ -1780,9 +1780,9 @@ function renderLayers() {
 function strobeClass() {
   const held = strobeHeld || !!(dmxLast && dmxLast.strobe_hold);
   $('ltstrobe').classList.toggle('on', held);
-  // A library fetch blocks the web server of the box, so the release of the strobe could not arrive.
+  // A library fetch blocks the web server of the box, so the release of the strobe cannot arrive.
   $('ltlib').disabled = held;
-  if (held) $('ltofl').hidden = true;
+  if (held) { $('ltofl').hidden = true; clearTimeout(oflTimer); }
 }
 
 const masterPct = () => set('ltpct', Math.round(+$('ltmaster').value / 2.55) + '%');
@@ -1808,15 +1808,19 @@ $('ltaddgr').addEventListener('click', () => {
 });
 
 // ---- Add a light from the Open Fixture Library ----
+let oflTimer = 0;
 const OFL_COLORS = { Red: 'red', Green: 'green', Blue: 'blue', White: 'white', 'Warm White': 'white', 'Cold White': 'white', Amber: 'amber', UV: 'uv' };
 const OFL_RES = { '8bit': 0, '16bit': 1, '24bit': 2 };
+
+/** The number of fine bytes of a channel: its DMX values are in this resolution. */
+const oflExtra = (c) => (c.dmxValueResolution in OFL_RES ? OFL_RES[c.dmxValueResolution] : (c.fineChannelAliases || []).length);
 
 /** The default value of an OFL channel as one DMX byte. The value is in the resolution of the channel. */
 function oflDefault(c) {
   let v = c.defaultValue;
   if (typeof v === 'string' && /^\d+(\.\d+)?%$/.test(v)) return Math.round(parseFloat(v) * 2.55);
   if (typeof v !== 'number') return 0;
-  const extra = c.dmxValueResolution in OFL_RES ? OFL_RES[c.dmxValueResolution] : (c.fineChannelAliases || []).length;
+  const extra = oflExtra(c);
   v = Math.floor(v / 256 ** extra);
   return Math.min(255, Math.max(0, v));
 }
@@ -1828,24 +1832,40 @@ function oflChannels(fixture, modeName) {
   for (const c of Object.values(avail)) for (const a of c.fineChannelAliases || []) fine.add(a);
   const mode = (fixture.modes || []).find((m) => m.name === modeName);
   const notes = [];
-  const channels = ((mode && mode.channels) || []).map((name) => {
-    if (name === null) return { fixed: 0 };
-    if (typeof name === 'string' && fine.has(name)) return { fixed: 0 };
-    const c = typeof name === 'string' ? avail[name] : null;
+  const pixelNote = () => { if (!notes.includes('pixel channels are not supported yet')) notes.push('pixel channels are not supported yet'); };
+  const fixed0 = (n) => Array.from({ length: n }, () => ({ fixed: 0 }));
+  const matrix = fixture.matrix || {};
+  const leaves = (a) => (Array.isArray(a) ? a.reduce((n, x) => n + leaves(x), 0) : (a === null ? 0 : 1));
+  // The number of pixels that a matrix insert repeats for.
+  const pixels = (repeatFor) => {
+    if (Array.isArray(repeatFor)) return repeatFor.length;
+    if (repeatFor === 'eachPixelGroup') return Object.keys(matrix.pixelGroups || {}).length;
+    if (Array.isArray(matrix.pixelCount)) return matrix.pixelCount.reduce((n, x) => n * x, 1);
+    return leaves(matrix.pixelKeys || []);
+  };
+  const channels = ((mode && mode.channels) || []).flatMap((name) => {
+    if (name === null) return [{ fixed: 0 }];
+    if (typeof name !== 'string') {
+      // A matrix insert stands for one group of template channels for each pixel.
+      pixelNote();
+      return fixed0(pixels(name.repeatFor) * (name.templateChannels || []).length);
+    }
+    if (fine.has(name)) return [{ fixed: 0 }];
+    const c = avail[name];
     if (!c) {
-      // An object (a matrix insert) or a template name with "$" is a pixel channel. Another unknown name is a switching channel.
-      const pixel = typeof name !== 'string' || name.includes('$');
-      if (pixel && !notes.includes('pixel channels are not supported yet')) notes.push('pixel channels are not supported yet');
-      return { fixed: 0 };
+      // A name that is no channel of the fixture is a pixel channel of a fixture with template channels ("Red 1"). Else it is a switching channel.
+      if (fixture.templateChannels) pixelNote();
+      return [{ fixed: 0 }];
     }
     const caps = c.capabilities || (c.capability ? [c.capability] : []);
-    const cap = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= 255 && k.dmxRange[1] >= 255) || caps[0];
+    const top = 256 ** (oflExtra(c) + 1) - 1;
+    const cap = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= top && k.dmxRange[1] >= top) || caps[0];
     const type = cap && cap.type;
-    if (type === 'Intensity') return 'dimmer';
-    if (type === 'ColorIntensity' && OFL_COLORS[cap.color]) return OFL_COLORS[cap.color];
-    if (type === 'ShutterStrobe') return 'strobe';
-    if (type === 'Fog' || type === 'FogOutput') return 'fog';
-    return { fixed: oflDefault(c) };
+    if (type === 'Intensity') return ['dimmer'];
+    if (type === 'ColorIntensity' && OFL_COLORS[cap.color]) return [OFL_COLORS[cap.color]];
+    if (type === 'ShutterStrobe') return ['strobe'];
+    if (type === 'Fog' || type === 'FogOutput') return ['fog'];
+    return [{ fixed: oflDefault(c) }];
   });
   return { channels, notes };
 }
@@ -1874,7 +1894,7 @@ async function oflGet(path, onOk) {
   } catch (e) { fail = 'The library did not answer: ' + (e.name === 'TimeoutError' ? 'timeout' : 'no connection'); }
   ofl.busy = false;
   const stale = seq !== ofl.seq || ofl.want;
-  if (!ofl.want) set('oflst', '');
+  if (!ofl.want && !stale) set('oflst', '');
   if (!stale) { if (fail) toast(fail); else onOk(data); }
   const w = ofl.want;
   ofl.want = null;
@@ -1882,6 +1902,7 @@ async function oflGet(path, onOk) {
 }
 
 function oflSearch() {
+  if ($('ltofl').hidden || $('ltlib').disabled) return;
   const q = $('oflq').value.trim();
   $('ofldet').hidden = true;
   if (q.length < 3) {
@@ -1924,7 +1945,7 @@ function oflDetail() {
   add.disabled = tooMany;
   add.addEventListener('click', () => {
     if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
-    showEdit(() => show.fixtures.push({ name: String(fx.shortName || fx.name || ofl.key).slice(0, 16), address: nextAddress(), channels: m.channels, ofl: ofl.key + '#' + ofl.mode }));
+    showEdit(() => show.fixtures.push({ name: String(fx.shortName || fx.name || ofl.key).slice(0, 16), address: nextAddress(), channels: [...m.channels], ofl: ofl.key + '#' + ofl.mode }));
     $('ltofl').hidden = true;
   });
   $('ofldet').replaceChildren(
@@ -1941,7 +1962,6 @@ $('ltlib').addEventListener('click', () => {
   box.hidden = !box.hidden;
   if (!box.hidden) $('oflq').focus();
 });
-let oflTimer = 0;
 $('oflq').addEventListener('input', () => { clearTimeout(oflTimer); oflTimer = setTimeout(oflSearch, 300); });
 
 const handlers = { scenes: onScenes, hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => { otaDone(); toast(m.text); } };
