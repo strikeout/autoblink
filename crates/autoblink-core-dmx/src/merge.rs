@@ -1,5 +1,8 @@
 //! The merge of the engine frame and the Art-Net frame.
 //!
+//! After a timeout, the first live frame claims every non-zero channel. A channel that the desk
+//! holds at 0 stays with the engine.
+//!
 //! HTP (the higher value wins) applies to the intensity and colour channels.
 //! LTP (the source that changed the channel last wins) applies to all other channels.
 
@@ -134,6 +137,30 @@ mod tests {
         let mut e = frame(&[0, 0, 90]);
         m.apply(&s, Some((&a, 5)), 5, &mut e);
         assert_eq!(e[2], 40);
+    }
+
+    #[test]
+    fn fog_is_ltp() {
+        let s = show(&[Channel::Fog]);
+        let mut m = Merge::default();
+        let mut e = frame(&[200]);
+        m.apply(&s, None, 0, &mut e);
+        let a = frame(&[50]);
+        let mut e = frame(&[200]);
+        m.apply(&s, Some((&a, 5)), 5, &mut e);
+        assert_eq!(e[0], 50);
+    }
+
+    #[test]
+    fn same_frame_change_gives_artnet() {
+        let s = show(&[Channel::Pan]);
+        let mut m = Merge::default();
+        let mut e = frame(&[10]);
+        m.apply(&s, None, 0, &mut e);
+        let a = frame(&[50]);
+        let mut e = frame(&[60]);
+        m.apply(&s, Some((&a, 5)), 5, &mut e);
+        assert_eq!(e[0], 50);
     }
 
     #[test]

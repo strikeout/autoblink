@@ -19,6 +19,9 @@ pub fn parse_artdmx(packet: &[u8]) -> Option<(u16, &[u8])> {
         return None;
     }
     let len = usize::from(u16::from_be_bytes([packet[16], packet[17]]));
+    if len == 0 || len > UNIVERSE {
+        return None;
+    }
     let data = packet.get(HEADER..HEADER + len)?;
     let universe = u16::from(packet[15] & 0x7f) << 8 | u16::from(packet[14]);
     Some((universe, data))
@@ -77,6 +80,10 @@ mod tests {
         let mut p = packet(0, &[1, 2]);
         p[17] = 9;
         assert!(parse_artdmx(&p).is_none());
+        assert!(parse_artdmx(&packet(0, &[0; 513])).is_none());
+        assert!(parse_artdmx(&packet(0, &[])).is_none());
+        assert!(parse_artdmx(&packet(0, &[0; 512])).is_some());
+        assert!(parse_artdmx(&packet(0, &[1])).is_some());
     }
 
     #[test]
@@ -91,5 +98,8 @@ mod tests {
         assert_eq!(u, 0x0102);
         assert_eq!(d, &data[..]);
         assert_eq!(out[12], 3);
+        assert_eq!(out[10..12], [0, 14]);
+        assert_eq!(out[13], 0);
+        assert_eq!(out[16..18], [2, 0]);
     }
 }
