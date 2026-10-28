@@ -163,7 +163,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.28.0 uses 85 % (1 672 752 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.29.0 uses 85 % (1 677 280 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
 ### Web page without a flash
@@ -194,6 +194,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The profile is the sum of the 6 PWV4 bytes of a column divided by 6. It is folded to at most 600 columns (`u8`) and smoothed with a moving average of 4 columns on each side. The page does not receive it.
 - The thresholds come from the profile of the track: `hi` is the 70th percentile, `lo` is the 30th percentile, and `mid` is the median. Before the first column and after the last column at or above `mid`, the bucket is Intro or Outro. Drop is at or above `hi`. Break is at or below `lo`. Build is a column below `hi` where the next 2 % of the track reaches `hi`. The rest is Groove. A Drop or a Break stays while the energy is within 8 of its threshold (hysteresis). When `hi - lo` is below 24, the track gives only Intro, Groove and Outro. A loudly mastered track therefore gives no Drop guess.
 - The engine fires the guessed bucket only at a block start: `phrase16 == 1` after a value other than 1. It fires only when the bucket differs from the last bucket that the guess fired for this track. A new track or a new master deck resets it, and the first tick of a new track or master deck also fires when `phrase16` is already 1. Play without a Play row fires the guess again at once. A master change to a deck without phrases keeps the old scene until the next block start, whereas a real phrase fires at once (the Master change row). A fire at a block start decides the coming block. Thus both feeders classify half a block ahead: they add 8 beats (`8 * 60 000 / bpm` ms) to the playhead (`DropGuess::bucket_ahead`). The history of the hysteresis (`prev_guess`) belongs to the pair of master deck and track. Each fetch logs the thresholds (`hi`, `lo`, `mid` and the first and last `mid` column), so that the owner can tune `MIN_SPREAD` and `HYSTERESIS`.
+- The look-ahead of 8 beats covers 5 smoothed columns only while `len_ms * bpm` is at most 57.6e6 (about 7.5 minutes at 128 BPM). A longer track fires one block late. The upgrade is an offset of the larger of 8 beats and 5 columns, below 16 beats, or a Drop test on the unsmoothed profile.
 - The page shows "(guess)" at the row of the current bucket when the status field `scene.guessed` is true.
 - The guess is built once for each track. The box builds it in the `dbserver` thread before it takes the lock (about 4 KB of heap for a short time, `tracks.rs`). The host builds it in `set_overview` (`host/src/state/dj_state.rs`). Without a preview of 32 columns, there is no guess.
 
@@ -204,7 +205,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Do not use the subtype `0x40` for the partition. It panics espflash 4.6.0. The table uses the named subtype `undefined`.
 - `GET /show` serializes the running show. `POST /show` is a CORS simple request with an Origin check. It answers 413 when the body is larger than 60 000 bytes. It answers 503 when the body is larger than half of the largest free heap block. The reader bounds the lists of the show while it reads them.
 - The firmware sends the capability `dmx` and the status field `dmx`. The page sends the WebSocket commands `dmx_live`, `dmx_fog` and `dmx_aim`.
-- The `dmx` thread has priority 6 on core 1. Its stack is 6 KB. This size is an estimate. Measure it with `/mem` on a box.
+- The `dmx` thread has priority 6 on core 1. Its stack is 7 KB since 1.29.0 (6 KB before). This size is an estimate. Measure it with `/mem` on a box.
 - Three senders use one queue of depth 32 to the `dmx` thread: `midi`, `prolink-rx` and the HTTP task (`dmx_fog`). A full queue drops a message. A dropped Off keeps its layer on until the next Off of that preset. An On does not remove the layer. A stop only hides it.
 - The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
 - The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
@@ -235,6 +236,25 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - `Fixture.ofl` holds `<key>#<mode>`, for example `eurolite/led-bar-6-qcl-rgbw#4-channel`. The core limits it to 96 characters.
 - The page maps the OFL channels to the kinds of the show. A pixel channel gets the kind of its template channel, so each pixel shows the same colour. A channel that no template describes becomes a fixed placeholder channel, so that the footprint stays right. A Pan or Tilt channel maps to `pan` or `tilt`, and its fine alias maps to `pan_fine` or `tilt_fine`. A mode with an unknown pixel count, or with more than 32 channels, the page does not add.
 - Nobody has measured the heap after many fetches on a box. Run `/mem` after ten fetches.
+
+### Art-Net in on the box
+
+- The `artnet` thread (`esp32/src/artnet.rs`) receives Art-Net on UDP port 6454 on all interfaces. It keeps universe 0 only and ignores a frame of another universe. Its stack is 4 KB and its priority is 5 (`crate::spawn`). This size is an estimate. Measure it with `/mem` on a box.
+- `main` starts the thread after the network and the Pro DJ Link threads. The OTA maintenance start does not reach that line, so it has no Art-Net.
+- The permanent heap for Art-Net is about 8 KB.
+- Art-Net counts as live for 3 s after its last frame (`ARTNET_TIMEOUT_MS`). Without a live frame, the output is the engine alone.
+- The merge rule is in `autoblink_core_dmx::merge`. The channels of kind Dimmer, Red, Green, Blue, White, Amber, Uv and Strobe use HTP (the higher value wins). All other channels use LTP (the source that changed the channel last wins). The channels that no light patches and the Fog channel are LTP too. After a timeout, the first live frame claims every non-zero channel.
+- The `dmx` thread reads the frame with `try_lock`, so the `artnet` thread never blocks it. The status field `dmx.artnet` is true while Art-Net is live.
+
+### DMX engine on the host
+
+- The `[dmx]` section of the config file has `artnet_target` (an IPv4 address or IP:port, default port 6454) and `universe` (0 to 32767, default 0). Without `artnet_target`, or with a bad value, the engine does not start.
+- The engine task (`host/src/dmx.rs`) runs under `runtime::supervise`. It renders about every 25 ms and sends ArtDmx to the target.
+- The task is silent while it sees a box. A box is a Pro DJ Link device with the name `autoblink`. Its device number differs from the number of the host. Two hosts with the default device name therefore silence each other. Change `device_name` on one of them.
+- The host keeps a copy of the show in `show.json` in the folder of the config file. `GET /show` and `POST /show` work as on the box, with the same limits.
+- The host takes `dmx_live`, `dmx_fog` and `dmx_aim` from the page. When the page that holds the strobe closes, the host releases the hold (`StrobeGuard` in `web/mod.rs`).
+- The status field `box` gives the IP address of the box, or null. The status field `dmx` comes from the engine.
+- When a box is on the network, the host page loads and saves the show of the box (`GET` and `POST` to the box). Open the host page at `127.0.0.1` or `localhost`, so that the box accepts the POST (`dev_origin`). The preset names on the host page are the names of the host. The page hides the Preview button.
 
 ### Debug logs
 
