@@ -4,14 +4,17 @@
 //! the `Lights` engine of `autoblink-core-dmx` and sends one frame after the other. The `midi`
 //! thread queues the scene notes, the fired events and the preset tests. The receive thread
 //! queues the master beats. The show in the `show` partition sets the looks. Without a stored
-//! show, all channels stay at 0.
+//! show and without Art-Net, all channels stay at 0. The thread merges the last Art-Net frame
+//! into each frame (`artnet.rs`).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use autoblink_core_dmx::{BeatClock, Lights, Live, Show, Universe};
+use autoblink_core_dmx::{
+    BeatClock, Lights, Live, Merge, Show, Universe, ARTNET_TIMEOUT_MS, UNIVERSE,
+};
 use autoblink_core_midi::scenes::Event;
 use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::gpio::{Gpio36, Gpio4};
@@ -79,6 +82,8 @@ pub struct DmxStatus {
     pub layers: Vec<u8>,
     pub master: u8,
     pub strobe_hold: bool,
+    /// `true` while Art-Net is live: the last frame is not older than `ARTNET_TIMEOUT_MS`.
+    pub artnet: bool,
 }
 
 /// Starts the `dmx` thread. Returns the queue for the messages to the thread.
@@ -98,16 +103,25 @@ pub fn start(
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio36>, None::<Gpio4>, &cfg)?;
     let queue = Arc::new(Queue::<DmxMsg>::new(QUEUE_LEN));
     let msgs = queue.clone();
+    // The merge state (about 1.5 KB) and the copy of the Art-Net frame are on the heap, not on
+    // the stack of the thread.
+    let mut merge = Box::<Merge>::default();
+    let mut art = Box::new([0u8; UNIVERSE]);
 
     // Priority 6 is above the HTTP server task (5) and below the `prolink-rx` (8) and `midi` (10)
     // threads on core 1.
-    // ponytail: 6 KB is an estimate (two 512-byte frames on the stack). Measure with /mem on a box.
-    crate::spawn_rt(c"dmx", 6 * 1024, 6, Some(Core::Core1), move || {
+    // ponytail: 7 KB is an estimate, not a measurement. With the Art-Net merge, the thread
+    // function has a 2880-byte frame (2496 bytes before). Its deepest direct call path is 4.3 KB,
+    // without the log calls. Measure with /mem on a box, and set the size from the low point.
+    crate::spawn_rt(c"dmx", 7 * 1024, 6, Some(Core::Core1), move || {
         // Byte 0 is the start code (0 for dimmer data). Bytes 1 to 512 are the channels.
         let mut frame = [0u8; 513];
         let mut lights = Lights::default();
         let mut clock = BeatClock::default();
         let mut playing = None;
+        // The time of the Art-Net frame in `art`. The thread keeps the old copy when the lock
+        // is busy.
+        let mut art_at: Option<u64> = None;
         loop {
             let now_ms = state.now_ms();
             let is_playing = state
@@ -125,6 +139,12 @@ pub fn start(
                 master: state.dmx_live.master.load(Ordering::Relaxed),
                 strobe_hold: state.dmx_live.strobe_hold.load(Ordering::Relaxed),
             };
+            // The thread does not wait for the `artnet` thread. It copies the frame and releases
+            // the lock before the merge.
+            if let Ok(slot) = state.artnet.try_lock() {
+                art.copy_from_slice(&slot.data[..]);
+                art_at = slot.at_ms;
+            }
             {
                 let show = show.lock().unwrap();
                 while let Some((msg, _)) = msgs.recv_front(0) {
@@ -147,6 +167,7 @@ pub fn start(
                 let universe: &mut Universe = (&mut frame[1..]).try_into().unwrap();
                 let beat = clock.now(now_ms);
                 lights.frame(&show, beat.as_ref(), &live, now_ms, universe);
+                merge.apply(&show, art_at.map(|t| (&*art, t)), now_ms, universe);
             }
             // The page reads the status. The thread does not wait for the lock, and it writes
             // the layers only after a change. The next frame tries again.
@@ -157,6 +178,7 @@ pub fn start(
                 }
                 s.master = live.master;
                 s.strobe_hold = live.strobe_hold;
+                s.artnet = art_at.is_some_and(|t| now_ms.saturating_sub(t) <= ARTNET_TIMEOUT_MS);
             }
             // The UART sends the frame, then the break. The break before the next frame
             // and the idle time after it make the reset sequence of DMX512.

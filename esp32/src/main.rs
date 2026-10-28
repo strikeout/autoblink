@@ -9,6 +9,8 @@
 //! http://autoblink.local.
 
 #[cfg(feature = "dmx")]
+mod artnet;
+#[cfg(feature = "dmx")]
 mod dmx;
 mod led;
 mod logring;
@@ -83,6 +85,9 @@ pub struct State {
     /// The flash partition of the show. `None` when the partition table has no show partition.
     #[cfg(feature = "dmx")]
     pub show_store: Mutex<Option<show::ShowStore>>,
+    /// The last Art-Net frame. The `artnet` thread writes it, and the `dmx` thread reads it.
+    #[cfg(feature = "dmx")]
+    pub artnet: Mutex<artnet::ArtIn>,
     start: Instant,
 }
 
@@ -164,6 +169,8 @@ fn run() -> anyhow::Result<()> {
         show: show.clone(),
         #[cfg(feature = "dmx")]
         show_store: Mutex::new(show_store),
+        #[cfg(feature = "dmx")]
+        artnet: Mutex::new(artnet::ArtIn::default()),
         start: Instant::now(),
     });
     // The maintenance start of a firmware update also sends the idle look.
@@ -272,6 +279,10 @@ fn run() -> anyhow::Result<()> {
             let _ = track_changes.send(track);
         },
     )?;
+
+    // Art-Net needs the network. The maintenance start does not get to this line.
+    #[cfg(feature = "dmx")]
+    artnet::start(state.clone());
 
     // The web server and the receive threads run. A restart before this line makes the
     // bootloader start the previous app.

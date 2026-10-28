@@ -60,9 +60,9 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # A 1 ms tick lets the MIDI thread sleep until 1 ms before the next clock pulse.
 CONFIG_FREERTOS_HZ=1000
 
-# The web server has 6 sockets. The firmware also needs 3 UDP sockets for Pro DJ Link, 1 TCP
-# socket for the dbserver, 1 for the OTA download and 2 for the web server itself. The default
-# is 10.
+# The web server has 6 sockets. The firmware also needs 3 UDP sockets for Pro DJ Link, 1 UDP
+# socket for Art-Net, 1 TCP socket for the dbserver, 1 for the OTA download and 2 for the web
+# server itself. The default is 10.
 CONFIG_LWIP_MAX_SOCKETS=20
 
 # The MIDI thread resets the task watchdog on each loop pass. When the thread or an idle task
