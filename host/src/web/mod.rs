@@ -28,7 +28,8 @@
 //! - `{type: "dmx_live", master, strobe}` sets the live master (0 to 255) and the strobe hold of
 //!   the DMX engine. `{type: "dmx_fog"}` starts the fog. `{type: "dmx_aim", fixture, pan, tilt}`
 //!   aims a head (fixture 0 to 31). These commands get no reply. Without a DMX engine, they give
-//!   an `error`. `scene_test` also shows the look of the preset on the engine.
+//!   an `error`. `scene_test` also shows the look of the preset on the engine. When a page that
+//!   set the strobe hold closes its socket, the server releases the hold.
 //! - `{type: "take_over"}`, only to the ESP32: this page gets the status. The ESP32 closes the
 //!   connection of the page that had it, and replies with `settings`.
 //!
@@ -46,7 +47,7 @@
 //!   reply is 204, 400 for a bad show, 403 for a foreign `Origin`, or 413 above `MAX_SHOW_LEN`.
 //!   The server keeps only the first entries of a long list (`Show::sanitize`).
 //! - The two replies have `Access-Control-Allow-Origin: *`, as on the box.
-//! - The `hello` has the capability `dmx` only when the config sets `[dmx] artnet_target`.
+//! - The `hello` has the capability `dmx` only when the DMX engine runs (`[dmx] artnet_target`).
 //! - The status field `box` gives the IP address of an AUTOBLINK box on the network, or null.
 
 pub mod status;
@@ -615,12 +616,37 @@ async fn send(socket: &mut WebSocket, msg: &str) -> bool {
     )
 }
 
+/// Releases the strobe hold of the DMX engine when the page that set it goes away.
+///
+/// A phone that locks during a hold sends no release. Without this guard, the whole rig strobes
+/// until another page releases the hold.
+struct StrobeGuard {
+    live: Option<Arc<crate::dmx::DmxLive>>,
+    /// True while the last `dmx_live` of this page set the strobe hold.
+    held: bool,
+}
+
+impl Drop for StrobeGuard {
+    fn drop(&mut self) {
+        if let (true, Some(live)) = (self.held, &self.live) {
+            live.strobe_hold
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!("A page with a strobe hold closed. The host releases the hold.");
+        }
+    }
+}
+
 async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
+    // Each return below drops the guard.
+    let mut strobe = StrobeGuard {
+        live: shared.ctx.dmx.as_ref().map(|d| Arc::clone(&d.live)),
+        held: false,
+    };
     let mut caps = vec![
         "beat", "decks", "mixer", "output", "settings", "ports", "logs", "waveform", "scenes",
     ];
     // The page shows the DMX show editor only when the host has a DMX engine.
-    if shared.ctx.cfg.read().dmx.artnet_target.is_some() {
+    if shared.ctx.dmx.is_some() {
         caps.push("dmx");
     }
     let hello = json!({
@@ -696,7 +722,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
             incoming = socket.recv() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(err) = handle_command(&shared, text.as_str()).await {
+                        if let Some(err) = handle_command(&shared, text.as_str(), &mut strobe.held).await {
                             json!({ "type": "error", "text": err }).to_string().into()
                         } else {
                             continue;
@@ -714,7 +740,8 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
 }
 
 /// Runs one client command. Returns an error text for the page, or `None` on success.
-async fn handle_command(shared: &Shared, text: &str) -> Option<String> {
+/// `strobe_held` records whether this page holds the strobe of the DMX engine.
+async fn handle_command(shared: &Shared, text: &str, strobe_held: &mut bool) -> Option<String> {
     let ctx = &shared.ctx;
     let cmd = match serde_json::from_str::<Command>(text) {
         Ok(cmd) => cmd,
@@ -787,6 +814,7 @@ async fn handle_command(shared: &Shared, text: &str) -> Option<String> {
                 .master
                 .store(master.clamp(0.0, 255.0) as u8, Relaxed);
             dmx.live.strobe_hold.store(strobe, Relaxed);
+            *strobe_held = strobe;
             None
         }
         // A full channel drops the fog. The page can send it again.
@@ -1203,11 +1231,33 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Starts a DMX engine for `ctx`. The engine sends to the returned socket.
+    async fn with_engine(ctx: &mut WebCtx) -> tokio::net::UdpSocket {
+        let node = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dmx_cfg = crate::config::DmxConfig {
+            artnet_target: Some(node.local_addr().unwrap().to_string()),
+            universe: 0,
+        };
+        ctx.cfg.write().dmx = dmx_cfg.clone();
+        ctx.dmx = crate::dmx::start(
+            &dmx_cfg,
+            ctx.show.clone(),
+            Arc::clone(&ctx.dj_state),
+            Arc::clone(&ctx.cfg),
+            ctx.device_table.clone(),
+        );
+        node
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn hello_has_dmx_only_with_an_artnet_target() {
-        for (target, want) in [(None, false), (Some("10.0.0.5".to_string()), true)] {
-            let ctx = ctx();
-            ctx.cfg.write().dmx.artnet_target = target;
+    async fn hello_has_dmx_only_with_an_engine() {
+        for engine in [false, true] {
+            let mut ctx = ctx();
+            let _node = if engine {
+                Some(with_engine(&mut ctx).await)
+            } else {
+                None
+            };
             let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
                 .await
                 .unwrap();
@@ -1217,9 +1267,57 @@ mod tests {
             let hello = next_of_type(&mut ws, "hello").await;
             assert_eq!(
                 hello["caps"].as_array().unwrap().contains(&"dmx".into()),
-                want
+                engine
             );
         }
+    }
+
+    /// Waits up to 1 s until the strobe hold of the engine is `want`.
+    async fn strobe_becomes(live: &crate::dmx::DmxLive, want: bool) {
+        use std::sync::atomic::Ordering::Relaxed;
+        for _ in 0..100 {
+            if live.strobe_hold.load(Relaxed) == want {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the strobe hold did not become {want}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_closed_page_releases_only_its_own_strobe_hold() {
+        let mut ctx = ctx();
+        let _node = with_engine(&mut ctx).await;
+        let live = Arc::clone(&ctx.dmx.as_ref().unwrap().live);
+        let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let open = || async {
+            let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+                .await
+                .unwrap();
+            next_of_type(&mut ws, "hello").await;
+            ws
+        };
+        let hold = r#"{"type":"dmx_live","master":255,"strobe":true}"#;
+
+        // The page that holds the strobe goes away without a release.
+        let mut a = open().await;
+        a.send(WsMessage::Text(hold.into())).await.unwrap();
+        strobe_becomes(&live, true).await;
+        drop(a);
+        strobe_becomes(&live, false).await;
+
+        // A page that never held the strobe does not release the hold of another page.
+        let mut a = open().await;
+        a.send(WsMessage::Text(hold.into())).await.unwrap();
+        strobe_becomes(&live, true).await;
+        let b = open().await;
+        drop(b);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        strobe_becomes(&live, true).await;
+        drop(a);
+        strobe_becomes(&live, false).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
