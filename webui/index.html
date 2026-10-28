@@ -194,6 +194,10 @@ input.num.text{width:150px;text-align:left}
 #p-setup .fxc .rng.bad{color:var(--danger);font-weight:700}
 #p-setup input.name{width:110px;text-align:left}
 #p-setup input.num{width:52px}
+#p-setup .posrow{display:flex;flex-direction:column;gap:2px}
+#p-setup .posrow label{display:flex;gap:6px;align-items:center}
+#p-setup .posrow input[type=range]{width:150px}
+#p-setup .posrow b{color:var(--text);font-weight:600}
 #p-setup .hint{color:var(--dim);font-size:11px}
 #p-setup .section button,#p-setup .section select{margin-left:6px}
 .palette{display:flex;flex-wrap:wrap;gap:6px;padding:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
@@ -368,6 +372,8 @@ input.num.text{width:150px;text-align:left}
     <div id="ltpatch" class="cardrow"></div>
     <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
     <div id="ltgroups" class="cardrow"></div>
+    <div class="section" title="A position is a pan and a tilt for each moving head. A row of a look can use one.">Positions <button id="ltaddpos">+ Position</button></div>
+    <div id="ltpos" class="cardrow"></div>
     <div class="section">Idle look</div>
     <div id="ltidle" class="cardrow"></div>
   </details>
@@ -1518,7 +1524,7 @@ for (const [id, apply] of [
 $('p-scenes').addEventListener('focusout', () => setTimeout(() => { if (scenePending) renderScenes(); }));
 
 // ---- DMX lights: the patch, the groups and the looks of the show ----
-const FIXTURE_TYPES = { dimmer: ['dimmer'], rgb: ['red', 'green', 'blue'], rgb_dimmer: ['dimmer', 'red', 'green', 'blue'], rgbw: ['red', 'green', 'blue', 'white'], rgbw_dimmer: ['dimmer', 'red', 'green', 'blue', 'white'], strobe: ['dimmer', 'strobe'], fog: ['fog'] };
+const FIXTURE_TYPES = { dimmer: ['dimmer'], rgb: ['red', 'green', 'blue'], rgb_dimmer: ['dimmer', 'red', 'green', 'blue'], rgbw: ['red', 'green', 'blue', 'white'], rgbw_dimmer: ['dimmer', 'red', 'green', 'blue', 'white'], strobe: ['dimmer', 'strobe'], fog: ['fog'], moving_head: ['pan', 'tilt', 'dimmer', 'red', 'green', 'blue'], moving_head_16: ['pan', 'pan_fine', 'tilt', 'tilt_fine', 'dimmer', 'red', 'green', 'blue'] };
 const SWATCHES = [[255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255], [255, 255, 255]];
 const EVERY = [['beat', 'beat'], ['half', '½ beat'], ['bar', 'bar']];
 const EFFECTS = ['none', 'flash', 'pulse', 'chase', 'random', 'strobe', 'fog'];
@@ -1545,6 +1551,7 @@ async function loadShow() {
     const r = await fetch(BASE + '/show');
     if (!r.ok) throw new Error(r.status);
     show = await r.json();
+    if (!show.positions) show.positions = [];
     renderLights();
     renderScenes();
   } catch (e) { toast('The show did not load: ' + e.message); }
@@ -1617,6 +1624,7 @@ function renderLights() {
     del.title = 'Remove this light.';
     del.addEventListener('click', () => showEdit(() => {
       show.fixtures.splice(i, 1);
+      for (const p of show.positions) p.aims = p.aims.filter((a) => a.fixture !== i).map((a) => (a.fixture > i ? { ...a, fixture: a.fixture - 1 } : a));
       for (const g of show.groups) g.fixtures = g.fixtures.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));
     }));
     return h('div', 'fxc' + (bad ? ' bad' : ''),
@@ -1648,6 +1656,7 @@ function renderLights() {
     return h('div', 'fxc', h('div', 'line', textIn(g.name, 'The name of the group.', (v) => { g.name = v; }), del), tg);
   }));
 
+  renderPositions();
   renderLook();
   const withLook = [['', 'none'], ...show.looks.map((l, i) => (l ? [String(i), (i + 1) + ' ' + (scenes.labels[i] || '')] : null)).filter(Boolean)];
   const idle = show.idle !== null && show.looks[show.idle] ? show.idle : null;
@@ -1660,6 +1669,69 @@ function renderLights() {
   layerKey = '';
   renderLayers();
 }
+
+const CENTER = 32768;
+const isHead = (f) => f.channels.includes('pan') || f.channels.includes('tilt');
+let aimAt = 0, aimTimer = 0;
+
+/** Moves a head at once. At most 20 messages for each second go out, and the last value always goes. */
+function aimSend(fixture, a) {
+  clearTimeout(aimTimer);
+  const go = () => { aimAt = Date.now(); send({ type: 'dmx_aim', fixture, pan: a.pan, tilt: a.tilt }); };
+  const wait = 50 - (Date.now() - aimAt);
+  if (wait <= 0) go(); else aimTimer = setTimeout(go, wait);
+}
+
+/** The position cards: one pan slider and one tilt slider for each moving head. */
+function renderPositions() {
+  const heads = show.fixtures.map((f, i) => [f, i]).filter(([f]) => isHead(f));
+  $('ltaddpos').disabled = !heads.length;
+  $('ltpos').replaceChildren(...(show.positions.length || !heads.length ? [] : [h('span', 'hint', 'Add a position to aim the moving heads.')]),
+    ...(heads.length ? show.positions.map((p, pi) => {
+      const del = h('button', null, '×');
+      del.title = 'Remove this position.';
+      del.addEventListener('click', () => showEdit(() => {
+        show.positions.splice(pi, 1);
+        for (const l of show.looks) {
+          if (!l) continue;
+          for (const r of l.rows) {
+            if (r.position === pi) delete r.position;
+            else if (r.position > pi) r.position--;
+          }
+        }
+      }));
+      const aimOf = (i) => p.aims.find((a) => a.fixture === i) || { fixture: i, pan: CENTER, tilt: CENTER };
+      const rows = heads.map(([f, i]) => {
+        const axis = (label, key) => {
+          const s = h('input');
+          s.type = 'range'; s.min = 0; s.max = 65535; s.value = aimOf(i)[key];
+          s.title = label + ' of ' + (f.name || 'Light ' + (i + 1)) + ', 0 to 65535.';
+          s.addEventListener('input', () => {
+            const a = aimOf(i);
+            a[key] = +s.value;
+            showEdit(() => { if (!p.aims.includes(a)) p.aims.push(a); }, false);
+            aimSend(i, a);
+          });
+          return h('label', null, label, s);
+        };
+        const mid = h('button', null, 'Center');
+        mid.title = 'Aim this head at the middle.';
+        mid.addEventListener('click', () => {
+          const a = aimOf(i);
+          a.pan = CENTER; a.tilt = CENTER;
+          showEdit(() => { if (!p.aims.includes(a)) p.aims.push(a); });
+          aimSend(i, a);
+        });
+        return h('div', 'posrow', h('b', null, f.name || 'Light ' + (i + 1)), axis('Pan', 'pan'), axis('Tilt', 'tilt'), mid);
+      });
+      return h('div', 'fxc', h('div', 'line', textIn(p.name, 'The name of the position.', (v) => { p.name = v; }), del), ...rows);
+    }) : []));
+}
+
+$('ltaddpos').addEventListener('click', () => {
+  if (!show || show.positions.length >= 8) return toast('8 positions is the maximum.');
+  showEdit(() => show.positions.push({ name: 'Position ' + (show.positions.length + 1), aims: [] }));
+});
 
 /** The look editor under the palette. It shows the look of the preset that has the ✎ open. */
 function renderLook() {
@@ -1756,6 +1828,31 @@ function lookRowCtl(r, g) {
     par.push(h('label', null, 'cooldown s ', numIn(0, 600, r.cooldown_s, 'The seconds before the effect can start again, 0 to 600.', (v) => { r.cooldown_s = v; })));
   }
   if (par.length) out.push(h('div', 'par', ...par));
+  if (g.fixtures.some((i) => show.fixtures[i] && isHead(show.fixtures[i]))) {
+    out.push(h('div', 'pills', h('span', null, 'position'), ...[[undefined, 'none'], ...show.positions.map((p, pi) => [pi, p.name || 'Position ' + (pi + 1)])].map(([v, t]) => {
+      const b = h('button', 'pill' + (r.position === v ? ' on' : ''), t);
+      b.addEventListener('click', () => showEdit(() => { if (v === undefined) delete r.position; else r.position = v; }));
+      return b;
+    })));
+    const sk = r.shape && r.shape !== 'none' ? Object.keys(r.shape)[0] : 'none';
+    out.push(h('div', 'pills', h('span', null, 'shape'), ...[['none', 'none'], ['circle', 'circle'], ['figure8', 'figure 8'], ['sweep', 'sweep']].map(([k, t]) => {
+      const b = h('button', 'pill' + (k === sk ? ' on' : ''), t);
+      b.addEventListener('click', () => showEdit(() => {
+        if (k === 'none') r.shape = 'none';
+        else r.shape = { [k]: sk === 'none' ? { beats: 4, size: 128 } : { ...r.shape[sk] } };
+      }));
+      return b;
+    })));
+    if (sk !== 'none') {
+      const sh = r.shape[sk];
+      out.push(h('div', 'pills', h('span', null, 'beats'), ...[1, 2, 4, 8, 16].map((n) => {
+        const b = h('button', 'pill' + (sh.beats === n ? ' on' : ''), String(n));
+        b.addEventListener('click', () => showEdit(() => { sh.beats = n; }));
+        return b;
+      })));
+      out.push(range('Size', 0, 255, sh.size, 'The size of the shape, 0 to 255. 255 is a quarter of the full range.', (v) => { sh.size = v; }));
+    }
+  }
   return out;
 }
 
@@ -1829,7 +1926,15 @@ function oflDefault(c) {
 function oflChannels(fixture, modeName) {
   const avail = fixture.availableChannels || {};
   const fine = new Set();
-  for (const c of Object.values(avail)) for (const a of c.fineChannelAliases || []) fine.add(a);
+  // The fine alias of a Pan or Tilt channel is a fine channel of the show.
+  const fineKind = {};
+  for (const c of Object.values(avail)) {
+    const t = (c.capabilities || (c.capability ? [c.capability] : []))[0];
+    for (const a of c.fineChannelAliases || []) {
+      fine.add(a);
+      if (t && (t.type === 'Pan' || t.type === 'Tilt')) fineKind[a] = t.type === 'Pan' ? 'pan_fine' : 'tilt_fine';
+    }
+  }
   const mode = (fixture.modes || []).find((m) => m.name === modeName);
   const notes = [];
   let unknown = false;
@@ -1840,7 +1945,14 @@ function oflChannels(fixture, modeName) {
   // Each template channel by the names that it gets for the pixels and for the pixel groups.
   const tmpl = {};
   const tmplFine = new Set();
-  const pixelNames = [...leaves(matrix.pixelKeys || []), ...Object.keys(matrix.pixelGroups || {})];
+  // Without pixel keys, OFL makes them from the pixel count: "1" to "n", or "(x, y, z)" for a grid.
+  const keys = leaves(matrix.pixelKeys || []);
+  const pc = matrix.pixelCount;
+  if (!matrix.pixelKeys && Array.isArray(pc) && pc.length === 3 && pc.every((n) => Number.isInteger(n) && n > 0) && pc[0] * pc[1] * pc[2] <= 1024) {
+    const flat = pc.filter((n) => n > 1).length <= 1;
+    for (let z = 1; z <= pc[2]; z++) for (let y = 1; y <= pc[1]; y++) for (let x = 1; x <= pc[0]; x++) keys.push(flat ? String(x * y * z) : '(' + x + ', ' + y + ', ' + z + ')');
+  }
+  const pixelNames = [...keys, ...Object.keys(matrix.pixelGroups || {})];
   for (const [tn, tc] of Object.entries(fixture.templateChannels || {})) {
     for (const a of tc.fineChannelAliases || []) tmplFine.add(a);
     for (const k of pixelNames) {
@@ -1863,6 +1975,8 @@ function oflChannels(fixture, modeName) {
     const cap = caps.find((k) => Array.isArray(k.dmxRange) && k.dmxRange[0] <= top && k.dmxRange[1] >= top) || caps[0];
     const type = cap && cap.type;
     if (type === 'Intensity') return 'dimmer';
+    if (type === 'Pan') return 'pan';
+    if (type === 'Tilt') return 'tilt';
     if (type === 'ColorIntensity' && OFL_COLORS[cap.color]) return OFL_COLORS[cap.color];
     if (type === 'ShutterStrobe') {
       // The engine sends Strobe 0 while no strobe runs. A shutter that is closed at 0 needs another channel type.
@@ -1895,7 +2009,7 @@ function oflChannels(fixture, modeName) {
       if (!(px > 0)) return [];
       return name.channelOrder === 'perChannel' ? one.flatMap((m) => Array.from({ length: px }, () => m)) : Array.from({ length: px }, () => one).flat();
     }
-    if (fine.has(name)) return [{ fixed: 0 }];
+    if (fine.has(name)) return [fineKind[name] || { fixed: 0 }];
     const c = avail[name] || tmpl[name];
     if (!c) {
       // A name that is no channel of the fixture is a switching channel, or a pixel channel that the template channels do not describe.
