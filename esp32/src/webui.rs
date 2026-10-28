@@ -10,6 +10,9 @@
 //! `dmx`. `GET /show` gives the DMX show as JSON, and `POST /show` replaces it. The commands
 //! `dmx_live` and `dmx_fog` set the live controls. They get no reply.
 //!
+//! `GET /ofl/search?q=<text>` and `GET /ofl/fixture?key=<manufacturer>/<model>` pass the JSON of
+//! the Open Fixture Library through to the page (see `ofl.rs`).
+//!
 //! The firmware sends the status and the beats to one page at a time, the active page. Another
 //! page gets `busy` and shows a button. The button sends `take_over`, and the firmware closes the
 //! connection of the active page. That page then connects again and gets `busy`.
@@ -32,6 +35,7 @@ use serde_json::{json, Value};
 
 #[cfg(feature = "dmx")]
 use crate::dmx::{DmxMsg, DmxStatus};
+use crate::ofl;
 use crate::ota::{self, OtaCmd, OtaStatus};
 use crate::settings::Settings;
 use crate::tracks::TrackData;
@@ -191,6 +195,7 @@ pub fn start(
 
     #[cfg(feature = "dmx")]
     show_routes(&mut server, &state)?;
+    ofl_routes(&mut server)?;
 
     for path in ["/", "/index.html"] {
         server.fn_handler(path, Method::Get, |req| {
@@ -333,9 +338,9 @@ pub fn start(
             }
             if Instant::now() >= next_status {
                 next_status = Instant::now() + STATUS_INTERVAL;
-                // The OTA check takes about 50 KB of heap for TLS. The status message can then
-                // fail to allocate, so the page gets no status until the check ends.
-                if active.is_some() && !ota::busy() {
+                // The OTA check and an OFL fetch take about 50 KB of heap for TLS. The status
+                // message can then fail to allocate, so the page gets no status until they end.
+                if active.is_some() && !ota::busy() && !ofl::busy() {
                     let clock_enabled = midi_cfg.lock().unwrap().clock_enabled;
                     status_message(&state, clock_enabled, &mut status);
                     if active.send(&status) {
@@ -357,6 +362,77 @@ fn release_strobe(_state: &State) {
         .dmx_live
         .strobe_hold
         .store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Adds `GET /ofl/search?q=<text>` and `GET /ofl/fixture?key=<manufacturer>/<model>`.
+///
+/// The handler waits for the fetch of `ofl.rs`. Each step of the fetch can wait up to 10 s.
+/// Meanwhile the HTTP server task serves no other request, and the page gets no beat and no
+/// status. A page from the computer of the developer uses the two routes too (see `dev_origin`).
+/// Thus each reply has `Access-Control-Allow-Origin: *`.
+fn ofl_routes(server: &mut EspHttpServer<'static>) -> anyhow::Result<()> {
+    type Fetch = fn(&str) -> Result<Vec<u8>, (u16, String)>;
+    let routes: [(&str, &str, Fetch); 2] = [
+        ("/ofl/search", "q", ofl::search),
+        ("/ofl/fixture", "key", ofl::fixture),
+    ];
+    for (path, name, fetch) in routes {
+        server.fn_handler(path, Method::Get, move |req| -> anyhow::Result<()> {
+            let (origin, host) = (req.header("Origin"), req.header("Host"));
+            let reply = if !origin_allowed(origin, host) {
+                log::warn!("GET {path} refused: Origin {origin:?} does not match Host {host:?}");
+                Err((
+                    403,
+                    "The Origin of the page does not match the Host.".to_string(),
+                ))
+            } else {
+                match query_value(req.uri(), name) {
+                    Some(value) => fetch(&value),
+                    None => Err((400, format!("The request has no valid value for {name}."))),
+                }
+            };
+            let cors = ("Access-Control-Allow-Origin", "*");
+            match reply {
+                Ok(body) => req
+                    .into_response(200, None, &[("Content-Type", "application/json"), cors])?
+                    .write_all(&body)?,
+                Err((status, text)) => req
+                    .into_response(
+                        status,
+                        None,
+                        &[("Content-Type", "text/plain; charset=utf-8"), cors],
+                    )?
+                    .write_all(text.as_bytes())?,
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Returns the URL-decoded value of the query parameter `name` in `uri`. A `+` is a space.
+///
+/// Returns `None` when `uri` has no such parameter, when an escape is not `%` and two hex
+/// digits, or when the text is not UTF-8.
+fn query_value(uri: &str, name: &str) -> Option<String> {
+    let (_, query) = uri.split_once('?')?;
+    let raw = query
+        .split('&')
+        .find_map(|p| p.strip_prefix(name)?.strip_prefix('='))?;
+    let mut out = Vec::with_capacity(raw.len());
+    let mut bytes = raw.bytes();
+    while let Some(b) = bytes.next() {
+        out.push(match b {
+            b'+' => b' ',
+            b'%' => {
+                let hi = char::from(bytes.next()?).to_digit(16)?;
+                let lo = char::from(bytes.next()?).to_digit(16)?;
+                (hi * 16 + lo) as u8
+            }
+            b => b,
+        });
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Adds `GET /show` and `POST /show`.

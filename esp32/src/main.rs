@@ -15,6 +15,7 @@ mod logring;
 mod mem;
 mod midi;
 mod net;
+mod ofl;
 mod ota;
 mod prolink;
 mod settings;
