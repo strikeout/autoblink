@@ -283,23 +283,33 @@
   <rect x="1120" y="140" width="200" height="215" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
   <g font-size="12" fill="#24292f">
     <text x="1132" y="158" font-weight="bold">3.5 mm TRS jack, Type A</text>
-    <text x="1132" y="174">Tip → DIN pin 5</text>
-    <text x="1132" y="244">Ring → DIN pin 4</text>
-    <text x="1132" y="294">Sleeve → DIN pin 2</text>
+    <text x="1132" y="187">Tip → DIN pin 5</text>
+    <text x="1132" y="257">Ring → DIN pin 4</text>
+    <text x="1132" y="307">Sleeve → DIN pin 2</text>
   </g>
+  <!-- The wires go on to the three contacts of the plug. -->
+  <g stroke-width="2.5" fill="none" stroke-linecap="round">
+    <line x1="1120" y1="170" x2="1276" y2="170" stroke="#1f6feb"/>
+    <line x1="1120" y1="240" x2="1276" y2="240" stroke="#cf222e"/>
+    <line x1="1120" y1="290" x2="1274" y2="290" stroke="#24292f"/>
+  </g>
+  <!-- The plug, tip up: tip, insulator, ring, insulator, sleeve. -->
   <g fill="#8c959f" stroke="#57606a" stroke-width="1">
-    <rect x="1140" y="314" width="80" height="16"/>
-    <rect x="1226" y="314" width="30" height="16"/>
-    <path d="M1262 314 L1285 314 L1300 322 L1285 330 L1262 330 Z"/>
+    <polygon points="1285,156 1294,168 1294,195 1276,195 1276,168"/>
+    <rect x="1276" y="201" width="18" height="61"/>
+    <rect x="1274" y="268" width="22" height="70"/>
   </g>
   <g fill="#24292f">
-    <rect x="1220" y="314" width="6" height="16"/>
-    <rect x="1256" y="314" width="6" height="16"/>
+    <rect x="1276" y="195" width="18" height="6"/>
+    <rect x="1276" y="262" width="18" height="6"/>
+    <circle cx="1276" cy="170" r="3.5"/>
+    <circle cx="1276" cy="240" r="3.5"/>
+    <circle cx="1274" cy="290" r="3.5"/>
   </g>
-  <g font-size="11" fill="#57606a" text-anchor="middle">
-    <text x="1180" y="346">S</text>
-    <text x="1241" y="346">R</text>
-    <text x="1280" y="346">T</text>
+  <g font-size="12" font-weight="bold" fill="#24292f">
+    <text x="1302" y="182">T</text>
+    <text x="1302" y="236">R</text>
+    <text x="1302" y="308">S</text>
   </g>
   <g fill="#24292f">
     <circle cx="1120" cy="170" r="4"/>
