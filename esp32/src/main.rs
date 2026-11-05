@@ -68,6 +68,8 @@ pub struct State {
     pub ota: Mutex<OtaStatus>,
     /// A preset that the page asked to test. The MIDI thread sends its note. `u8::MAX` is none.
     pub scene_test: AtomicU8,
+    /// The OLED menu asked for the test of the MIDI output pin.
+    pub midi_pin_test: AtomicBool,
     /// The state of the DMX input. `None` without the feature `dmx`.
     pub dmx: Mutex<Option<DmxStatus>>,
     start: Instant,
@@ -200,6 +202,7 @@ fn run() -> anyhow::Result<()> {
             ..Default::default()
         }),
         scene_test: AtomicU8::new(u8::MAX),
+        midi_pin_test: AtomicBool::new(false),
         dmx: Mutex::new(None),
         start: Instant::now(),
     });

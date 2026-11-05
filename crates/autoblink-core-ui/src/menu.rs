@@ -68,6 +68,8 @@ pub enum Kind {
     Number { lo: i64, hi: i64, step: i64 },
     /// One of `n` values (0 to n - 1). Up and down wrap around.
     Choice { n: i64 },
+    /// A push starts the test of the MIDI output pin.
+    PinTest,
     /// A push asks for a confirmation. The second push restarts the box.
     Restart,
 }
@@ -90,7 +92,7 @@ const fn number(label: &'static str, idx: usize, lo: i64, hi: i64, step: i64) ->
 
 /// The items of the Settings page. Each value applies only on a push, because a change of the
 /// device number makes the virtual CDJ join the network again.
-pub const ITEMS: [Item; 7] = [
+pub const ITEMS: [Item; 8] = [
     number("Device Number", 2, 1, 15, 1),
     number("Note Channel", 9, 1, 16, 1),
     Item {
@@ -106,6 +108,11 @@ pub const ITEMS: [Item; 7] = [
         label: "Rotate 180",
         idx: 120,
         kind: Kind::Choice { n: 2 },
+    },
+    Item {
+        label: "MIDI Pin Test",
+        idx: 0,
+        kind: Kind::PinTest,
     },
     Item {
         label: "Restart",
@@ -124,6 +131,9 @@ pub enum Action {
     },
     /// Turn the DMX scene player on or off.
     ToggleScenes,
+    /// Hold the MIDI output low for 1 s and release it for 1 s, five times. An LED in the place
+    /// of the MIDI receiver then blinks.
+    MidiPinTest,
     Restart,
 }
 
@@ -189,7 +199,7 @@ impl Menu {
                             (if up { v + step } else { v - step }).clamp(lo, hi)
                         }
                         Kind::Choice { n } => (v + if up { 1 } else { n - 1 }) % n,
-                        Kind::Restart => v,
+                        Kind::PinTest | Kind::Restart => v,
                     });
                 }
             }
@@ -205,6 +215,7 @@ impl Menu {
             Input::Down => self.sel = (self.sel + 1) % ITEMS.len(),
             Input::Select => match item.kind {
                 Kind::Restart => self.confirm = true,
+                Kind::PinTest => return Some(Action::MidiPinTest),
                 _ => self.edit = Some(current(item.idx)),
             },
         }
@@ -235,7 +246,7 @@ impl Menu {
         for (i, item) in ITEMS.iter().enumerate().skip(first).take(shown) {
             let mark = if i == self.sel { ">" } else { " " };
             let value = match (i == self.sel, self.edit, item.kind) {
-                (_, _, Kind::Restart) => String::new(),
+                (_, _, Kind::PinTest | Kind::Restart) => String::new(),
                 (true, Some(v), _) => format!("[{}]", text(item.idx, v)),
                 _ => text(item.idx, current(item.idx)),
             };
@@ -339,6 +350,14 @@ mod tests {
             m.input(Input::Select, 5, |_| 3),
             Some(Action::Set { idx: 110, value: 0 })
         );
+    }
+
+    #[test]
+    fn the_pin_test_starts_on_the_push() {
+        let mut m = settings();
+        m.input(Input::Up, 1, |_| 0);
+        m.input(Input::Up, 2, |_| 0);
+        assert_eq!(m.input(Input::Select, 3, |_| 0), Some(Action::MidiPinTest));
     }
 
     #[test]

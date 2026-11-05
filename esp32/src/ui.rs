@@ -372,6 +372,11 @@ impl Ui<'_> {
             Some(Action::Set { idx, value }) => {
                 self.settings.lock().unwrap().set(idx, &value.to_string())
             }
+            Some(Action::MidiPinTest) => {
+                log::info!("MIDI pin test from the menu of the OLED");
+                self.state.midi_pin_test.store(true, Ordering::Relaxed);
+                return;
+            }
             Some(Action::ToggleScenes) => {
                 // The same path as `scenes_set` of the page. Clone first: `set_scenes` takes the
                 // scenes lock.
