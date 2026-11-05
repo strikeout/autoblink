@@ -279,7 +279,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - The ESP32 MIDI output follows the host rules (`autoblink-core-midi`), with the phrase notes and CCs. It has no No Bass note, no MTC and no OSC.
 - The ESP32 page has no mixer section. The XDJ-AZ sends the EQ and fader positions only as USB MIDI, and the classic ESP32 has no USB host.
 - The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
-- The DMX output (`--features dmx`) flashes channel 1 on each beat. It has no settings yet.
+- The DMX output (feature `dmx`, on by default) flashes the channel of "DMX Beat Channel" (index 111) on each beat. "DMX Mode" (index 110) merges it with DMX IN. The two rows are firmware settings (`autoblink_core_ui::config`), and NVS keeps them under the key `box`.
 - The emulator has no `scenes` capability. The page hides the DMX Scenes panel there.
 - The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `autoblink-core-midi` yet.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`

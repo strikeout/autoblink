@@ -36,6 +36,7 @@ serde_json = "1"
 autoblink-core-dbserver = { path = "../crates/autoblink-core-dbserver" }
 autoblink-core-midi = { path = "../crates/autoblink-core-midi" }
 autoblink-core-prolink = { path = "../crates/autoblink-core-prolink" }
+autoblink-core-ui = { path = "../crates/autoblink-core-ui" }
 
 [build-dependencies]
 embuild = "0.33.5"

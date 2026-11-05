@@ -6,6 +6,7 @@ members = [
   "crates/autoblink-core-midi",
   "crates/autoblink-core-prolink",
   "crates/autoblink-core-dbserver",
+  "crates/autoblink-core-ui",
 ]
 
 # The firmware builds with the Xtensa toolchain and its own target. It has its own

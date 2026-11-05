@@ -1,17 +1,17 @@
 //! DMX512 on UART1: output on IO4, input on IO36. The feature `dmx` is on by default.
 //!
-//! Two RS-485 modules (MAX3485 or SP3485) turn the UART signals into DMX. Channel 1 flashes to
-//! full on each master beat and fades out in `FLASH_MS`. The other channels stay at 0.
+//! Two RS-485 modules (MAX3485 or SP3485) turn the UART signals into DMX. The effect of the box
+//! is one flash: the channel of the setting "DMX Beat Channel" goes to full on each master beat
+//! and fades out in `FLASH_MS`. The other effect channels stay at 0.
 //!
 //! The input receives the frames of a console. One frame is a break, the start code and up to 512
-//! channels. The thread puts the channels of each good frame into the input buffer.
-//!
-//! ponytail: one fixed effect on channel 1. Settings for channels and effects come when the DMX
-//! behaviour is decided.
+//! channels. The thread puts the channels of each good frame into the input buffer. The setting
+//! "DMX Mode" sets how the output uses the input and the effect (`autoblink_core_ui::merge`).
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use autoblink_core_ui::{merge, BoxConfig};
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::{Gpio36, Gpio4};
 use esp_idf_svc::hal::uart::{config, UartDriver, UartEventPayload, UART1};
@@ -56,6 +56,7 @@ impl Dmx {
         tx: Gpio4<'static>,
         rx: Gpio36<'static>,
         state: Arc<State>,
+        box_cfg: Arc<Mutex<BoxConfig>>,
     ) -> anyhow::Result<Self> {
         // A receive timeout of one character time puts the bytes before a break into the receive
         // buffer while the break is on the line. Then the data event that follows a break event
@@ -76,7 +77,9 @@ impl Dmx {
         let dmx = Self::default();
         let last_beat = dmx.last_beat.clone();
         *state.dmx.lock().unwrap() = Some(DmxStatus::default());
-        crate::spawn(c"dmx", 4 * 1024, move || run(&uart, &state, &last_beat))?;
+        crate::spawn(c"dmx", 4 * 1024, move || {
+            run(&uart, &state, &box_cfg, &last_beat)
+        })?;
         log::info!("DMX output is on IO4, DMX input is on IO36");
         Ok(dmx)
     }
@@ -86,7 +89,12 @@ impl Dmx {
     }
 }
 
-fn run(uart: &UartDriver, state: &State, last_beat: &Mutex<Option<Instant>>) {
+fn run(
+    uart: &UartDriver,
+    state: &State,
+    cfg: &Mutex<BoxConfig>,
+    last_beat: &Mutex<Option<Instant>>,
+) {
     let Some(events) = uart.event_queue() else {
         log::error!("DMX: the UART has no event queue");
         return;
@@ -95,6 +103,7 @@ fn run(uart: &UartDriver, state: &State, last_beat: &Mutex<Option<Instant>>) {
     // for a frame, the break byte and one byte that shows a frame that is too long.
     let mut out: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
     let mut input: Box<[u8; 512]> = Box::new([0; 512]);
+    let mut effect: Box<[u8; 512]> = Box::new([0; 512]);
     let mut rx: Box<[u8; FRAME_LEN + 2]> = Box::new([0; FRAME_LEN + 2]);
     let mut rx_len = 0;
     let mut rx_bad = false;
@@ -175,6 +184,7 @@ fn run(uart: &UartDriver, state: &State, last_beat: &Mutex<Option<Instant>>) {
             }
             s.signal = signal;
             s.in_fps = frames;
+            s.mode = cfg.lock().unwrap().dmx_mode.key();
             frames = 0;
         }
 
@@ -184,16 +194,24 @@ fn run(uart: &UartDriver, state: &State, last_beat: &Mutex<Option<Instant>>) {
             if next_send < Instant::now() {
                 next_send = Instant::now() + FRAME_PERIOD;
             }
+            let (mode, channel) = {
+                let cfg = cfg.lock().unwrap();
+                (cfg.dmx_mode, usize::from(cfg.beat_channel).clamp(1, 512))
+            };
             let level = last_beat
                 .lock()
                 .unwrap()
                 .map_or(0.0, |t| 1.0 - t.elapsed().as_secs_f32() * 1000.0 / FLASH_MS);
+            effect.fill(0);
+            effect[channel - 1] = (level.clamp(0.0, 1.0) * 255.0) as u8;
             // Byte 0 is the start code (0 for dimmer data). Bytes 1 to 512 are the channels.
-            out[1] = (level.clamp(0.0, 1.0) * 255.0) as u8;
+            let channels: &mut [u8; 512] = (&mut out[1..]).try_into().expect("512 channels");
             // The UART sends the frame, then the break. The break before the next frame and the
             // idle time after it make the reset sequence of DMX512.
-            if let Err(e) = uart.write_with_break(&out[..], BREAK_BITS) {
-                log::warn!("DMX frame not sent: {e}");
+            if merge(mode, signal, &input, &effect, channels) {
+                if let Err(e) = uart.write_with_break(&out[..], BREAK_BITS) {
+                    log::warn!("DMX frame not sent: {e}");
+                }
             }
         }
     }

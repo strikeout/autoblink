@@ -75,6 +75,8 @@ pub struct State {
 /// The state of the DMX input for the page and the display.
 #[derive(Clone, Copy, Default, serde::Serialize)]
 pub struct DmxStatus {
+    /// The key of the setting "DMX Mode", for example "merge".
+    pub mode: &'static str,
     /// The good frames in the last second.
     pub in_fps: u16,
     /// `true` while a good frame arrived in the last second.
@@ -216,7 +218,13 @@ fn run() -> anyhow::Result<()> {
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
 
     #[cfg(feature = "dmx")]
-    let dmx = dmx::Dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36, state.clone())?;
+    let dmx = dmx::Dmx::start(
+        p.uart1,
+        p.pins.gpio4,
+        p.pins.gpio36,
+        state.clone(),
+        settings.lock().unwrap().box_cfg.clone(),
+    )?;
 
     prolink::spawn(
         state.clone(),

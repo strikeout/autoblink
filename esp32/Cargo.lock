@@ -72,6 +72,14 @@ name = "autoblink-core-prolink"
 version = "1.24.0"
 
 [[package]]
+name = "autoblink-core-ui"
+version = "1.24.0"
+dependencies = [
+ "autoblink-core-midi",
+ "serde",
+]
+
+[[package]]
 name = "autoblink-esp32"
 version = "1.24.0"
 dependencies = [
@@ -79,6 +87,7 @@ dependencies = [
  "autoblink-core-dbserver",
  "autoblink-core-midi",
  "autoblink-core-prolink",
+ "autoblink-core-ui",
  "embuild",
  "esp-idf-svc",
  "flate2",
