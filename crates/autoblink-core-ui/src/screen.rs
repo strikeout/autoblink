@@ -1,5 +1,7 @@
 //! The text of the pages of the OLED. The firmware only draws the lines.
 
+use autoblink_core_midi::scenes::{Event, SceneStatus, ScenesConfig, EXTRA_BASE};
+
 use crate::menu::{Page, ROWS};
 
 /// The characters in one line of the small font (6 pixels wide on a 128-pixel display).
@@ -241,6 +243,62 @@ pub fn network_lines(fixed: &[String], iface: &str, blinks: Option<u64>) -> Vec<
         .collect()
 }
 
+/// The name of an event in upper case, as the page shows it: "DROP", "BREAK".
+pub fn event_name(e: Event) -> String {
+    format!("{e:?}").to_uppercase()
+}
+
+/// The number and the name of a preset: "3 Strobe", or "X1 Fog" for an extra note.
+fn preset_name(cfg: &ScenesConfig, preset: u8) -> String {
+    let (num, label) = match preset.checked_sub(EXTRA_BASE) {
+        Some(k) => (
+            format!("X{}", u16::from(k) + 1),
+            cfg.extra.get(usize::from(k)).map(|x| x.label.as_str()),
+        ),
+        None => (
+            (u16::from(preset) + 1).to_string(),
+            cfg.labels.get(usize::from(preset)).map(String::as_str),
+        ),
+    };
+    match label.filter(|l| !l.is_empty()) {
+        Some(l) => format!("{num} {}", ascii(l)),
+        None => num,
+    }
+}
+
+/// The Scenes page: the player state, the phrase, the row that is on, its preset and the next
+/// preset.
+pub fn scenes_lines(cfg: &ScenesConfig, s: &SceneStatus) -> Vec<String> {
+    let mut out = vec![Page::Scenes.header()];
+    let state = if cfg.enabled { "ON" } else { "OFF" };
+    out.push(pair("Player", state, COLS));
+    let phrase = s.phrase.map_or("-".into(), event_name);
+    out.push(pair("Phrase", &phrase, COLS));
+    if !cfg.enabled {
+        out.push("Push: turn on".into());
+        return out;
+    }
+    let Some((e, row)) = s.row.and_then(|e| Some((e, cfg.row(e)?))) else {
+        out.push("No scene now".into());
+        out.push("Push: turn off".into());
+        return out;
+    };
+    let at = |i: u8| {
+        row.presets
+            .get(usize::from(i))
+            .map_or(String::new(), |&p| preset_name(cfg, p))
+    };
+    out.push(pair("Row", &event_name(e), COLS));
+    out.push(cut(format!("> {}", s.step.map(at).unwrap_or_default())));
+    let next = match (s.next, s.bars_left) {
+        (None, _) => "Next: random".into(),
+        (Some(i), Some(b)) => format!("Next {} in {b}", at(i)),
+        (Some(i), None) => format!("Next {}", at(i)),
+    };
+    out.push(cut(next));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +409,55 @@ mod tests {
         });
         assert_eq!(l[1], "Mode            Merge");
         assert_eq!(l[3], "DMX IN         41 fps");
+    }
+
+    fn scenes() -> ScenesConfig {
+        serde_json::from_str(
+            r#"{"enabled":true,"channel":0,"first_note":36,"count":4,"one_at_a_time":true,
+            "labels":["Wash","Strobe Rot","",""],"extra":[{"note":90,"label":"Fog"}],
+            "rows":[{"event":"drop","presets":[1,2,32]}]}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_scenes_page_shows_the_preset_that_is_on() {
+        let cfg = scenes();
+        let s = SceneStatus {
+            row: Some(Event::Drop),
+            step: Some(0),
+            next: Some(2),
+            phrase: Some(Event::Drop),
+            ..Default::default()
+        };
+        let l = scenes_lines(&cfg, &s);
+        assert_eq!(l[0], "< Scenes        5/7 >");
+        assert_eq!(l[1], "Player             ON");
+        assert_eq!(l[2], "Phrase           DROP");
+        assert_eq!(l[3], "Row              DROP");
+        assert_eq!(l[4], "> 2 Strobe Rot");
+        assert_eq!(l[5], "Next X1 Fog");
+        assert!(l.iter().all(|t| t.len() <= COLS));
+        // An empty name shows the number only.
+        let s = SceneStatus {
+            step: Some(1),
+            next: None,
+            ..s
+        };
+        let l = scenes_lines(&cfg, &s);
+        assert_eq!(l[4], "> 3");
+        assert_eq!(l[5], "Next: random");
+    }
+
+    #[test]
+    fn the_scenes_page_without_a_scene() {
+        let mut cfg = scenes();
+        let l = scenes_lines(&cfg, &SceneStatus::default());
+        assert_eq!(l[3], "No scene now");
+        cfg.enabled = false;
+        let l = scenes_lines(&cfg, &SceneStatus::default());
+        assert_eq!(l[1], "Player            OFF");
+        assert_eq!(l[3], "Push: turn on");
     }
 
     #[test]

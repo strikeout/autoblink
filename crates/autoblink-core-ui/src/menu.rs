@@ -24,17 +24,20 @@ pub enum Page {
     Decks,
     Track,
     Dmx,
+    /// The DMX scene player: a push turns it on or off.
+    Scenes,
     Network,
     Settings,
 }
 
 impl Page {
     /// The pages in the order of the right flips.
-    pub const ALL: [Page; 6] = [
+    pub const ALL: [Page; 7] = [
         Page::Main,
         Page::Decks,
         Page::Track,
         Page::Dmx,
+        Page::Scenes,
         Page::Network,
         Page::Settings,
     ];
@@ -45,6 +48,7 @@ impl Page {
             Page::Decks => "Decks",
             Page::Track => "Track",
             Page::Dmx => "DMX",
+            Page::Scenes => "Scenes",
             Page::Network => "Network",
             Page::Settings => "Settings",
         }
@@ -118,6 +122,8 @@ pub enum Action {
         idx: usize,
         value: i64,
     },
+    /// Turn the DMX scene player on or off.
+    ToggleScenes,
     Restart,
 }
 
@@ -193,6 +199,7 @@ impl Menu {
         match input {
             Input::Left => self.page = (self.page + n - 1) % n,
             Input::Right => self.page = (self.page + 1) % n,
+            Input::Select if self.page() == Page::Scenes => return Some(Action::ToggleScenes),
             _ if self.page() != Page::Settings => {}
             Input::Up => self.sel = (self.sel + ITEMS.len() - 1) % ITEMS.len(),
             Input::Down => self.sel = (self.sel + 1) % ITEMS.len(),
@@ -270,6 +277,17 @@ mod tests {
             assert_eq!(m.input(i, 0, |_| 0), None);
             assert_eq!(m.page(), Page::Decks);
         }
+    }
+
+    #[test]
+    fn a_push_on_the_scenes_page_toggles_the_player() {
+        let mut m = Menu::new();
+        for _ in 0..4 {
+            m.input(Input::Right, 0, |_| 0);
+        }
+        assert_eq!(m.page(), Page::Scenes);
+        assert_eq!(m.input(Input::Select, 1, |_| 0), Some(Action::ToggleScenes));
+        assert_eq!(m.page(), Page::Scenes);
     }
 
     #[test]
@@ -362,7 +380,7 @@ mod tests {
 
     #[test]
     fn the_header_shows_the_page_and_the_arrows() {
-        assert_eq!(Page::Decks.header(), "< Decks         2/6 >");
+        assert_eq!(Page::Decks.header(), "< Decks         2/7 >");
         assert_eq!(Page::Decks.header().len(), COLS);
     }
 }

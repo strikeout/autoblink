@@ -12,15 +12,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use autoblink_core_dbserver::phrase_status;
-use autoblink_core_midi::scenes::Event;
+use autoblink_core_midi::scenes::{Event, ScenesConfig};
 use autoblink_core_midi::MidiConfig;
 use autoblink_core_prolink::Deck;
 use autoblink_core_ui::config::{IDX_BEAT_CHANNEL, IDX_BRIGHTNESS, IDX_DMX_MODE, IDX_ROTATE};
 use autoblink_core_ui::joystick;
 use autoblink_core_ui::menu::{Action, Menu, Page};
 use autoblink_core_ui::screen::{
-    decks_lines, dmx_lines, lines, network_lines, track_lines, DeckRow, DmxInfo, Lines, Snapshot,
-    TrackInfo,
+    decks_lines, dmx_lines, event_name, lines, network_lines, scenes_lines, track_lines, DeckRow,
+    DmxInfo, Lines, Snapshot, TrackInfo,
 };
 use autoblink_core_ui::{BoxConfig, DmxMode};
 use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10};
@@ -80,6 +80,7 @@ struct Values {
     device: Arc<AtomicU8>,
     midi: Arc<Mutex<MidiConfig>>,
     box_cfg: Arc<Mutex<BoxConfig>>,
+    scenes: Arc<Mutex<ScenesConfig>>,
 }
 
 impl Values {
@@ -129,6 +130,7 @@ pub fn start(
             device: s.device_number.clone(),
             midi: s.midi.clone(),
             box_cfg: s.box_cfg.clone(),
+            scenes: s.scenes.clone(),
         };
         // The WiFi settings apply after a restart, so the start values stay right.
         let mut network = vec![format!("AP {}", s.ssid()), format!("Page {AP_IP}")];
@@ -311,6 +313,12 @@ impl Ui<'_> {
                     input: snap.dmx,
                 })
             }
+            Page::Scenes => {
+                // Each lock alone. The text is built under the scenes lock: a copy of the scenes
+                // every 200 ms gives many heap blocks.
+                let status = self.state.midi.lock().unwrap().scene;
+                scenes_lines(&self.values.scenes.lock().unwrap(), &status)
+            }
             Page::Network => {
                 let iface = self.state.iface.lock().unwrap().clone();
                 network_lines(self.network, &iface, snap.blinks)
@@ -334,6 +342,19 @@ impl Ui<'_> {
             }
             Some(Action::Set { idx, value }) => {
                 self.settings.lock().unwrap().set(idx, &value.to_string())
+            }
+            Some(Action::ToggleScenes) => {
+                // The same path as `scenes_set` of the page. Clone first: `set_scenes` takes the
+                // scenes lock.
+                let mut cfg = self.values.scenes.lock().unwrap().clone();
+                cfg.enabled = !cfg.enabled;
+                log::info!(
+                    "DMX scenes {} from the OLED",
+                    if cfg.enabled { "on" } else { "off" }
+                );
+                self.settings.lock().unwrap().set_scenes(cfg);
+                crate::webui::scenes_changed();
+                return;
             }
         };
         match result {
@@ -404,7 +425,7 @@ fn phrase(state: &State, d: &Deck) -> Option<(String, f64)> {
         .kind
         .code()
         .and_then(Event::bucket)
-        .map_or_else(|| p.kind.to_string(), |e| format!("{e:?}").to_uppercase());
+        .map_or_else(|| p.kind.to_string(), event_name);
     let text = format!("{name} {} bars left", p.beats_left.div_ceil(4));
     Some((text, p.progress))
 }
