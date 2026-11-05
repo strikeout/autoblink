@@ -247,6 +247,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 ### WT32-ETH01 pins
 
+The wiring diagram is `docs/wiring.svg`. It gives the board label first and the GPIO number in parentheses, for example "RXD (IO5)".
+
 | Pin | Use |
 |---|---|
 | GPIO16 | Switches on the 50 MHz oscillator of the PHY. Set it high before the Ethernet driver starts. |

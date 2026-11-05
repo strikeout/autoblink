@@ -1,0 +1,464 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wiring of the AUTOBLINK box with modules: WT32-ETH01, two LEDs, OLED, joystick, MIDI OUT (TRS-A), DMX OUT, DMX IN, USB-C power and the flash header. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1545" viewBox="0 0 1400 1545" font-family="Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="1400" height="1545" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="60" y="50" font-size="24" font-weight="bold" fill="#24292f">AUTOBLINK box · wiring</text>
+  <text x="60" y="74" font-size="13" fill="#57606a">WT32-ETH01 · LEDs · OLED · joystick · MIDI OUT (TRS-A) · DMX OUT · DMX IN · USB-C power · flash header</text>
+
+  <!-- Panels -->
+  <g fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5">
+    <rect x="60" y="100" width="440" height="420" rx="10"/>
+    <rect x="60" y="540" width="440" height="200" rx="10"/>
+    <rect x="60" y="760" width="440" height="210" rx="10"/>
+    <rect x="60" y="990" width="440" height="330" rx="10"/>
+    <rect x="790" y="100" width="550" height="270" rx="10"/>
+    <rect x="790" y="390" width="550" height="220" rx="10"/>
+    <rect x="790" y="630" width="550" height="240" rx="10"/>
+    <rect x="790" y="890" width="550" height="430" rx="10"/>
+    <rect x="60" y="1340" width="1280" height="185" rx="10"/>
+  </g>
+  <g font-size="15" font-weight="bold" fill="#24292f">
+    <text x="75" y="122">LEDs · active high</text>
+    <text x="75" y="562">OLED 128×64 · I2C</text>
+    <text x="75" y="782">Joystick KY-023 · ADC1</text>
+    <text x="75" y="1012">Power and flash</text>
+    <text x="805" y="122">MIDI OUT · UART2 TX · 31 250 baud</text>
+    <text x="805" y="412">DMX OUT · UART1 TX · 250 kbaud</text>
+    <text x="805" y="652">DMX IN · UART1 RX · HTP merge</text>
+    <text x="805" y="912">Parts</text>
+    <text x="75" y="1362">Legend</text>
+    <text x="520" y="1362">Notes</text>
+  </g>
+
+  <!-- ============ Wires ============ -->
+  <!-- Signal wires (blue) -->
+  <g stroke="#1f6feb" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <polyline points="540,230 180,230 180,290"/>
+    <line x1="180" y1="312" x2="180" y2="350"/>
+    <polyline points="540,330 300,330 300,390"/>
+    <line x1="300" y1="412" x2="300" y2="450"/>
+    <line x1="760" y1="170" x2="1120" y2="170"/>
+    <line x1="760" y1="555" x2="870" y2="555"/>
+    <line x1="760" y1="740" x2="870" y2="740"/>
+    <line x1="310" y1="655" x2="540" y2="655"/>
+    <line x1="310" y1="685" x2="540" y2="685"/>
+    <line x1="290" y1="870" x2="540" y2="870"/>
+    <line x1="290" y1="900" x2="540" y2="900"/>
+    <line x1="290" y1="930" x2="540" y2="930"/>
+    <line x1="540" y1="1190" x2="420" y2="1190"/>
+    <line x1="540" y1="1220" x2="320" y2="1220"/>
+    <line x1="540" y1="1255" x2="230" y2="1255"/>
+    <line x1="540" y1="1285" x2="230" y2="1285"/>
+  </g>
+  <!-- 3V3 wires (red) -->
+  <g stroke="#cf222e" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <line x1="900" y1="240" x2="1120" y2="240"/>
+    <polyline points="870,470 840,470 840,525 870,525"/>
+    <line x1="840" y1="500" x2="870" y2="500"/>
+    <line x1="870" y1="705" x2="840" y2="705"/>
+    <line x1="310" y1="625" x2="370" y2="625"/>
+    <line x1="290" y1="840" x2="370" y2="840"/>
+    <line x1="540" y1="1140" x2="480" y2="1140"/>
+  </g>
+  <!-- 5 V wire (orange) -->
+  <g stroke="#e36209" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <line x1="290" y1="1050" x2="540" y2="1050"/>
+  </g>
+  <!-- GND wires (black) -->
+  <g stroke="#24292f" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <line x1="290" y1="1100" x2="540" y2="1100"/>
+    <line x1="1120" y1="290" x2="1080" y2="290"/>
+    <line x1="1120" y1="555" x2="1080" y2="555"/>
+    <line x1="1120" y1="815" x2="1100" y2="815"/>
+    <polyline points="870,780 840,780 840,805 870,805"/>
+    <line x1="310" y1="595" x2="340" y2="595"/>
+    <line x1="290" y1="810" x2="320" y2="810"/>
+    <line x1="380" y1="1190" x2="360" y2="1190"/>
+    <line x1="280" y1="1220" x2="250" y2="1220"/>
+    <line x1="120" y1="1270" x2="90" y2="1270"/>
+  </g>
+  <!-- DMX pairs (purple) -->
+  <g stroke="#8250df" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <line x1="1020" y1="490" x2="1120" y2="490"/>
+    <line x1="1020" y1="520" x2="1120" y2="520"/>
+    <line x1="1020" y1="715" x2="1120" y2="715"/>
+    <line x1="1020" y1="785" x2="1120" y2="785"/>
+    <line x1="1070" y1="715" x2="1070" y2="785"/>
+  </g>
+
+  <!-- Junction dots -->
+  <circle cx="840" cy="500" r="4" fill="#cf222e"/>
+  <circle cx="840" cy="470" r="4" fill="#cf222e"/>
+  <circle cx="1070" cy="715" r="4" fill="#8250df"/>
+  <circle cx="1070" cy="785" r="4" fill="#8250df"/>
+
+  <!-- ============ Resistors ============ -->
+  <g fill="#ffffff" stroke="#24292f" stroke-width="2">
+    <rect x="410" y="223" width="50" height="14" rx="2"/>
+    <rect x="410" y="323" width="50" height="14" rx="2"/>
+    <rect x="955" y="163" width="50" height="14" rx="2"/>
+    <rect x="955" y="233" width="50" height="14" rx="2"/>
+    <rect x="1063" y="730" width="14" height="40" rx="2"/>
+  </g>
+  <g font-size="12" fill="#24292f" text-anchor="middle">
+    <text x="435" y="215">R1 330 Ω</text>
+    <text x="435" y="315">R2 330 Ω</text>
+    <text x="980" y="155">R3 10 Ω</text>
+    <text x="980" y="225">R4 33 Ω</text>
+  </g>
+  <g font-size="11" fill="#24292f">
+    <text x="1082" y="746">R5</text>
+    <text x="1082" y="761">120 Ω</text>
+  </g>
+
+  <!-- ============ LEDs ============ -->
+  <polygon points="168,290 192,290 180,312" fill="#2da44e" stroke="#24292f" stroke-width="2"/>
+  <line x1="166" y1="312" x2="194" y2="312" stroke="#24292f" stroke-width="2.5"/>
+  <polygon points="288,390 312,390 300,412" fill="#cf222e" stroke="#24292f" stroke-width="2"/>
+  <line x1="286" y1="412" x2="314" y2="412" stroke="#24292f" stroke-width="2.5"/>
+  <g stroke="#bf8700" stroke-width="1.5" fill="#bf8700">
+    <line x1="196" y1="298" x2="210" y2="288"/><polygon points="213,286 205,287 209,293"/>
+    <line x1="196" y1="308" x2="210" y2="298"/><polygon points="213,296 205,297 209,303"/>
+    <line x1="316" y1="398" x2="330" y2="388"/><polygon points="333,386 325,387 329,393"/>
+    <line x1="316" y1="408" x2="330" y2="398"/><polygon points="333,396 325,397 329,403"/>
+  </g>
+  <g font-size="12" fill="#24292f">
+    <text x="225" y="300" font-weight="bold">D1 beat LED (green)</text>
+    <text x="225" y="316" fill="#57606a">30 ms pulse on each beat</text>
+    <text x="345" y="400" font-weight="bold">D2 status LED (red)</text>
+    <text x="345" y="416" fill="#57606a">beat 1 long, blink codes</text>
+    <text x="75" y="490" fill="#57606a">About 4 mA each: (3.3 V − 2.0 V) / 330 Ω.</text>
+    <text x="75" y="506" fill="#57606a">Long leg (anode) to the resistor, short leg (cathode) to GND.</text>
+  </g>
+
+  <!-- ============ OLED ============ -->
+  <rect x="110" y="575" width="200" height="130" rx="6" fill="#1d4f91" stroke="#0b2a55" stroke-width="2"/>
+  <rect x="122" y="588" width="130" height="104" rx="2" fill="#0d1117"/>
+  <text x="187" y="625" font-size="20" font-weight="bold" fill="#56d4dd" text-anchor="middle">128.0</text>
+  <text x="187" y="645" font-size="11" fill="#56d4dd" text-anchor="middle">DECK 2 · PLAY</text>
+  <g fill="#56d4dd">
+    <rect x="150" y="656" width="14" height="10"/>
+    <rect x="168" y="656" width="14" height="10" fill="none" stroke="#56d4dd"/>
+    <rect x="186" y="656" width="14" height="10" fill="none" stroke="#56d4dd"/>
+    <rect x="204" y="656" width="14" height="10" fill="none" stroke="#56d4dd"/>
+  </g>
+  <text x="187" y="684" font-size="10" fill="#56d4dd" text-anchor="middle">CHORUS 3/8</text>
+  <g font-size="11" fill="#ffffff" text-anchor="end">
+    <text x="302" y="599">GND</text>
+    <text x="302" y="629">VCC</text>
+    <text x="302" y="659">SCL</text>
+    <text x="302" y="689">SDA</text>
+  </g>
+  <g fill="#d4a72c">
+    <circle cx="310" cy="595" r="4"/>
+    <circle cx="310" cy="625" r="4"/>
+    <circle cx="310" cy="655" r="4"/>
+    <circle cx="310" cy="685" r="4"/>
+  </g>
+  <text x="75" y="721" font-size="11" fill="#57606a">SSD1306 or SSD1315, I2C address 0x3C.</text>
+  <text x="75" y="735" font-size="11" fill="#57606a">The pin order differs between modules: read the labels.</text>
+
+  <!-- ============ Joystick ============ -->
+  <rect x="110" y="795" width="180" height="150" rx="6" fill="#1b1f24" stroke="#000000" stroke-width="2"/>
+  <circle cx="175" cy="870" r="42" fill="#3a3f45"/>
+  <circle cx="175" cy="870" r="26" fill="#57606a"/>
+  <g font-size="11" fill="#ffffff" text-anchor="end">
+    <text x="282" y="814">GND</text>
+    <text x="282" y="844">+5V</text>
+    <text x="282" y="874">VRx</text>
+    <text x="282" y="904">VRy</text>
+    <text x="282" y="934">SW</text>
+  </g>
+  <g fill="#d4a72c">
+    <circle cx="290" cy="810" r="4"/>
+    <circle cx="290" cy="840" r="4"/>
+    <circle cx="290" cy="870" r="4"/>
+    <circle cx="290" cy="900" r="4"/>
+    <circle cx="290" cy="930" r="4"/>
+  </g>
+  <text x="75" y="962" font-size="11" fill="#57606a">Connect +5V to 3V3. Connect SW to RXD, next to TXD. Do not use RX0.</text>
+
+  <!-- ============ Power and flash ============ -->
+  <rect x="110" y="1025" width="180" height="100" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
+  <g font-size="12" fill="#24292f">
+    <text x="122" y="1045" font-weight="bold">J1 · USB-C breakout</text>
+    <text x="122" y="1063" fill="#57606a">5.1 kΩ on CC1, CC2</text>
+    <text x="122" y="1079" fill="#57606a">5 V charger, 1 A</text>
+    <text x="282" y="1054" text-anchor="end" fill="#e36209" font-weight="bold">VBUS</text>
+    <text x="282" y="1104" text-anchor="end" font-weight="bold">GND</text>
+  </g>
+  <circle cx="290" cy="1050" r="4" fill="#e36209"/>
+  <circle cx="290" cy="1100" r="4" fill="#24292f"/>
+
+  <g stroke="#24292f" stroke-width="2" fill="#ffffff">
+    <circle cx="415" cy="1190" r="3.5"/><circle cx="385" cy="1190" r="3.5"/>
+    <circle cx="315" cy="1220" r="3.5"/><circle cx="285" cy="1220" r="3.5"/>
+  </g>
+  <g stroke="#24292f" stroke-width="2" fill="none">
+    <path d="M378 1180 h44 M400 1180 v-7 M394 1173 h12"/>
+    <path d="M278 1210 h44 M300 1210 v-7 M294 1203 h12"/>
+  </g>
+  <g font-size="12" fill="#24292f" text-anchor="middle">
+    <text x="400" y="1165" font-weight="bold">SW2 RST</text>
+    <text x="300" y="1195" font-weight="bold">SW1 BOOT</text>
+  </g>
+
+  <rect x="120" y="1238" width="110" height="62" rx="4" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
+  <g font-size="12" fill="#24292f">
+    <text x="128" y="1233" font-weight="bold">J2 · USB-serial</text>
+    <text x="222" y="1259" text-anchor="end">TX0</text>
+    <text x="222" y="1289" text-anchor="end">RX0</text>
+    <text x="128" y="1274">GND</text>
+  </g>
+  <g fill="#24292f">
+    <circle cx="230" cy="1255" r="4"/>
+    <circle cx="230" cy="1285" r="4"/>
+    <circle cx="120" cy="1270" r="4"/>
+  </g>
+
+  <!-- ============ WT32-ETH01 ============ -->
+  <rect x="600" y="88" width="100" height="50" rx="3" fill="#afb8c1" stroke="#57606a" stroke-width="2"/>
+  <text x="650" y="118" font-size="13" font-weight="bold" fill="#24292f" text-anchor="middle">RJ45</text>
+  <text x="710" y="84" font-size="12" fill="#57606a">Ethernet to the XDJ-AZ</text>
+  <rect x="540" y="130" width="220" height="1190" rx="8" fill="#1f3b2c" stroke="#0f2018" stroke-width="2"/>
+  <g font-size="12" fill="#ffffff">
+    <text x="552" y="234">CFG (IO32) · beat LED</text>
+    <text x="552" y="334">485_EN (IO33) · status LED</text>
+    <text x="552" y="659">IO14 · SCL</text>
+    <text x="552" y="689">IO15 · SDA</text>
+    <text x="552" y="874">IO39 · VRx (ADC1)</text>
+    <text x="552" y="904">IO35 · VRy (ADC1)</text>
+    <text x="552" y="934">RXD (IO5) · SW</text>
+    <text x="552" y="1054">5V in</text>
+    <text x="552" y="1104">GND</text>
+    <text x="552" y="1144">3V3 out</text>
+    <text x="552" y="1194">EN · reset</text>
+    <text x="552" y="1224">IO0 · boot</text>
+    <text x="552" y="1259">IO1 · TX0</text>
+    <text x="552" y="1289">IO3 · RX0</text>
+  </g>
+  <g font-size="12" fill="#ffffff" text-anchor="end">
+    <text x="748" y="174">TXD (IO17) · MIDI</text>
+    <text x="748" y="214">IO2 · UART2 RX (n/c)</text>
+    <text x="748" y="559">IO4 · UART1 TX</text>
+    <text x="748" y="744">IO36 · UART1 RX</text>
+  </g>
+  <g text-anchor="middle" fill="#ffffff">
+    <text x="650" y="395" font-size="20" font-weight="bold">WT32-ETH01</text>
+    <text x="650" y="415" font-size="11" fill="#afb8c1">ESP32 + LAN8720 PHY</text>
+    <text x="650" y="445" font-size="11" font-weight="bold" fill="#f2cc60">Do not use:</text>
+    <text x="650" y="462" font-size="11" fill="#f2cc60">16 18 19 21 22 23 25 26 27</text>
+    <text x="650" y="478" font-size="11" fill="#f2cc60">IO0: only the BOOT button</text>
+    <text x="650" y="494" font-size="11" fill="#f2cc60">IO2, IO12: no wire</text>
+  </g>
+  <g fill="#d4a72c" stroke="#0f2018" stroke-width="1">
+    <circle cx="540" cy="230" r="5"/>
+    <circle cx="540" cy="330" r="5"/>
+    <circle cx="540" cy="655" r="5"/>
+    <circle cx="540" cy="685" r="5"/>
+    <circle cx="540" cy="870" r="5"/>
+    <circle cx="540" cy="900" r="5"/>
+    <circle cx="540" cy="930" r="5"/>
+    <circle cx="540" cy="1050" r="5"/>
+    <circle cx="540" cy="1100" r="5"/>
+    <circle cx="540" cy="1140" r="5"/>
+    <circle cx="540" cy="1190" r="5"/>
+    <circle cx="540" cy="1220" r="5"/>
+    <circle cx="540" cy="1255" r="5"/>
+    <circle cx="540" cy="1285" r="5"/>
+    <circle cx="760" cy="170" r="5"/>
+    <circle cx="760" cy="210" r="5"/>
+    <circle cx="760" cy="555" r="5"/>
+    <circle cx="760" cy="740" r="5"/>
+  </g>
+  <g stroke="#57606a" stroke-width="2">
+    <line x1="765" y1="210" x2="780" y2="210"/>
+    <line x1="776" y1="204" x2="786" y2="216"/>
+    <line x1="786" y1="204" x2="776" y2="216"/>
+  </g>
+
+  <!-- ============ MIDI OUT jack ============ -->
+  <rect x="1120" y="140" width="200" height="215" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
+  <g font-size="12" fill="#24292f">
+    <text x="1132" y="158" font-weight="bold">3.5 mm TRS jack, Type A</text>
+    <text x="1132" y="174">Tip → DIN pin 5</text>
+    <text x="1132" y="244">Ring → DIN pin 4</text>
+    <text x="1132" y="294">Sleeve → DIN pin 2</text>
+  </g>
+  <g fill="#8c959f" stroke="#57606a" stroke-width="1">
+    <rect x="1140" y="314" width="80" height="16"/>
+    <rect x="1226" y="314" width="30" height="16"/>
+    <path d="M1262 314 L1285 314 L1300 322 L1285 330 L1262 330 Z"/>
+  </g>
+  <g fill="#24292f">
+    <rect x="1220" y="314" width="6" height="16"/>
+    <rect x="1256" y="314" width="6" height="16"/>
+  </g>
+  <g font-size="11" fill="#57606a" text-anchor="middle">
+    <text x="1180" y="346">S</text>
+    <text x="1241" y="346">R</text>
+    <text x="1280" y="346">T</text>
+  </g>
+  <g fill="#24292f">
+    <circle cx="1120" cy="170" r="4"/>
+    <circle cx="1120" cy="240" r="4"/>
+    <circle cx="1120" cy="290" r="4"/>
+  </g>
+
+  <!-- ============ DMX OUT ============ -->
+  <rect x="870" y="430" width="150" height="150" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
+  <g font-size="12" fill="#24292f">
+    <text x="945" y="452" text-anchor="middle" font-weight="bold">U1 · MAX3485</text>
+    <text x="878" y="474">VCC</text>
+    <text x="878" y="504">DE</text>
+    <text x="878" y="529">RE</text>
+    <text x="878" y="559">DI</text>
+    <text x="1012" y="494" text-anchor="end">A</text>
+    <text x="1012" y="524" text-anchor="end">B</text>
+    <text x="945" y="574" text-anchor="middle">GND</text>
+  </g>
+  <line x1="878" y1="517" x2="893" y2="517" stroke="#24292f" stroke-width="1"/>
+
+  <rect x="1120" y="440" width="200" height="150" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
+  <g font-size="12" fill="#24292f">
+    <text x="1132" y="462" font-weight="bold">XLR-3 female (out)</text>
+    <text x="1132" y="494">3 · Data + (A)</text>
+    <text x="1132" y="524">2 · Data − (B)</text>
+    <text x="1132" y="559">1 · GND / shield</text>
+  </g>
+  <circle cx="1280" cy="520" r="24" fill="#eaeef2" stroke="#57606a" stroke-width="2"/>
+  <g fill="#ffffff" stroke="#57606a" stroke-width="1.5">
+    <circle cx="1270" cy="512" r="4"/><circle cx="1290" cy="512" r="4"/><circle cx="1280" cy="530" r="4"/>
+  </g>
+  <g fill="#24292f">
+    <circle cx="1120" cy="490" r="4"/>
+    <circle cx="1120" cy="520" r="4"/>
+    <circle cx="1120" cy="555" r="4"/>
+  </g>
+  <text x="1030" y="482" font-size="11" fill="#8250df">to fixtures</text>
+
+  <!-- ============ DMX IN ============ -->
+  <rect x="870" y="665" width="150" height="170" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
+  <g font-size="12" fill="#24292f">
+    <text x="945" y="687" text-anchor="middle" font-weight="bold">U2 · MAX3485</text>
+    <text x="878" y="709">VCC</text>
+    <text x="878" y="744">RO</text>
+    <text x="878" y="784">DE</text>
+    <text x="878" y="809">RE</text>
+    <text x="1012" y="719" text-anchor="end">A</text>
+    <text x="1012" y="789" text-anchor="end">B</text>
+    <text x="945" y="829" text-anchor="middle">GND</text>
+  </g>
+  <line x1="878" y1="797" x2="893" y2="797" stroke="#24292f" stroke-width="1"/>
+
+  <rect x="1120" y="665" width="200" height="170" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
+  <g font-size="12" fill="#24292f">
+    <text x="1132" y="687" font-weight="bold">XLR-3 male (in)</text>
+    <text x="1132" y="719">3 · Data + (A)</text>
+    <text x="1132" y="789">2 · Data − (B)</text>
+    <text x="1132" y="819">1 · GND / shield</text>
+  </g>
+  <circle cx="1280" cy="752" r="24" fill="#eaeef2" stroke="#57606a" stroke-width="2"/>
+  <g fill="#57606a">
+    <circle cx="1270" cy="744" r="4"/><circle cx="1290" cy="744" r="4"/><circle cx="1280" cy="762" r="4"/>
+  </g>
+  <g fill="#24292f">
+    <circle cx="1120" cy="715" r="4"/>
+    <circle cx="1120" cy="785" r="4"/>
+    <circle cx="1120" cy="815" r="4"/>
+  </g>
+  <text x="1030" y="707" font-size="11" fill="#8250df">from console</text>
+
+  <!-- ============ Parts ============ -->
+  <g font-size="12" fill="#24292f">
+    <text x="805" y="936" font-weight="bold">At hand</text>
+    <text x="805" y="953">WT32-ETH01 and its USB-C dock, OLED 128×64, joystick KY-023</text>
+    <text x="805" y="970">2 × MAX3485 module (U1, U2), XLR-3 male and female panel sockets</text>
+    <text x="805" y="987">3.5 mm TRS panel jack and TRS MIDI cable (Type A)</text>
+    <text x="805" y="1004">Green and red 5 mm LED</text>
+    <text x="805" y="1028" font-weight="bold">To buy</text>
+    <text x="805" y="1045">1 × USB-C breakout with 5.1 kΩ on CC1 and CC2 (J1)</text>
+    <text x="805" y="1062">1 × USB-C charger 5 V, 1 A, and a cable</text>
+    <text x="805" y="1079">2 × push button 6 mm (SW1, SW2), 1 × pin header 3 pins (J2)</text>
+    <text x="805" y="1096">2 × resistor 330 Ω (R1, R2), 1 × 10 Ω (R3), 1 × 33 Ω (R4)</text>
+    <text x="805" y="1113">1 × DMX terminator for the last fixture (XLR-3 male, 120 Ω on pins 2 and 3)</text>
+    <text x="805" y="1130">Perfboard, hook-up wire. Optional: 3.3 V USB-serial adapter for J2</text>
+    <text x="805" y="1154" font-weight="bold">Prepare</text>
+    <text x="805" y="1171">U1 (DMX OUT): remove the 120 Ω resistor. U2 (DMX IN): keep it (R5).</text>
+    <text x="805" y="1188">Put all GND wires on one GND rail and all 3V3 wires on one 3V3 rail.</text>
+    <text x="805" y="1205">Connect each rail to the WT32-ETH01 with one short wire.</text>
+    <text x="805" y="1229" font-weight="bold">Firmware</text>
+    <text x="805" y="1246">Flash the board once with the dock. After that, the box updates over the network.</text>
+    <text x="805" y="1263">Firmware 1.24.0 and later drive MIDI, the LEDs, DMX OUT, DMX IN,</text>
+    <text x="805" y="1280">the OLED and the joystick.</text>
+  </g>
+
+  <!-- ============ GND symbols ============ -->
+  <g stroke="#24292f" stroke-width="2" fill="none">
+    <path d="M180 350 v10 M170 360 h20 M174 364 h12 M178 368 h4"/>
+    <path d="M300 450 v10 M290 460 h20 M294 464 h12 M298 468 h4"/>
+    <path d="M1080 290 v10 M1070 300 h20 M1074 304 h12 M1078 308 h4"/>
+    <path d="M945 580 v8 M935 588 h20 M939 592 h12 M943 596 h4"/>
+    <path d="M1080 555 v10 M1070 565 h20 M1074 569 h12 M1078 573 h4"/>
+    <path d="M840 805 v10 M830 815 h20 M834 819 h12 M838 823 h4"/>
+    <path d="M945 835 v8 M935 843 h20 M939 847 h12 M943 851 h4"/>
+    <path d="M1100 815 v10 M1090 825 h20 M1094 829 h12 M1098 833 h4"/>
+    <path d="M340 595 v10 M330 605 h20 M334 609 h12 M338 613 h4"/>
+    <path d="M320 810 v10 M310 820 h20 M314 824 h12 M318 828 h4"/>
+    <path d="M360 1190 v10 M350 1200 h20 M354 1204 h12 M358 1208 h4"/>
+    <path d="M250 1220 v10 M240 1230 h20 M244 1234 h12 M248 1238 h4"/>
+    <path d="M90 1270 v10 M80 1280 h20 M84 1284 h12 M88 1288 h4"/>
+  </g>
+
+  <!-- ============ 3V3 flags ============ -->
+  <g stroke="#cf222e" stroke-width="2.5" fill="none">
+    <path d="M900 240 v-14 M890 226 h20"/>
+    <path d="M840 470 v-14 M830 456 h20"/>
+    <path d="M840 705 v-14 M830 691 h20"/>
+    <path d="M370 625 v-14 M360 611 h20"/>
+    <path d="M370 840 v-14 M360 826 h20"/>
+    <path d="M480 1140 v-14 M470 1126 h20"/>
+  </g>
+  <g font-size="11" font-weight="bold" fill="#cf222e" text-anchor="middle">
+    <text x="900" y="220">3V3</text>
+    <text x="840" y="450">3V3</text>
+    <text x="840" y="685">3V3</text>
+    <text x="370" y="605">3V3</text>
+    <text x="370" y="820">3V3</text>
+    <text x="480" y="1120">3V3</text>
+  </g>
+
+  <!-- ============ Legend ============ -->
+  <g stroke-width="3" stroke-linecap="round">
+    <line x1="75" y1="1385" x2="115" y2="1385" stroke="#1f6feb"/>
+    <line x1="75" y1="1407" x2="115" y2="1407" stroke="#e36209"/>
+    <line x1="75" y1="1429" x2="115" y2="1429" stroke="#cf222e"/>
+    <line x1="75" y1="1451" x2="115" y2="1451" stroke="#24292f"/>
+    <line x1="270" y1="1385" x2="310" y2="1385" stroke="#8250df"/>
+  </g>
+  <g font-size="12" fill="#24292f">
+    <text x="125" y="1389">Signal (3.3 V logic)</text>
+    <text x="125" y="1411">5 V</text>
+    <text x="125" y="1433">3V3</text>
+    <text x="125" y="1455">GND</text>
+    <text x="320" y="1389">DMX pair</text>
+    <text x="320" y="1415">3V3 flag: to the 3V3 rail</text>
+    <text x="320" y="1441">GND symbol: to the GND rail</text>
+    <text x="320" y="1465">Dot: wires connect</text>
+  </g>
+  <path d="M290 1418 v-12 M280 1406 h20" stroke="#cf222e" stroke-width="2.5" fill="none"/>
+  <path d="M290 1430 v8 M280 1438 h20 M284 1442 h12 M288 1446 h4" stroke="#24292f" stroke-width="2" fill="none"/>
+  <circle cx="290" cy="1461" r="4" fill="#24292f"/>
+
+  <g font-size="12" fill="#24292f">
+    <text x="520" y="1386">1. Power the OLED, the joystick and the two MAX3485 modules from 3V3, not from 5 V. At 5 V, they put 5 V on ESP32 pins.</text>
+    <text x="520" y="1404">2. U1 (OUT): remove its 120 Ω resistor; the last fixture has the terminator. U2 (IN): keep it; the box ends the console line.</text>
+    <text x="520" y="1422">3. The jack is TRS Type A. A Type B device swaps tip and ring: use a Type A to B adapter.</text>
+    <text x="520" y="1440">4. To flash over J2: adapter TX to RX0, adapter RX to TX0, GND to GND. Hold BOOT, push RST, release BOOT.</text>
+    <text x="520" y="1458">5. Power comes from J1 during the flash. Do not connect the 5 V pin of the adapter. Do not use J1 and the dock together.</text>
+    <text x="520" y="1476">6. Do not connect IO2 and IO12. IO2 is the receive pin of the MIDI UART. IO12 high at power-on stops the start.</text>
+    <text x="520" y="1494">7. The firmware calibrates the joystick center at each start. Do not touch the joystick while the box starts.</text>
+  </g>
+</svg>
