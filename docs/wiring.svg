@@ -282,34 +282,43 @@
   <!-- ============ MIDI OUT jack ============ -->
   <rect x="1120" y="140" width="200" height="215" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
   <g font-size="12" fill="#24292f">
-    <text x="1132" y="158" font-weight="bold">3.5 mm TRS jack, Type A</text>
+    <text x="1132" y="158" font-weight="bold">3.5 mm TRS panel jack, Type A</text>
     <text x="1132" y="187">Tip → DIN pin 5</text>
     <text x="1132" y="257">Ring → DIN pin 4</text>
     <text x="1132" y="307">Sleeve → DIN pin 2</text>
   </g>
-  <!-- The wires go on to the three contacts of the plug. -->
+  <!-- Each wire ends at a free end. The lug of each contact is not measured. -->
   <g stroke-width="2.5" fill="none" stroke-linecap="round">
-    <line x1="1120" y1="170" x2="1276" y2="170" stroke="#1f6feb"/>
-    <line x1="1120" y1="240" x2="1276" y2="240" stroke="#cf222e"/>
-    <line x1="1120" y1="290" x2="1274" y2="290" stroke="#24292f"/>
+    <line x1="1120" y1="170" x2="1232" y2="170" stroke="#1f6feb"/>
+    <line x1="1120" y1="240" x2="1232" y2="240" stroke="#cf222e"/>
+    <line x1="1120" y1="290" x2="1232" y2="290" stroke="#24292f"/>
   </g>
-  <!-- The plug, tip up: tip, insulator, ring, insulator, sleeve. -->
-  <g fill="#8c959f" stroke="#57606a" stroke-width="1">
-    <polygon points="1285,156 1294,168 1294,195 1276,195 1276,168"/>
-    <rect x="1276" y="201" width="18" height="61"/>
-    <rect x="1274" y="268" width="22" height="70"/>
+  <g fill="#ffffff" stroke="#24292f" stroke-width="1.5">
+    <circle cx="1236" cy="170" r="3.5"/>
+    <circle cx="1236" cy="240" r="3.5"/>
+    <circle cx="1236" cy="290" r="3.5"/>
   </g>
-  <g fill="#24292f">
-    <rect x="1276" y="195" width="18" height="6"/>
-    <rect x="1276" y="262" width="18" height="6"/>
-    <circle cx="1276" cy="170" r="3.5"/>
-    <circle cx="1276" cy="240" r="3.5"/>
-    <circle cx="1274" cy="290" r="3.5"/>
+  <!-- The panel jack, rear view: the nut, the body and three solder lugs. The middle lug is longer. -->
+  <polygon points="1312,208 1297,234 1267,234 1252,208 1267,182 1297,182" fill="#eaeef2" stroke="#8c959f" stroke-width="1"/>
+  <rect x="1262" y="188" width="40" height="57" rx="4" fill="#8c959f" stroke="#57606a" stroke-width="1"/>
+  <g fill="#d4a72c" stroke="#57606a" stroke-width="1">
+    <rect x="1263" y="245" width="10" height="36" rx="2"/>
+    <rect x="1277" y="245" width="10" height="56" rx="2"/>
+    <rect x="1291" y="245" width="10" height="36" rx="2"/>
   </g>
-  <g font-size="12" font-weight="bold" fill="#24292f">
-    <text x="1302" y="182">T</text>
-    <text x="1302" y="236">R</text>
-    <text x="1302" y="308">S</text>
+  <g fill="#ffffff" stroke="#57606a" stroke-width="1">
+    <circle cx="1268" cy="272" r="2.5"/>
+    <circle cx="1282" cy="292" r="2.5"/>
+    <circle cx="1296" cy="272" r="2.5"/>
+  </g>
+  <g font-size="11" font-weight="bold" fill="#24292f" text-anchor="middle">
+    <text x="1268" y="295">?</text>
+    <text x="1282" y="315">?</text>
+    <text x="1296" y="295">?</text>
+  </g>
+  <g font-size="11" fill="#cf222e">
+    <text x="1132" y="333">Measure first: put in a TRS plug.</text>
+    <text x="1132" y="348">Then find each lug with a meter.</text>
   </g>
   <g fill="#24292f">
     <circle cx="1120" cy="170" r="4"/>
