@@ -242,6 +242,13 @@ impl Ui<'_> {
                     want_brightness
                 };
                 let mut result = Ok(());
+                // After a write error, the display can have lost its power and its settings.
+                // Initialize it again, and send the rotation and the brightness again.
+                if failed {
+                    result = display.init();
+                    rotate = false;
+                    brightness = 0;
+                }
                 if want_rotate != rotate {
                     rotate = want_rotate;
                     let r = if rotate {

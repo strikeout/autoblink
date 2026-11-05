@@ -184,7 +184,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The settings 110 to 121 are firmware settings in `autoblink_core_ui::config`. NVS keeps them as JSON under the key `box`. The firmware writes them 2 s after the last change.
 - "DMX Mode" (110) is Off, Box only, Merge (HTP, the default) or Pass. Without a DMX IN signal, Merge and Pass send the effect of the box.
 - The status field `dmx` has `mode`, `in_fps` and `signal`. The firmware without the feature `dmx` sends `null`.
-- The `ui` thread always starts. It has priority 3 on core 0. It looks for the OLED at address 0x3C and 0x3D every 5 s. The first failure logs the I2C addresses that answer. When the OLED answers, the thread draws 5 frames each second.
+- The `ui` thread always starts. It has priority 3 on core 0. It looks for the OLED at address 0x3C and 0x3D every 5 s. The first failure logs the I2C addresses that answer. When the OLED answers, the thread draws 5 frames each second. After a write error, it initializes the OLED again before each frame, so that a display that lost its power comes back.
 - The joystick is optional. Without it, the status screen works, and the pull-up of IO5 keeps the menu closed.
 - The OLED fonts are ASCII only. The menu labels and values must not use other characters.
 - When no deck plays for 10 minutes, the OLED goes to the minimum brightness. A push of the joystick sets it back.
