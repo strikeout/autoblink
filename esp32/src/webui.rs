@@ -13,6 +13,7 @@
 use std::borrow::Cow;
 use std::ffi::CString;
 use std::fmt::{Display, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,7 +30,7 @@ use serde_json::{json, Value};
 use crate::ota::{self, OtaCmd, OtaStatus};
 use crate::settings::Settings;
 use crate::tracks::TrackData;
-use crate::State;
+use crate::{DmxStatus, State};
 use autoblink_core_dbserver::{phrase_status, PhraseKind, TrackOverview};
 use autoblink_core_midi::scenes::{SceneStatus, ScenesConfig};
 use autoblink_core_prolink::{Deck, PlayState};
@@ -87,6 +88,18 @@ impl Active {
     fn is_some(&self) -> bool {
         self.0.lock().unwrap().1.is_some()
     }
+}
+
+/// `true` when the settings changed outside the page, for example in the menu of the OLED. The
+/// `web-status` thread then sends the settings to the active page.
+///
+/// A flag and not a channel: the `ui` thread has a lower priority than `web-status`, and a
+/// `std::sync::mpsc` receiver can spin on a half-written slot of such a sender (see AGENTS.md).
+static SETTINGS_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Makes the `web-status` thread send the settings message to the active page.
+pub fn settings_changed() {
+    SETTINGS_CHANGED.store(true, Ordering::Relaxed);
 }
 
 /// Starts the web server and the thread that sends the beats and the status to the page.
@@ -170,6 +183,7 @@ pub fn start(
     }
 
     let midi_cfg = settings.lock().unwrap().midi.clone();
+    let push_settings = settings.clone();
     let ws_active = active.clone();
     let ws_state = state.clone();
     let handle = move |ws: &mut EspHttpWsConnection| -> Result<(), EspError> {
@@ -278,6 +292,10 @@ pub fn start(
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
+            }
+            if SETTINGS_CHANGED.swap(false, Ordering::Relaxed) && active.is_some() {
+                let msg = push_settings.lock().unwrap().message();
+                active.send(msg.as_bytes());
             }
             if Instant::now() >= next_status {
                 next_status = Instant::now() + STATUS_INTERVAL;
@@ -544,6 +562,7 @@ struct Status<'a> {
     output: OutputJson,
     scene: SceneStatus,
     mixer: Option<()>,
+    dmx: Option<DmxStatus>,
     ota: OtaStatus,
     system: SystemJson,
 }
@@ -740,6 +759,7 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
         output,
         scene,
         mixer: None,
+        dmx: *state.dmx.lock().unwrap(),
         ota,
         // SAFETY: the two heap calls only read counters.
         system: SystemJson {

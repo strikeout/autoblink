@@ -2,7 +2,8 @@
 //!
 //! The MIDI rows and "Device Number" use the host indices (`autoblink_core_midi::settings`). The WiFi
 //! rows use 100 and up, so that they do not collide with the host settings. Rows 100 and 101 set
-//! the own access point. Rows 102 and 103 set an existing network that the firmware joins.
+//! the own access point. Rows 102 and 103 set an existing network that the firmware joins. The
+//! rows of the box hardware use 110 and up (`autoblink_core_ui::config`).
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,17 +11,20 @@ use std::time::{Duration, Instant};
 
 use autoblink_core_midi::scenes::ScenesConfig;
 use autoblink_core_midi::{settings as midi_settings, MidiConfig, SettingItem};
+use autoblink_core_ui::{config as box_settings, BoxConfig};
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 
 /// The host index of "Device Number": the number that the virtual CDJ asks for.
 const IDX_DEVICE: usize = 2;
+/// The host index of "Note Channel".
+const IDX_NOTE_CHANNEL: usize = 9;
 const DEFAULT_DEVICE: u8 = 7;
 const IDX_SSID: usize = 100;
 const IDX_PASSWORD: usize = 101;
 const IDX_JOIN_SSID: usize = 102;
 const IDX_JOIN_PASSWORD: usize = 103;
 const DEFAULT_PASSWORD: &str = "autoblink123";
-/// The MIDI configuration and the scenes go to NVS when they have not changed for this time.
+/// The MIDI configuration, the scenes and the box settings go to NVS when they have not changed for this time.
 const SAVE_DELAY: Duration = Duration::from_secs(2);
 
 pub struct Settings {
@@ -36,6 +40,10 @@ pub struct Settings {
     pub scenes: Arc<Mutex<ScenesConfig>>,
     /// The time of the last scene change that is not in NVS yet.
     scenes_changed: Option<Instant>,
+    /// The settings of the box hardware. The DMX thread and the display read them.
+    pub box_cfg: Arc<Mutex<BoxConfig>>,
+    /// The time of the last change of `box_cfg` that is not in NVS yet.
+    box_changed: Option<Instant>,
 }
 
 impl Settings {
@@ -56,6 +64,13 @@ impl Settings {
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
         scenes.sanitize();
+        let mut box_cfg: BoxConfig = nvs
+            .get_str("box", &mut buf)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        box_cfg.sanitize();
         let device = nvs
             .get_u8("devnum")
             .ok()
@@ -69,6 +84,8 @@ impl Settings {
             midi_changed: None,
             scenes: Arc::new(Mutex::new(scenes)),
             scenes_changed: None,
+            box_cfg: Arc::new(Mutex::new(box_cfg)),
+            box_changed: None,
         })
     }
 
@@ -122,6 +139,7 @@ impl Settings {
             )
         }];
         items.extend(midi_settings::items(&self.midi.lock().unwrap()));
+        items.extend(self.box_cfg.lock().unwrap().items());
         items.push(row(
             IDX_SSID,
             "WiFi name (applies after restart)",
@@ -201,13 +219,37 @@ impl Settings {
                 "The WiFi password must be empty (open network) or have 8 to 63 ASCII characters"
                     .into(),
             ),
+            i if box_settings::INDICES.contains(&i) => self.change_box(|cfg| cfg.set(idx, value)),
             _ => self.change_midi(|cfg| midi_settings::set(cfg, idx, value)),
         }
     }
 
     /// Flips a toggle or a switch, or steps a number.
     pub fn cycle(&mut self, idx: usize, dir: i8) -> Result<(), String> {
+        if box_settings::INDICES.contains(&idx) {
+            return self.change_box(|cfg| cfg.cycle(idx, dir));
+        }
         self.change_midi(|cfg| midi_settings::cycle(cfg, idx, dir))
+    }
+
+    /// Steps a number or a switch by one, or flips a toggle. The menu of the OLED uses it.
+    /// "Note Channel" (index 9) has no `cycle` on the page, so this function steps it here.
+    pub fn step(&mut self, idx: usize, dir: i8) -> Result<(), String> {
+        if idx == IDX_NOTE_CHANNEL {
+            let ch = i16::from(self.midi.lock().unwrap().note_channel) + 1 + i16::from(dir);
+            return self.set(idx, &ch.clamp(1, 16).to_string());
+        }
+        self.cycle(idx, dir)
+    }
+
+    /// Changes the box settings in RAM. `save` writes them to NVS later, like the MIDI settings.
+    fn change_box(
+        &mut self,
+        f: impl FnOnce(&mut BoxConfig) -> Result<(), String>,
+    ) -> Result<(), String> {
+        f(&mut self.box_cfg.lock().unwrap())?;
+        self.box_changed = Some(Instant::now());
+        Ok(())
     }
 
     /// Changes the MIDI configuration in RAM. `save_midi` writes it to NVS later.
@@ -246,7 +288,7 @@ impl Settings {
         self.scenes_changed = Some(Instant::now());
     }
 
-    /// Writes the MIDI configuration and the scenes to NVS when they have not changed for
+    /// Writes the MIDI configuration, the scenes and the box settings to NVS when they have not changed for
     /// `SAVE_DELAY`. The main loop calls this each second.
     pub fn save(&mut self) {
         if self.midi_changed.is_some_and(|t| t.elapsed() >= SAVE_DELAY) {
@@ -261,6 +303,11 @@ impl Settings {
             self.scenes_changed = None;
             let json = serde_json::to_string(&*self.scenes.lock().unwrap());
             self.save_json("scenes", json, "scenes");
+        }
+        if self.box_changed.is_some_and(|t| t.elapsed() >= SAVE_DELAY) {
+            self.box_changed = None;
+            let json = serde_json::to_string(&*self.box_cfg.lock().unwrap());
+            self.save_json("box", json, "box settings");
         }
     }
 

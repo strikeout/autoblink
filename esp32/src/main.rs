@@ -19,6 +19,7 @@ mod ota;
 mod prolink;
 mod settings;
 mod tracks;
+mod ui;
 mod webui;
 
 use std::ffi::CStr;
@@ -67,7 +68,20 @@ pub struct State {
     pub ota: Mutex<OtaStatus>,
     /// A preset that the page asked to test. The MIDI thread sends its note. `u8::MAX` is none.
     pub scene_test: AtomicU8,
+    /// The state of the DMX input. `None` without the feature `dmx`.
+    pub dmx: Mutex<Option<DmxStatus>>,
     start: Instant,
+}
+
+/// The state of the DMX input for the page and the display.
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub struct DmxStatus {
+    /// The key of the setting "DMX Mode", for example "merge".
+    pub mode: &'static str,
+    /// The good frames in the last second.
+    pub in_fps: u16,
+    /// `true` while a good frame arrived in the last second.
+    pub signal: bool,
 }
 
 impl State {
@@ -186,12 +200,13 @@ fn run() -> anyhow::Result<()> {
             ..Default::default()
         }),
         scene_test: AtomicU8::new(u8::MAX),
+        dmx: Mutex::new(None),
         start: Instant::now(),
     });
     let midi_beats = midi::start(
         p.uart2,
         p.pins.gpio17,
-        p.pins.gpio35,
+        p.pins.gpio2,
         state.clone(),
         settings.midi.clone(),
         settings.scenes.clone(),
@@ -204,7 +219,27 @@ fn run() -> anyhow::Result<()> {
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
 
     #[cfg(feature = "dmx")]
-    let dmx = dmx::Dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36)?;
+    let dmx = dmx::Dmx::start(
+        p.uart1,
+        p.pins.gpio4,
+        p.pins.gpio36,
+        state.clone(),
+        settings.lock().unwrap().box_cfg.clone(),
+    )?;
+
+    ui::start(
+        p.i2c0,
+        p.pins.gpio15,
+        p.pins.gpio14,
+        ui::Joystick {
+            adc: p.adc1,
+            x: p.pins.gpio39,
+            y: p.pins.gpio35,
+            sw: p.pins.gpio5,
+        },
+        state.clone(),
+        settings.clone(),
+    )?;
 
     prolink::spawn(
         state.clone(),

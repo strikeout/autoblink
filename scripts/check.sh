@@ -52,8 +52,8 @@ if [ "$esp32" = yes ]; then
   . "$HOME/export-esp.sh"
   step "Firmware"
   (cd esp32 && cargo build --release --locked)
-  step "Firmware with the DMX output"
-  (cd esp32 && cargo build --release --locked --features dmx)
+  step "Firmware without the DMX feature"
+  (cd esp32 && cargo build --release --locked --no-default-features)
 else
   step "Firmware: skipped. The branch does not change esp32/, crates/ or webui/."
 fi

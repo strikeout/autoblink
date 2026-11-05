@@ -6,6 +6,7 @@ members = [
   "crates/autoblink-core-midi",
   "crates/autoblink-core-prolink",
   "crates/autoblink-core-dbserver",
+  "crates/autoblink-core-ui",
 ]
 
 # The firmware builds with the Xtensa toolchain and its own target. It has its own
@@ -13,7 +14,7 @@ members = [
 exclude = ["esp32"]
 
 [workspace.package]
-version = "1.23.0"
+version = "1.24.2"
 edition = "2021"
 license = "Proprietary"
 authors = ["AUTOBLINK team"]
