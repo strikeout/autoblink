@@ -67,7 +67,18 @@ pub struct State {
     pub ota: Mutex<OtaStatus>,
     /// A preset that the page asked to test. The MIDI thread sends its note. `u8::MAX` is none.
     pub scene_test: AtomicU8,
+    /// The state of the DMX input. `None` without the feature `dmx`.
+    pub dmx: Mutex<Option<DmxStatus>>,
     start: Instant,
+}
+
+/// The state of the DMX input for the page and the display.
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub struct DmxStatus {
+    /// The good frames in the last second.
+    pub in_fps: u16,
+    /// `true` while a good frame arrived in the last second.
+    pub signal: bool,
 }
 
 impl State {
@@ -186,6 +197,7 @@ fn run() -> anyhow::Result<()> {
             ..Default::default()
         }),
         scene_test: AtomicU8::new(u8::MAX),
+        dmx: Mutex::new(None),
         start: Instant::now(),
     });
     let midi_beats = midi::start(
@@ -204,7 +216,7 @@ fn run() -> anyhow::Result<()> {
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
 
     #[cfg(feature = "dmx")]
-    let dmx = dmx::Dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36)?;
+    let dmx = dmx::Dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36, state.clone())?;
 
     prolink::spawn(
         state.clone(),

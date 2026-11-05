@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 use crate::ota::{self, OtaCmd, OtaStatus};
 use crate::settings::Settings;
 use crate::tracks::TrackData;
-use crate::State;
+use crate::{DmxStatus, State};
 use autoblink_core_dbserver::{phrase_status, PhraseKind, TrackOverview};
 use autoblink_core_midi::scenes::{SceneStatus, ScenesConfig};
 use autoblink_core_prolink::{Deck, PlayState};
@@ -544,6 +544,7 @@ struct Status<'a> {
     output: OutputJson,
     scene: SceneStatus,
     mixer: Option<()>,
+    dmx: Option<DmxStatus>,
     ota: OtaStatus,
     system: SystemJson,
 }
@@ -740,6 +741,7 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
         output,
         scene,
         mixer: None,
+        dmx: *state.dmx.lock().unwrap(),
         ota,
         // SAFETY: the two heap calls only read counters.
         system: SystemJson {
