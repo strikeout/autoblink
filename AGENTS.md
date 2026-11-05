@@ -66,9 +66,10 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (feature `dmx`), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (DMX OUT and DMX IN, feature `dmx`), `ui.rs` (OLED, joystick menu), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
 | `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable. The host uses `scenes.rs` too. | `clock.rs`, `mapper.rs`, `scenes.rs` (DMX scenes), `settings.rs` (host setting indices) |
+| `crates/autoblink-core-ui` | Logic of the box hardware of the firmware, host-testable | `dmx.rs` (DMX modes, HTP merge), `config.rs` (settings 110 to 121), `screen.rs` (OLED text), `joystick.rs` (input state machine), `menu.rs` (OLED menu) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
@@ -172,6 +173,21 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The firmware accepts a page from `localhost` or `127.0.0.1` (`dev_origin` in `webui.rs`). The waveform route sends `Access-Control-Allow-Origin: *`.
 - Flash the box only when the page is complete.
 
+### DMX IN, OLED and joystick
+
+- The `dmx` thread sends and receives on UART1. The output has a fixed period of 24 ms (about 41 frames each second).
+- A frame ends at the data event with a receive timeout after a break event (`receive_timeout` of 1 character time). The thread reads exactly the bytes of each data event.
+- The thread accepts only start code 0. Without a good frame for 1 s, the input has no signal and is all 0.
+- `BREAK_BYTE` in `dmx.rs` drops the 0x00 byte of the break at the end of each frame. To examine it, connect DMX OUT to DMX IN. The log must show the signal. The page must show about 41 frames each second.
+- The settings 110 to 121 are firmware settings in `autoblink_core_ui::config`. NVS keeps them as JSON under the key `box`. The firmware writes them 2 s after the last change.
+- "DMX Mode" (110) is Off, Box only, Merge (HTP, the default) or Pass. Without a DMX IN signal, Merge and Pass send the effect of the box.
+- The status field `dmx` has `mode`, `in_fps` and `signal`. The firmware without the feature `dmx` sends `null`.
+- The `ui` thread starts only when an OLED answers at address 0x3C. It has priority 3 on core 0. It draws 5 frames each second.
+- The OLED fonts are ASCII only. The menu labels and values must not use other characters.
+- When no deck plays for 10 minutes, the OLED goes to the minimum brightness. A push of the joystick sets it back.
+- ESP32 errata 3.11: ADC1 can pull IO36 and IO39 low for about 80 ns. IO36 is DMX IN. The `ui` thread therefore reads the joystick axes only for the calibration and while the menu is open. The switch (IO5) is a digital input.
+- A change in the menu goes through `Settings::set` or `Settings::step`, like a page command. Then `Push::Settings` makes the `web-status` thread send the settings message to the active page.
+
 ### DMX scenes
 
 - The firmware keeps the scenes as JSON in NVS (key `scenes`). Like the MIDI settings, it writes them 2 s after the last change (`Settings::save`).
@@ -193,7 +209,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
-- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Measure these two.
+- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Version 1.24.0 gives `dmx` 4 KB and adds `ui` with 5 KB. Measure these threads.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
 - The firmware keeps 600 columns of the waveform preview (`autoblink_core_dbserver::PREVIEW_COLUMNS`). The players send 1200.
 - The dbserver client reads the PWV4 preview and the PQTZ beat grid as a stream (`read_message_with`). It keeps only 600 preview columns and the beats of the phrase starts, the fill-ins and the end. A buffered grid and its parsed copy needed up to 72 KB for one fetch. Without phrases, the client does not request the beat grid.
@@ -228,7 +244,11 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
 | IO2 | UART2 RX. It has no wire, but the UART driver needs a receive pin. |
 | IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. The feature `dmx` is on by default. |
-| IO36 | UART1 RX. It is not used, but the UART driver needs a receive pin. |
+| IO36 | DMX IN (UART1 RX, 250 kbaud) from the RO pin of a second RS-485 module. |
+| IO14, IO15 | I2C0 SCL and SDA for an SSD1306 or SSD1315 OLED (address 0x3C, 400 kHz). The OLED module has the pull-up resistors. |
+| IO39 | Joystick VRx (ADC1 channel 3). |
+| IO35 | Joystick VRy (ADC1 channel 7). |
+| IO5 | Joystick switch, internal pull-up, low when pushed. The label on the board is RXD. It is a strapping pin, and the pull-up keeps its default high level. |
 
 The blink code of IO33 repeats every 2 s. The LED shows the first line that applies:
 
@@ -242,6 +262,8 @@ The blink code of IO33 repeats every 2 s. The LED shows the first line that appl
 | 1 s on, 1 s off | The box is ready. No deck plays. |
 
 After a panic, a watchdog or a brownout restart, an 800 ms flash comes before the code for 10 minutes. The code is in `esp32/src/led.rs`.
+
+Connect the VCC of the OLED, the +5V pin of the joystick and the VCC of the RS-485 modules to 3V3. At 5 V, the joystick puts up to 5 V on an ADC pin, and a module puts 5 V on IO36.
 
 Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the flash to 1.8 V and does not start.
 
