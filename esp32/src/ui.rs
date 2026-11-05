@@ -1,10 +1,10 @@
 //! The OLED status screen: a 128×64 SSD1306 or SSD1315 on I2C0 (SCL IO14, SDA IO15, address
-//! 0x3C). An analog joystick opens a small menu: VRx on IO39, VRy on IO35 (ADC1), the switch on
-//! IO5 with the internal pull-up.
+//! 0x3C or 0x3D). An analog joystick opens a small menu: VRx on IO39, VRy on IO35 (ADC1), the
+//! switch on IO5 with the internal pull-up. The joystick is optional.
 //!
 //! The `ui` thread runs on core 0 with a low priority. The `midi` and `prolink-rx` threads run on
-//! core 1, so a slow I2C write cannot delay them. Without a display, the thread does not start
-//! and the box works as before.
+//! core 1, so a slow I2C write cannot delay them. Until a display answers, the thread looks for
+//! it every `RETRY`. The box works without a display.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,8 +40,8 @@ use crate::net::AP_IP;
 use crate::settings::Settings;
 use crate::State;
 
-type Display = Ssd1306<
-    I2CInterface<I2cDriver<'static>>,
+type Display<'a> = Ssd1306<
+    I2CInterface<&'a mut I2cDriver<'static>>,
     DisplaySize128x64,
     BufferedGraphicsMode<DisplaySize128x64>,
 >;
@@ -52,6 +52,12 @@ const TICK: Duration = Duration::from_millis(20);
 /// The screen shows a new frame every this many ticks (200 ms), and at once after an input. One
 /// full frame over I2C at 400 kHz takes about 25 ms.
 const FRAME_TICKS: u32 = 10;
+
+/// The I2C addresses of an SSD1306 or SSD1315 module.
+const ADDRESSES: [u8; 2] = [0x3C, 0x3D];
+
+/// Without a display, the thread looks for it again after this time.
+const RETRY: Duration = Duration::from_secs(5);
 
 /// When no deck plays for this time, the screen goes to the minimum brightness against burn-in.
 const DIM_AFTER: Duration = Duration::from_secs(600);
@@ -96,7 +102,7 @@ impl Values {
     }
 }
 
-/// Starts the `ui` thread. Without a display, it logs a warning and starts no thread.
+/// Starts the `ui` thread. It finds the display, then draws on it.
 pub fn start(
     i2c: I2C0<'static>,
     sda: Gpio15<'static>,
@@ -105,17 +111,7 @@ pub fn start(
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
 ) -> anyhow::Result<()> {
-    let i2c = I2cDriver::new(i2c, sda, scl, &I2cConfig::new().baudrate(Hertz(400_000)))?;
-    let mut display = Ssd1306::new(
-        I2CDisplayInterface::new(i2c),
-        DisplaySize128x64,
-        DisplayRotation::Rotate0,
-    )
-    .into_buffered_graphics_mode();
-    if let Err(e) = display.init() {
-        log::warn!("No OLED at I2C address 0x3C ({e:?}). The box works without it.");
-        return Ok(());
-    }
+    let mut i2c = I2cDriver::new(i2c, sda, scl, &I2cConfig::new().baudrate(Hertz(400_000)))?;
     let (values, network) = {
         let s = settings.lock().unwrap();
         let values = Values {
@@ -137,10 +133,45 @@ pub fn start(
             values: &values,
             network: &network,
         };
-        ui.run(display, joystick)
+        let mut warned = false;
+        loop {
+            for addr in ADDRESSES {
+                let mut display = Ssd1306::new(
+                    I2CDisplayInterface::new_custom_address(&mut i2c, addr),
+                    DisplaySize128x64,
+                    DisplayRotation::Rotate0,
+                )
+                .into_buffered_graphics_mode();
+                if display.init().is_ok() {
+                    log::info!("The OLED answers at I2C address {addr:#04x}");
+                    ui.run(display, joystick);
+                }
+            }
+            if !warned {
+                warned = true;
+                log::warn!(
+                    "No OLED at I2C address 0x3C or 0x3D. {} The firmware tries again every {} s.",
+                    scan(&mut i2c),
+                    RETRY.as_secs()
+                );
+            }
+            thread::sleep(RETRY);
+        }
     })?;
-    log::info!("The OLED is on I2C0 (SCL IO14, SDA IO15)");
     Ok(())
+}
+
+/// Returns a text with the I2C addresses that answer, for the log.
+fn scan(i2c: &mut I2cDriver<'static>) -> String {
+    let found: Vec<String> = (0x08..0x78u8)
+        .filter(|&a| i2c.write(a, &[], 10).is_ok())
+        .map(|a| format!("{a:#04x}"))
+        .collect();
+    if found.is_empty() {
+        "No I2C device answers. Examine SDA (IO15), SCL (IO14), VCC (3V3) and GND.".into()
+    } else {
+        format!("Other I2C devices answer: {}.", found.join(", "))
+    }
 }
 
 struct Ui<'a> {
@@ -152,7 +183,7 @@ struct Ui<'a> {
 }
 
 impl Ui<'_> {
-    fn run(&self, mut display: Display, pins: Joystick) {
+    fn run(&self, mut display: Display<'_>, pins: Joystick) -> ! {
         // The ADC driver must live as long as its channel drivers.
         let Joystick { adc, x, y, sw } = pins;
         let adc = AdcDriver::new(adc);
@@ -160,7 +191,9 @@ impl Ui<'_> {
             Ok(adc) => stick(adc, x, y, sw).map_err(|e| e.to_string()),
             Err(e) => Err(e.to_string()),
         }
-        .inspect_err(|e| log::warn!("The joystick is off: {e}"))
+        .inspect_err(|e| {
+            log::warn!("The joystick is off: {e}. The status screen works without it.")
+        })
         .ok();
         let mut joy = joystick::Joystick::new();
         let mut menu = Menu::new();
@@ -320,10 +353,10 @@ fn snapshot(state: &State) -> Snapshot {
     }
 }
 
-fn draw(display: &mut Display, l: &Lines) {
+fn draw(display: &mut Display<'_>, l: &Lines) {
     let small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let large = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-    let text = |d: &mut Display, t: &str, y: i32, style| {
+    let text = |d: &mut Display<'_>, t: &str, y: i32, style| {
         let _ = Text::with_baseline(t, Point::new(0, y), style, Baseline::Top).draw(d);
     };
     text(display, &l.deck, 0, small);
@@ -345,7 +378,7 @@ fn draw(display: &mut Display, l: &Lines) {
     text(display, &l.dmx, 54, small);
 }
 
-fn draw_menu(display: &mut Display, text: &[String]) {
+fn draw_menu(display: &mut Display<'_>, text: &[String]) {
     let small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     for (row, line) in text.iter().enumerate() {
         let y = 10 * row as i32;
