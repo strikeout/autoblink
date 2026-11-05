@@ -299,13 +299,18 @@ impl Ui<'_> {
                         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                         .draw(display);
                 }
-                track_lines(info.as_ref())
+                track_lines(snap.master, info.as_ref())
             }
-            Page::Dmx => dmx_lines(&DmxInfo {
-                mode: self.values.box_cfg.lock().unwrap().dmx_mode.label(),
-                beat_channel: self.values.box_cfg.lock().unwrap().beat_channel,
-                input: snap.dmx,
-            }),
+            Page::Dmx => {
+                // One lock only. A second lock in the same statement waits for the first
+                // forever, and the web server then waits for the settings too.
+                let cfg = self.values.box_cfg.lock().unwrap().clone();
+                dmx_lines(&DmxInfo {
+                    mode: cfg.dmx_mode.label(),
+                    beat_channel: cfg.beat_channel,
+                    input: snap.dmx,
+                })
+            }
             Page::Network => {
                 let iface = self.state.iface.lock().unwrap().clone();
                 network_lines(self.network, &iface, snap.blinks)

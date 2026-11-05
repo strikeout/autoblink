@@ -169,11 +169,15 @@ fn wrap2(t: &str) -> (String, String) {
 }
 
 /// The Track page: the title on two lines, the artist, the deck with the key and the time left,
-/// and the phrase. The firmware draws the phrase bar under the last line.
-pub fn track_lines(t: Option<&TrackInfo>) -> Vec<String> {
+/// and the phrase. The firmware draws the phrase bar under the last line. `master` is the number
+/// of the master deck.
+pub fn track_lines(master: Option<u8>, t: Option<&TrackInfo>) -> Vec<String> {
     let mut out = vec![Page::Track.header()];
     let Some(t) = t else {
-        out.push("No track data".into());
+        out.push(match master {
+            Some(n) => format!("Deck {n}: no track data"),
+            None => "No master deck".into(),
+        });
         return out;
     };
     let (a, b) = wrap2(&ascii(&t.title));
@@ -317,21 +321,25 @@ mod tests {
 
     #[test]
     fn the_track_page_wraps_the_title_and_shows_ascii_only() {
-        let l = track_lines(Some(&TrackInfo {
-            deck: 2,
-            title: "Blackbird (Ian Pooley's Main Remix)".into(),
-            artist: "Zoë Xenia".into(),
-            key: "8A".into(),
-            left_s: Some(201),
-            phrase: Some("DROP 3 bars left".into()),
-        }));
+        let l = track_lines(
+            Some(2),
+            Some(&TrackInfo {
+                deck: 2,
+                title: "Blackbird (Ian Pooley's Main Remix)".into(),
+                artist: "Zoë Xenia".into(),
+                key: "8A".into(),
+                left_s: Some(201),
+                phrase: Some("DROP 3 bars left".into()),
+            }),
+        );
         assert_eq!(l[1], "Blackbird (Ian");
         assert_eq!(l[2], "Pooley's Main Remix)");
         assert_eq!(l[3], "Zo? Xenia");
         assert_eq!(l[4], "Deck 2  8A      -3:21");
         assert_eq!(l.len(), ROWS);
         assert!(l.iter().all(|t| t.len() <= COLS));
-        assert_eq!(track_lines(None)[1], "No track data");
+        assert_eq!(track_lines(None, None)[1], "No master deck");
+        assert_eq!(track_lines(Some(3), None)[1], "Deck 3: no track data");
     }
 
     #[test]
