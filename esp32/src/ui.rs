@@ -126,7 +126,7 @@ pub fn start(
         }
         (values, network)
     };
-    crate::spawn_rt(c"ui", 5 * 1024, 3, Some(Core::Core0), move || {
+    crate::spawn_rt(c"ui", 8 * 1024, 3, Some(Core::Core0), move || {
         let ui = Ui {
             state: &state,
             settings: &settings,
@@ -136,12 +136,16 @@ pub fn start(
         let mut warned = false;
         loop {
             for addr in ADDRESSES {
-                let mut display = Ssd1306::new(
-                    I2CDisplayInterface::new_custom_address(&mut i2c, addr),
-                    DisplaySize128x64,
-                    DisplayRotation::Rotate0,
-                )
-                .into_buffered_graphics_mode();
+                // The display struct holds the 1 KB frame buffer. It goes on the heap, not on
+                // the stack of the thread. On the stack, it overflowed the 5 KB stack of 1.24.0.
+                let mut display = Box::new(
+                    Ssd1306::new(
+                        I2CDisplayInterface::new_custom_address(&mut i2c, addr),
+                        DisplaySize128x64,
+                        DisplayRotation::Rotate0,
+                    )
+                    .into_buffered_graphics_mode(),
+                );
                 if display.init().is_ok() {
                     log::info!("The OLED answers at I2C address {addr:#04x}");
                     ui.run(display, joystick);
@@ -183,7 +187,7 @@ struct Ui<'a> {
 }
 
 impl Ui<'_> {
-    fn run(&self, mut display: Display<'_>, pins: Joystick) -> ! {
+    fn run(&self, mut display: Box<Display<'_>>, pins: Joystick) -> ! {
         // The ADC driver must live as long as its channel drivers.
         let Joystick { adc, x, y, sw } = pins;
         let adc = AdcDriver::new(adc);
