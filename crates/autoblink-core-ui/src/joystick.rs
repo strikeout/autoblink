@@ -23,6 +23,8 @@ const CALIBRATION_SAMPLES: i32 = 16;
 const START: i32 = 700;
 /// A held direction stops below this part of the travel (per mille).
 const STOP: i32 = 400;
+/// Another direction takes over a held direction when its travel is larger by this part.
+const SWITCH: i32 = 200;
 /// A held up or down repeats after this time, then every `REPEAT_MS`. Left and right do not
 /// repeat: one push of the stick flips one page.
 const FIRST_REPEAT_MS: u64 = 500;
@@ -118,23 +120,30 @@ impl Joystick {
         if self.held.is_some_and(|d| travel(d) < STOP) {
             self.held = None;
         }
+        let best = DIRECTIONS
+            .into_iter()
+            .map(|d| (travel(d), d))
+            .filter(|(t, _)| *t > START)
+            .max_by_key(|(t, _)| *t)
+            .map(|(_, d)| d);
+        // A push that starts on one axis can end on the other: a push to the right can pass the
+        // start of "down" first. The stronger direction then takes over. The margin stops a
+        // diagonal push from flipping between the two.
+        let take = best.filter(|&b| {
+            self.held
+                .is_none_or(|h| h != b && travel(b) > travel(h) + SWITCH)
+        });
+        if let Some(d) = take {
+            self.held = Some(d);
+            self.next_repeat = now + FIRST_REPEAT_MS;
+            return Some(d);
+        }
         match self.held {
             Some(d @ (Input::Up | Input::Down)) if now >= self.next_repeat => {
                 self.next_repeat = now + REPEAT_MS;
                 Some(d)
             }
-            Some(_) => None,
-            None => {
-                let d = DIRECTIONS
-                    .into_iter()
-                    .map(|d| (travel(d), d))
-                    .filter(|(t, _)| *t > START)
-                    .max_by_key(|(t, _)| *t)?
-                    .1;
-                self.held = Some(d);
-                self.next_repeat = now + FIRST_REPEAT_MS;
-                Some(d)
-            }
+            _ => None,
         }
     }
 }
@@ -199,6 +208,22 @@ mod tests {
         }
         assert_eq!(j.update(C, C, false, 3000), None);
         assert_eq!(j.update(4095, C, false, 3020), Some(Input::Right));
+    }
+
+    #[test]
+    fn a_push_that_starts_on_the_other_axis_ends_on_the_stronger_direction() {
+        let mut j = calibrated();
+        let y75 = C + (4095 - C) * 3 / 4;
+        assert_eq!(j.update(C, y75, false, 100), Some(Input::Down));
+        assert_eq!(j.update(4095, y75, false, 120), Some(Input::Right));
+        assert_eq!(j.update(4095, y75, false, 140), None);
+        // A diagonal push with two equal directions does not flip.
+        let mut j = calibrated();
+        let x75 = C + (4095 - C) * 3 / 4;
+        assert!(j.update(x75, y75, false, 100).is_some());
+        for t in 1..20 {
+            assert_eq!(j.update(x75, y75, false, 100 + 10 * t), None);
+        }
     }
 
     #[test]

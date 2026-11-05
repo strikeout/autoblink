@@ -227,7 +227,15 @@ impl Ui<'_> {
             // the reads cause no power-on.
             let input = stick.as_mut().and_then(|(x, y, sw)| {
                 let (xv, yv) = (x.read_raw().ok()?, y.read_raw().ok()?);
-                joy.update(xv, yv, sw.is_low(), now)
+                let calibrated = joy.center().is_some();
+                let input = joy.update(xv, yv, sw.is_low(), now);
+                if let Some((cx, cy)) = joy.center().filter(|_| !calibrated) {
+                    log::info!("Joystick center: x {cx}, y {cy}");
+                }
+                if let Some(i) = input {
+                    log::info!("Joystick {i:?} (x {xv}, y {yv}) on page {:?}", menu.page());
+                }
+                input
             });
             if let Some(input) = input {
                 active = Instant::now();
