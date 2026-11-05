@@ -165,6 +165,15 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Full LTO, the gzip page and the common certificate bundle make it smaller. Version 1.20.0 used 83 %.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
+### Update the box over WiFi
+
+- Update the box of the user over WiFi, not over USB. The USB port is not available.
+- Increase the version in `Cargo.toml` and `esp32/Cargo.toml` (a hotfix step is enough). The box installs only a newer version.
+- Run `sh scripts/ota-push.sh` (or `sh scripts/ota-push.sh 192.168.1.104`). The script puts the build into the prerelease `esp32-latest` and sends `ota_install` with `scripts/ws-command.py`. Then it waits for the new version.
+- Each box that does a check gets that build. The next tagged release replaces it.
+- OTA writes only the app. A change to the partition table, the bootloader or the bootloader settings of `sdkconfig.defaults` needs USB. Tell the user before such a change.
+- If the new app restarts before `ota::mark_valid`, the bootloader starts the previous app. Then read `/log` for the crash.
+
 ### Web page without a flash
 
 - The firmware serves the page from the app image. A change to `webui/index.html` therefore needs a flash, or an OTA update and a restart.
