@@ -191,7 +191,7 @@ fn run() -> anyhow::Result<()> {
     let midi_beats = midi::start(
         p.uart2,
         p.pins.gpio17,
-        p.pins.gpio35,
+        p.pins.gpio2,
         state.clone(),
         settings.midi.clone(),
         settings.scenes.clone(),

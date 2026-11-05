@@ -1,4 +1,4 @@
-//! DMX512 output on UART1, TX on IO4. Build with `--features dmx`.
+//! DMX512 output on UART1, TX on IO4. The feature `dmx` is on by default.
 //!
 //! An RS-485 module (MAX3485 or SP3485) turns the UART signal into DMX. Channel 1 flashes to
 //! full on each master beat and fades out in `FLASH_MS`. The other channels stay at 0.

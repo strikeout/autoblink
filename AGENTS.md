@@ -126,10 +126,10 @@ All have `#[cfg(not(windows))]` guards around reuse_port calls.
 - **`cargo test --locked`** runs tests across all crates
 - No dedicated test infrastructure found (no `tests/` directory, no fixtures)
 - Do the builds on your computer. GitHub runs only quick checks.
-- Before a push, run `sh scripts/check.sh`. It runs the checks of CI. When the branch changes `esp32/`, `crates/` or `webui/`, it also builds the firmware with and without `dmx`.
+- Before a push, run `sh scripts/check.sh`. It runs the checks of CI. When the branch changes `esp32/`, `crates/` or `webui/`, it also builds the firmware with and without the feature `dmx`.
 - `ci.yml` runs for each pull request and each merge to `main`. One Linux job checks the format, runs clippy with `-D warnings` and runs the tests. A change to Markdown or `docs/` only does not start it.
 - The Windows and macOS jobs of `ci.yml` run `cargo check` only after a merge to `main` or on a manual start.
-- `esp32-ci.yml` builds the firmware without `dmx` only after a merge to `main` or on a manual start. No test runs on the device.
+- `esp32-ci.yml` builds the firmware with the default features only after a merge to `main` or on a manual start. No test runs on the device.
 - To start a workflow on a branch, run `gh workflow run ci.yml --ref <branch>` or `gh workflow run esp32-ci.yml --ref <branch>`.
 - The release workflows (`release.yml`, `esp32-release.yml`) start from a tag. They build all targets.
 - Coverage gaps: packet parsing, state machine transitions, BPM smoothing, MIDI clock transport
@@ -226,8 +226,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 | IO32 | Beat LED. It pulses for 30 ms on each beat of the master deck. |
 | IO33 | Status LED, with the label 485_EN on the board. While the master deck plays, it pulses for 120 ms on beat 1 and for 25 ms on the other beats. When no beat arrives for 2 s, it shows a blink code (see below). |
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
-| IO35 | UART2 RX. It is not used, but the UART driver needs a receive pin. |
-| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. Only with `--features dmx`. |
+| IO2 | UART2 RX. It has no wire, but the UART driver needs a receive pin. |
+| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. The feature `dmx` is on by default. |
 | IO36 | UART1 RX. It is not used, but the UART driver needs a receive pin. |
 
 The blink code of IO33 repeats every 2 s. The LED shows the first line that applies:
