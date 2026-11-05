@@ -52,6 +52,30 @@ impl DmxMode {
     }
 }
 
+/// A received frame with fewer channels is noise. DMX512 sends at least 24 channels.
+pub const MIN_CHANNELS: usize = 24;
+
+/// Returns the channels of a received frame, or `None` when the frame is not good.
+///
+/// `rx` has the bytes from one frame end to the next. The ESP32 UART stores a 0x00 byte for a
+/// break, and a long break can give one byte for each break event. Thus the function removes up
+/// to `breaks` 0x00 bytes from the end. A removed 0x00 that was a channel does no harm, because
+/// the caller sets the missing channels to 0.
+pub fn frame_channels(rx: &[u8], breaks: usize) -> Option<&[u8]> {
+    let mut frame = rx;
+    for _ in 0..breaks {
+        match frame.split_last() {
+            Some((0, rest)) => frame = rest,
+            _ => break,
+        }
+    }
+    // Byte 0 is the start code. Only start code 0 has dimmer data.
+    match frame.split_first() {
+        Some((0, channels)) if (MIN_CHANNELS..=512).contains(&channels.len()) => Some(channels),
+        _ => None,
+    }
+}
+
 /// Writes the output channels for `mode` into `out`. Returns `false` when the box must send no
 /// frame.
 ///
@@ -130,6 +154,34 @@ mod tests {
         let (input, effect) = frames();
         let mut out = [0u8; 512];
         assert!(!merge(DmxMode::Off, true, &input, &effect, &mut out));
+    }
+
+    #[test]
+    fn a_frame_loses_its_break_bytes() {
+        let mut rx = vec![0u8; 514];
+        rx[512] = 7;
+        assert_eq!(
+            frame_channels(&rx, 1).map(|c| (c.len(), c[511])),
+            Some((512, 7))
+        );
+        // Two break events and two 0x00 bytes.
+        let mut rx = vec![0u8; 515];
+        rx[1] = 9;
+        assert_eq!(
+            frame_channels(&rx, 2).map(|c| (c.len(), c[0])),
+            Some((512, 9))
+        );
+        // Without a break byte, a 0 channel goes. The caller sets it to 0 again.
+        assert_eq!(frame_channels(&[0u8; 513], 1).map(<[u8]>::len), Some(511));
+    }
+
+    #[test]
+    fn a_short_long_or_other_frame_is_rejected() {
+        assert_eq!(frame_channels(&[0u8; 4], 1), None);
+        assert_eq!(frame_channels(&[0u8; 515], 1), None);
+        let mut rx = [0u8; 514];
+        rx[0] = 0xCC;
+        assert_eq!(frame_channels(&rx, 1), None);
     }
 
     #[test]

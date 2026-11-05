@@ -178,7 +178,9 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The `dmx` thread sends and receives on UART1. The output has a fixed period of 24 ms (about 41 frames each second).
 - A frame ends at the data event with a receive timeout after a break event (`receive_timeout` of 1 character time). The thread reads exactly the bytes of each data event.
 - The thread accepts only start code 0. Without a good frame for 1 s, the input has no signal and is all 0.
-- `BREAK_BYTE` in `dmx.rs` drops the 0x00 byte of the break at the end of each frame. To examine it, connect DMX OUT to DMX IN. The log must show the signal. The page must show about 41 frames each second.
+- The ESP32 UART stores a 0x00 byte for a break. `autoblink_core_ui::frame_channels` removes up to one 0x00 byte for each break event from the end of the frame. A frame must have 24 to 512 channels. After 8 rejected frames in a row, the thread clears the receive buffer.
+- To examine DMX IN, connect DMX OUT to DMX IN. `curl http://autoblink.local/log` must show "DMX input: signal" with about 41 frames each second. The OLED shows the same rate. The page does not show the field `dmx`.
+- IO36 has no internal pull resistor. Without the RS-485 module, noise on IO36 can look like a frame. Connect the module or a pull-up resistor.
 - The settings 110 to 121 are firmware settings in `autoblink_core_ui::config`. NVS keeps them as JSON under the key `box`. The firmware writes them 2 s after the last change.
 - "DMX Mode" (110) is Off, Box only, Merge (HTP, the default) or Pass. Without a DMX IN signal, Merge and Pass send the effect of the box.
 - The status field `dmx` has `mode`, `in_fps` and `signal`. The firmware without the feature `dmx` sends `null`.
@@ -186,7 +188,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The OLED fonts are ASCII only. The menu labels and values must not use other characters.
 - When no deck plays for 10 minutes, the OLED goes to the minimum brightness. A push of the joystick sets it back.
 - ESP32 errata 3.11: ADC1 can pull IO36 and IO39 low for about 80 ns. IO36 is DMX IN. The `ui` thread therefore reads the joystick axes only for the calibration and while the menu is open. The switch (IO5) is a digital input.
-- A change in the menu goes through `Settings::set` or `Settings::step`, like a page command. Then `Push::Settings` makes the `web-status` thread send the settings message to the active page.
+- A change in the menu goes through `Settings::set` or `Settings::step`, like a page command. Then `webui::settings_changed` sets a flag, and the `web-status` thread sends the settings message to the active page. A flag and not a channel: the `ui` thread has a lower priority than `web-status`.
 
 ### DMX scenes
 

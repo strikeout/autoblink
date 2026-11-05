@@ -13,6 +13,7 @@
 use std::borrow::Cow;
 use std::ffi::CString;
 use std::fmt::{Display, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -89,22 +90,27 @@ impl Active {
     }
 }
 
-/// A message for the `web-status` thread, which does all the sends to the active page.
-pub enum Push {
-    /// A beat: (device number, beat in the bar).
-    Beat(u8, u8),
-    /// The settings changed outside the page, for example in the menu of the OLED.
-    Settings,
+/// `true` when the settings changed outside the page, for example in the menu of the OLED. The
+/// `web-status` thread then sends the settings to the active page.
+///
+/// A flag and not a channel: the `ui` thread has a lower priority than `web-status`, and a
+/// `std::sync::mpsc` receiver can spin on a half-written slot of such a sender (see AGENTS.md).
+static SETTINGS_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Makes the `web-status` thread send the settings message to the active page.
+pub fn settings_changed() {
+    SETTINGS_CHANGED.store(true, Ordering::Relaxed);
 }
 
 /// Starts the web server and the thread that sends the beats and the status to the page.
 ///
-/// Returns the server and the sender for the `Push` messages. Use `try_send`. A send to a slow
-/// WiFi client can wait up to 5 s, and the beat receive thread must not wait for it.
+/// Returns the server and the sender for the beats: (device number, beat in the bar). Use
+/// `try_send` for a beat. A send to a slow WiFi client can wait up to 5 s, and the beat receive
+/// thread must not wait for it.
 pub fn start(
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
-) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<Push>)> {
+) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<(u8, u8)>)> {
     // When all sockets are open, a new connection closes the socket that received data least
     // recently. The active WebSocket receives no data, so it is that socket. The page loads the
     // waveforms of all decks at the same time: 1 WebSocket and up to 4 requests. A waiting page
@@ -267,7 +273,7 @@ pub fn start(
     })?;
 
     // This thread does all the sends to the page. When the queue is full, `try_send` drops the beat.
-    let (beat_tx, beat_rx) = mpsc::sync_channel::<Push>(8);
+    let (beat_tx, beat_rx) = mpsc::sync_channel::<(u8, u8)>(8);
     crate::spawn(c"web-status", 6 * 1024, move || {
         let mut next_status = Instant::now();
         // The thread keeps one buffer for the status and one for the beat. Thus a message does
@@ -276,7 +282,7 @@ pub fn start(
         let mut beat_msg = String::with_capacity(48);
         loop {
             match beat_rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
-                Ok(Push::Beat(device, beat)) => {
+                Ok((device, beat)) => {
                     beat_msg.clear();
                     let _ = write!(
                         beat_msg,
@@ -284,14 +290,12 @@ pub fn start(
                     );
                     active.send(beat_msg.as_bytes());
                 }
-                Ok(Push::Settings) => {
-                    if active.is_some() {
-                        let msg = push_settings.lock().unwrap().message();
-                        active.send(msg.as_bytes());
-                    }
-                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
+            }
+            if SETTINGS_CHANGED.swap(false, Ordering::Relaxed) && active.is_some() {
+                let msg = push_settings.lock().unwrap().message();
+                active.send(msg.as_bytes());
             }
             if Instant::now() >= next_status {
                 next_status = Instant::now() + STATUS_INTERVAL;

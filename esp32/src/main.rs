@@ -239,7 +239,6 @@ fn run() -> anyhow::Result<()> {
         },
         state.clone(),
         settings.clone(),
-        web_beats.clone(),
     )?;
 
     prolink::spawn(
@@ -250,7 +249,7 @@ fn run() -> anyhow::Result<()> {
             let _ = beat_tx.try_send(beat.beat_in_bar);
             #[cfg(feature = "dmx")]
             dmx.beat();
-            let page_beat = webui::Push::Beat(beat.device, beat.beat_in_bar);
+            let page_beat = (beat.device, beat.beat_in_bar);
             // A full queue drops the beat. The receive thread does not wait for the MIDI thread.
             let _ = midi_beats.send_back(beat, 0);
             // The web thread sends the beat to the page. This thread does not wait for it.

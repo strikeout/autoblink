@@ -11,10 +11,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use autoblink_core_ui::{merge, BoxConfig};
+use autoblink_core_ui::{frame_channels, merge, BoxConfig};
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::{Gpio36, Gpio4};
-use esp_idf_svc::hal::uart::{config, UartDriver, UartEventPayload, UART1};
+use esp_idf_svc::hal::task::queue::Queue;
+use esp_idf_svc::hal::uart::{config, UartDriver, UartEvent, UartEventPayload, UART1};
 use esp_idf_svc::hal::units::Hertz;
 
 use crate::{DmxStatus, State};
@@ -37,12 +38,9 @@ const FRAME_LEN: usize = 513;
 /// The input has no signal when no good frame arrives for this time.
 const SIGNAL_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The ESP32 UART receives a break as one 0x00 byte. That byte is the last byte before the
-/// data event that closes the frame.
-///
-/// ponytail: the loopback test (DMX OUT to DMX IN) must show 512 channels. If it shows 511, the
-/// UART does not store the break byte. Then set this to `false`.
-const BREAK_BYTE: bool = true;
+/// After this many rejected frames in a row, the thread clears the receive buffer. Then a lost
+/// data event cannot shift the channels for a long time.
+const RESYNC_AFTER: u32 = 8;
 
 #[derive(Clone, Default)]
 pub struct Dmx {
@@ -100,14 +98,16 @@ fn run(
         return;
     };
     // The buffers are on the heap, not on the stack of the thread. The receive buffer has space
-    // for a frame, the break byte and one byte that shows a frame that is too long.
+    // for a frame, two break bytes and one byte that shows a frame that is too long.
     let mut out: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
     let mut input: Box<[u8; 512]> = Box::new([0; 512]);
     let mut effect: Box<[u8; 512]> = Box::new([0; 512]);
-    let mut rx: Box<[u8; FRAME_LEN + 2]> = Box::new([0; FRAME_LEN + 2]);
+    let mut rx: Box<[u8; FRAME_LEN + 3]> = Box::new([0; FRAME_LEN + 3]);
     let mut rx_len = 0;
     let mut rx_bad = false;
-    let mut break_seen = false;
+    // The break events since the last frame end.
+    let mut breaks = 0usize;
+    let mut bad_in_row = 0u32;
     let mut last_good: Option<Instant> = None;
     let mut frames = 0u16;
     let mut rejected = 0u32;
@@ -139,28 +139,39 @@ fn run(
                         }
                         left -= n;
                     }
-                    if timeout && break_seen {
-                        match close_frame(&rx[..rx_len], rx_bad) {
+                    if timeout && breaks > 0 {
+                        let good = (!rx_bad)
+                            .then(|| frame_channels(&rx[..rx_len], breaks))
+                            .flatten();
+                        match good {
                             Some(channels) => {
                                 input[..channels.len()].copy_from_slice(channels);
+                                // A shorter frame does not keep the old values of the other channels.
+                                input[channels.len()..].fill(0);
                                 last_good = Some(Instant::now());
                                 frames = frames.saturating_add(1);
+                                bad_in_row = 0;
                             }
-                            None => rejected = rejected.wrapping_add(1),
+                            None => {
+                                rejected = rejected.wrapping_add(1);
+                                bad_in_row += 1;
+                            }
                         }
                         rx_len = 0;
                         rx_bad = false;
-                        break_seen = false;
+                        breaks = 0;
+                        if bad_in_row >= RESYNC_AFTER {
+                            bad_in_row = 0;
+                            resync(uart, events);
+                        }
                     }
                 }
-                UartEventPayload::Break => break_seen = true,
+                UartEventPayload::Break => breaks = (breaks + 1).min(2),
                 UartEventPayload::RxFifoOverflow | UartEventPayload::RxBufferFull => {
-                    // Drop the frame and the events of the bytes that are gone.
-                    let _ = uart.clear_rx();
-                    while events.recv_front(0).is_some() {}
+                    resync(uart, events);
                     rx_len = 0;
                     rx_bad = false;
-                    break_seen = false;
+                    breaks = 0;
                     rejected = rejected.wrapping_add(1);
                 }
                 _ => {}
@@ -173,6 +184,7 @@ fn run(
         }
         if Instant::now() >= next_count {
             next_count += Duration::from_secs(1);
+            let mode = cfg.lock().unwrap().dmx_mode.key();
             let mut status = state.dmx.lock().unwrap();
             let s = status.get_or_insert_with(DmxStatus::default);
             if s.signal != signal {
@@ -184,7 +196,7 @@ fn run(
             }
             s.signal = signal;
             s.in_fps = frames;
-            s.mode = cfg.lock().unwrap().dmx_mode.key();
+            s.mode = mode;
             frames = 0;
         }
 
@@ -217,18 +229,12 @@ fn run(
     }
 }
 
-/// Returns the channels of a received frame, or `None` when the frame is not good.
-fn close_frame(rx: &[u8], bad: bool) -> Option<&[u8]> {
-    let frame = if BREAK_BYTE {
-        rx.split_last().filter(|(b, _)| **b == 0)?.1
-    } else {
-        rx
-    };
-    // Byte 0 is the start code. Only start code 0 has dimmer data.
-    match frame.split_first() {
-        Some((0, channels)) if !bad && !channels.is_empty() && frame.len() <= FRAME_LEN => {
-            Some(channels)
-        }
-        _ => None,
-    }
+/// Drops the bytes in the receive buffer and their events.
+///
+/// The queue goes first. A data event that arrives after the drain has its bytes in the buffer,
+/// and `clear_rx` removes them. In the other order, such an event goes and its bytes stay. Then
+/// each later read is late by these bytes.
+fn resync(uart: &UartDriver, events: &Queue<UartEvent>) {
+    while events.recv_front(0).is_some() {}
+    let _ = uart.clear_rx();
 }

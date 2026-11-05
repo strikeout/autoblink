@@ -8,4 +8,4 @@ pub mod menu;
 pub mod screen;
 
 pub use config::BoxConfig;
-pub use dmx::{merge, DmxMode};
+pub use dmx::{frame_channels, merge, DmxMode};

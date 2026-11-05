@@ -7,7 +7,6 @@
 //! and the box works as before.
 
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,7 +38,6 @@ use ssd1306::{I2CDisplayInterface, Ssd1306};
 
 use crate::net::AP_IP;
 use crate::settings::Settings;
-use crate::webui::Push;
 use crate::State;
 
 type Display = Ssd1306<
@@ -106,7 +104,6 @@ pub fn start(
     joystick: Joystick,
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
-    push: SyncSender<Push>,
 ) -> anyhow::Result<()> {
     let i2c = I2cDriver::new(i2c, sda, scl, &I2cConfig::new().baudrate(Hertz(400_000)))?;
     let mut display = Ssd1306::new(
@@ -139,7 +136,6 @@ pub fn start(
             settings: &settings,
             values: &values,
             network: &network,
-            push: &push,
         };
         ui.run(display, joystick)
     })?;
@@ -153,7 +149,6 @@ struct Ui<'a> {
     values: &'a Values,
     /// The fixed lines of the network page.
     network: &'a [String],
-    push: &'a SyncSender<Push>,
 }
 
 impl Ui<'_> {
@@ -263,10 +258,7 @@ impl Ui<'_> {
             }
         };
         match result {
-            Ok(()) => {
-                // A full queue drops the message. The page gets the settings with its next command.
-                let _ = self.push.try_send(Push::Settings);
-            }
+            Ok(()) => crate::webui::settings_changed(),
             Err(e) => log::warn!("The menu cannot change the setting: {e}"),
         }
     }
