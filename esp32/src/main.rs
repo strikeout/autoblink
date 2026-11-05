@@ -227,8 +227,20 @@ fn run() -> anyhow::Result<()> {
         settings.lock().unwrap().box_cfg.clone(),
     )?;
 
-    let box_cfg = settings.lock().unwrap().box_cfg.clone();
-    ui::start(p.i2c0, p.pins.gpio15, p.pins.gpio14, state.clone(), box_cfg)?;
+    ui::start(
+        p.i2c0,
+        p.pins.gpio15,
+        p.pins.gpio14,
+        ui::Joystick {
+            adc: p.adc1,
+            x: p.pins.gpio39,
+            y: p.pins.gpio35,
+            sw: p.pins.gpio5,
+        },
+        state.clone(),
+        settings.clone(),
+        web_beats.clone(),
+    )?;
 
     prolink::spawn(
         state.clone(),
@@ -238,7 +250,7 @@ fn run() -> anyhow::Result<()> {
             let _ = beat_tx.try_send(beat.beat_in_bar);
             #[cfg(feature = "dmx")]
             dmx.beat();
-            let page_beat = (beat.device, beat.beat_in_bar);
+            let page_beat = webui::Push::Beat(beat.device, beat.beat_in_bar);
             // A full queue drops the beat. The receive thread does not wait for the MIDI thread.
             let _ = midi_beats.send_back(beat, 0);
             // The web thread sends the beat to the page. This thread does not wait for it.

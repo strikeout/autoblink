@@ -1,15 +1,22 @@
 //! The OLED status screen: a 128×64 SSD1306 or SSD1315 on I2C0 (SCL IO14, SDA IO15, address
-//! 0x3C).
+//! 0x3C). An analog joystick opens a small menu: VRx on IO39, VRy on IO35 (ADC1), the switch on
+//! IO5 with the internal pull-up.
 //!
 //! The `ui` thread runs on core 0 with a low priority. The `midi` and `prolink-rx` threads run on
 //! core 1, so a slow I2C write cannot delay them. Without a display, the thread does not start
 //! and the box works as before.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use autoblink_core_dbserver::phrase_status;
+use autoblink_core_midi::MidiConfig;
+use autoblink_core_ui::config::{IDX_BEAT_CHANNEL, IDX_DMX_MODE, IDX_ROTATE};
+use autoblink_core_ui::joystick;
+use autoblink_core_ui::menu::{Action, Menu, View};
 use autoblink_core_ui::screen::{lines, Lines, Snapshot};
 use autoblink_core_ui::BoxConfig;
 use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10};
@@ -18,14 +25,21 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use embedded_graphics::text::{Baseline, Text};
+use esp_idf_svc::hal::adc::attenuation::DB_12;
+use esp_idf_svc::hal::adc::oneshot::config::AdcChannelConfig;
+use esp_idf_svc::hal::adc::oneshot::{AdcChannelDriver, AdcDriver};
+use esp_idf_svc::hal::adc::{ADC1, ADCCH3, ADCCH7, ADCU1};
 use esp_idf_svc::hal::cpu::Core;
-use esp_idf_svc::hal::gpio::{Gpio14, Gpio15};
+use esp_idf_svc::hal::gpio::{Gpio14, Gpio15, Gpio35, Gpio39, Gpio5, Input, PinDriver, Pull};
 use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver, I2C0};
 use esp_idf_svc::hal::units::Hertz;
 use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::prelude::*;
 use ssd1306::{I2CDisplayInterface, Ssd1306};
 
+use crate::net::AP_IP;
+use crate::settings::Settings;
+use crate::webui::Push;
 use crate::State;
 
 type Display = Ssd1306<
@@ -34,19 +48,65 @@ type Display = Ssd1306<
     BufferedGraphicsMode<DisplaySize128x64>,
 >;
 
-/// The screen shows a new frame this often. One full frame over I2C at 400 kHz takes about 25 ms.
-const FRAME: Duration = Duration::from_millis(200);
+/// The thread reads the joystick this often.
+const TICK: Duration = Duration::from_millis(20);
+
+/// The screen shows a new frame every this many ticks (200 ms), and at once after an input. One
+/// full frame over I2C at 400 kHz takes about 25 ms.
+const FRAME_TICKS: u32 = 10;
 
 /// When no deck plays for this time, the screen goes to the minimum brightness against burn-in.
 const DIM_AFTER: Duration = Duration::from_secs(600);
+
+/// The pins of the joystick.
+pub struct Joystick {
+    pub adc: ADC1<'static>,
+    pub x: Gpio39<'static>,
+    pub y: Gpio35<'static>,
+    pub sw: Gpio5<'static>,
+}
+
+/// The settings that the menu shows. The thread reads them without the lock of `Settings`.
+struct Values {
+    device: Arc<AtomicU8>,
+    midi: Arc<Mutex<MidiConfig>>,
+    box_cfg: Arc<Mutex<BoxConfig>>,
+}
+
+impl Values {
+    fn number(&self, idx: usize) -> i64 {
+        match idx {
+            2 => self.device.load(Ordering::Relaxed).into(),
+            _ => 0,
+        }
+    }
+
+    fn text(&self, idx: usize) -> String {
+        match idx {
+            2 => self.device.load(Ordering::Relaxed).to_string(),
+            9 => (self.midi.lock().unwrap().note_channel + 1).to_string(),
+            IDX_DMX_MODE => self.box_cfg.lock().unwrap().dmx_mode.label().into(),
+            IDX_BEAT_CHANNEL => self.box_cfg.lock().unwrap().beat_channel.to_string(),
+            IDX_ROTATE => if self.box_cfg.lock().unwrap().rotate {
+                "On"
+            } else {
+                "Off"
+            }
+            .into(),
+            _ => String::new(),
+        }
+    }
+}
 
 /// Starts the `ui` thread. Without a display, it logs a warning and starts no thread.
 pub fn start(
     i2c: I2C0<'static>,
     sda: Gpio15<'static>,
     scl: Gpio14<'static>,
+    joystick: Joystick,
     state: Arc<State>,
-    cfg: Arc<Mutex<BoxConfig>>,
+    settings: Arc<Mutex<Settings>>,
+    push: SyncSender<Push>,
 ) -> anyhow::Result<()> {
     let i2c = I2cDriver::new(i2c, sda, scl, &I2cConfig::new().baudrate(Hertz(400_000)))?;
     let mut display = Ssd1306::new(
@@ -59,60 +119,182 @@ pub fn start(
         log::warn!("No OLED at I2C address 0x3C ({e:?}). The box works without it.");
         return Ok(());
     }
-    crate::spawn_rt(c"ui", 4 * 1024, 3, Some(Core::Core0), move || {
-        run(display, &state, &cfg)
+    let (values, network) = {
+        let s = settings.lock().unwrap();
+        let values = Values {
+            device: s.device_number.clone(),
+            midi: s.midi.clone(),
+            box_cfg: s.box_cfg.clone(),
+        };
+        // The WiFi settings apply after a restart, so the start values stay right.
+        let mut network = vec![format!("AP {}", s.ssid()), format!("Page {AP_IP}")];
+        if let Some((join, _)) = s.join() {
+            network.push(format!("Join {join}"));
+        }
+        (values, network)
+    };
+    crate::spawn_rt(c"ui", 5 * 1024, 3, Some(Core::Core0), move || {
+        let ui = Ui {
+            state: &state,
+            settings: &settings,
+            values: &values,
+            network: &network,
+            push: &push,
+        };
+        ui.run(display, joystick)
     })?;
     log::info!("The OLED is on I2C0 (SCL IO14, SDA IO15)");
     Ok(())
 }
 
-fn run(mut display: Display, state: &State, cfg: &Mutex<BoxConfig>) {
-    let mut rotate = false;
-    // 0 is not a valid setting, so the first frame sets the brightness.
-    let mut brightness = 0u8;
-    let mut active = Instant::now();
-    let mut failed = false;
-    loop {
-        let snap = snapshot(state);
-        if snap.playing {
-            active = Instant::now();
+struct Ui<'a> {
+    state: &'a State,
+    settings: &'a Mutex<Settings>,
+    values: &'a Values,
+    /// The fixed lines of the network page.
+    network: &'a [String],
+    push: &'a SyncSender<Push>,
+}
+
+impl Ui<'_> {
+    fn run(&self, mut display: Display, pins: Joystick) {
+        // The ADC driver must live as long as its channel drivers.
+        let Joystick { adc, x, y, sw } = pins;
+        let adc = AdcDriver::new(adc);
+        let mut stick = match adc.as_ref() {
+            Ok(adc) => stick(adc, x, y, sw).map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
         }
-        let (want_rotate, want_brightness) = {
-            let cfg = cfg.lock().unwrap();
-            (cfg.rotate, cfg.brightness)
-        };
-        let want_brightness = if active.elapsed() >= DIM_AFTER {
-            1
-        } else {
-            want_brightness
-        };
-        let mut result = Ok(());
-        if want_rotate != rotate {
-            rotate = want_rotate;
-            let r = if rotate {
-                DisplayRotation::Rotate180
-            } else {
-                DisplayRotation::Rotate0
-            };
-            result = result.and(display.set_rotation(r));
-        }
-        if want_brightness != brightness {
-            brightness = want_brightness;
-            result = result.and(display.set_brightness(Brightness::custom(2, brightness)));
-        }
-        display.clear_buffer();
-        draw(&mut display, &lines(&snap));
-        result = result.and(display.flush());
-        // Log only the change, not each frame. A loose wire can fail each frame.
-        if result.is_err() != failed {
-            failed = result.is_err();
-            match result {
-                Err(e) => log::warn!("The OLED does not answer: {e:?}"),
-                Ok(()) => log::info!("The OLED answers again"),
+        .inspect_err(|e| log::warn!("The joystick is off: {e}"))
+        .ok();
+        let mut joy = joystick::Joystick::new();
+        let mut menu = Menu::new();
+        let mut rotate = false;
+        // 0 is not a valid setting, so the first frame sets the brightness.
+        let mut brightness = 0u8;
+        let mut active = Instant::now();
+        let mut failed = false;
+        let mut tick = 0u32;
+        loop {
+            let now = self.state.now_ms();
+            // ESP32 errata 3.11: ADC1 can pull IO36 and IO39 low for about 80 ns. IO36 is DMX IN.
+            // Thus the thread reads the axes only for the calibration and while the menu is open.
+            // The switch on IO5 opens the menu.
+            let menu_open = menu.view() != View::Status;
+            let input = stick.as_mut().and_then(|(x, y, sw)| {
+                let (xv, yv) = match joy.center() {
+                    Some(c) if !menu_open => c,
+                    _ => (x.read_raw().ok()?, y.read_raw().ok()?),
+                };
+                joy.update(xv, yv, sw.is_low(), now)
+            });
+            if let Some(input) = input {
+                active = Instant::now();
+                self.apply(menu.input(input, now, |idx| self.values.number(idx)));
+                // Draw the change at once.
+                tick = 0;
             }
+            menu.tick(now);
+            if tick % FRAME_TICKS == 0 {
+                let snap = snapshot(self.state);
+                if snap.playing {
+                    active = Instant::now();
+                }
+                let (want_rotate, want_brightness) = {
+                    let cfg = self.values.box_cfg.lock().unwrap();
+                    (cfg.rotate, cfg.brightness)
+                };
+                let want_brightness = if active.elapsed() >= DIM_AFTER {
+                    1
+                } else {
+                    want_brightness
+                };
+                let mut result = Ok(());
+                if want_rotate != rotate {
+                    rotate = want_rotate;
+                    let r = if rotate {
+                        DisplayRotation::Rotate180
+                    } else {
+                        DisplayRotation::Rotate0
+                    };
+                    result = result.and(display.set_rotation(r));
+                }
+                if want_brightness != brightness {
+                    brightness = want_brightness;
+                    result = result.and(display.set_brightness(Brightness::custom(2, brightness)));
+                }
+                display.clear_buffer();
+                if menu.view() == View::Status {
+                    draw(&mut display, &lines(&snap));
+                } else {
+                    let iface = self.state.iface.lock().unwrap().clone();
+                    let mut network = self.network.to_vec();
+                    network.extend(iface.split(" · ").map(String::from));
+                    let text = menu.lines(|idx| self.values.text(idx), &network);
+                    draw_menu(&mut display, &text);
+                }
+                result = result.and(display.flush());
+                // Log only the change, not each frame. A loose wire can fail each frame.
+                if result.is_err() != failed {
+                    failed = result.is_err();
+                    match result {
+                        Err(e) => log::warn!("The OLED does not answer: {e:?}"),
+                        Ok(()) => log::info!("The OLED answers again"),
+                    }
+                }
+            }
+            tick = tick.wrapping_add(1);
+            thread::sleep(TICK);
         }
-        thread::sleep(FRAME);
     }
+
+    /// Does a change of the menu with the functions of the page commands. Then the page gets the
+    /// new settings.
+    fn apply(&self, action: Option<Action>) {
+        let result = match action {
+            None => return,
+            Some(Action::Restart) => {
+                log::info!("Restart from the menu of the OLED");
+                crate::restart_soon().map_err(|e| e.to_string())
+            }
+            Some(Action::Step { idx, dir }) => self.settings.lock().unwrap().step(idx, dir),
+            Some(Action::Set { idx, value }) => {
+                self.settings.lock().unwrap().set(idx, &value.to_string())
+            }
+        };
+        match result {
+            Ok(()) => {
+                // A full queue drops the message. The page gets the settings with its next command.
+                let _ = self.push.try_send(Push::Settings);
+            }
+            Err(e) => log::warn!("The menu cannot change the setting: {e}"),
+        }
+    }
+}
+
+/// VRx (IO39) is channel 3 of ADC1, VRy (IO35) is channel 7.
+type Stick<'a> = (
+    AdcChannelDriver<'static, ADCCH3<ADCU1>, &'a AdcDriver<'static, ADCU1>>,
+    AdcChannelDriver<'static, ADCCH7<ADCU1>, &'a AdcDriver<'static, ADCU1>>,
+    PinDriver<'static, Input>,
+);
+
+/// Opens the two ADC channels at 12 dB (0 to about 3.1 V) and the switch input.
+fn stick<'a>(
+    adc: &'a AdcDriver<'static, ADCU1>,
+    x: Gpio39<'static>,
+    y: Gpio35<'static>,
+    sw: Gpio5<'static>,
+) -> anyhow::Result<Stick<'a>> {
+    let cfg = AdcChannelConfig {
+        attenuation: DB_12,
+        ..Default::default()
+    };
+    Ok((
+        AdcChannelDriver::new(adc, x, &cfg)?,
+        AdcChannelDriver::new(adc, y, &cfg)?,
+        PinDriver::input(sw, Pull::Up)?,
+    ))
 }
 
 /// Copies the values of the screen from the state. Each lock is taken alone.
@@ -169,4 +351,12 @@ fn draw(display: &mut Display, l: &Lines) {
     text(display, &l.phrase, 34, small);
     text(display, &l.net, 44, small);
     text(display, &l.dmx, 54, small);
+}
+
+fn draw_menu(display: &mut Display, text: &[String]) {
+    let small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    for (row, line) in text.iter().enumerate() {
+        let y = 10 * row as i32;
+        let _ = Text::with_baseline(line, Point::new(0, y), small, Baseline::Top).draw(display);
+    }
 }

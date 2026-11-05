@@ -3,6 +3,8 @@
 
 pub mod config;
 pub mod dmx;
+pub mod joystick;
+pub mod menu;
 pub mod screen;
 
 pub use config::BoxConfig;

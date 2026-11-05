@@ -89,15 +89,22 @@ impl Active {
     }
 }
 
+/// A message for the `web-status` thread, which does all the sends to the active page.
+pub enum Push {
+    /// A beat: (device number, beat in the bar).
+    Beat(u8, u8),
+    /// The settings changed outside the page, for example in the menu of the OLED.
+    Settings,
+}
+
 /// Starts the web server and the thread that sends the beats and the status to the page.
 ///
-/// Returns the server and the sender for the beats: (device number, beat in the bar). Use
-/// `try_send` for a beat. A send to a slow WiFi client can wait up to 5 s, and the beat receive
-/// thread must not wait for it.
+/// Returns the server and the sender for the `Push` messages. Use `try_send`. A send to a slow
+/// WiFi client can wait up to 5 s, and the beat receive thread must not wait for it.
 pub fn start(
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
-) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<(u8, u8)>)> {
+) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<Push>)> {
     // When all sockets are open, a new connection closes the socket that received data least
     // recently. The active WebSocket receives no data, so it is that socket. The page loads the
     // waveforms of all decks at the same time: 1 WebSocket and up to 4 requests. A waiting page
@@ -170,6 +177,7 @@ pub fn start(
     }
 
     let midi_cfg = settings.lock().unwrap().midi.clone();
+    let push_settings = settings.clone();
     let ws_active = active.clone();
     let ws_state = state.clone();
     let handle = move |ws: &mut EspHttpWsConnection| -> Result<(), EspError> {
@@ -259,7 +267,7 @@ pub fn start(
     })?;
 
     // This thread does all the sends to the page. When the queue is full, `try_send` drops the beat.
-    let (beat_tx, beat_rx) = mpsc::sync_channel::<(u8, u8)>(8);
+    let (beat_tx, beat_rx) = mpsc::sync_channel::<Push>(8);
     crate::spawn(c"web-status", 6 * 1024, move || {
         let mut next_status = Instant::now();
         // The thread keeps one buffer for the status and one for the beat. Thus a message does
@@ -268,13 +276,19 @@ pub fn start(
         let mut beat_msg = String::with_capacity(48);
         loop {
             match beat_rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
-                Ok((device, beat)) => {
+                Ok(Push::Beat(device, beat)) => {
                     beat_msg.clear();
                     let _ = write!(
                         beat_msg,
                         r#"{{"type":"beat","device":{device},"beat":{beat}}}"#
                     );
                     active.send(beat_msg.as_bytes());
+                }
+                Ok(Push::Settings) => {
+                    if active.is_some() {
+                        let msg = push_settings.lock().unwrap().message();
+                        active.send(msg.as_bytes());
+                    }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
