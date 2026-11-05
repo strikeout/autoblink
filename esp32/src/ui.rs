@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use autoblink_core_dbserver::phrase_status;
+use autoblink_core_midi::scenes::Event;
 use autoblink_core_midi::MidiConfig;
 use autoblink_core_ui::config::{IDX_BEAT_CHANNEL, IDX_DMX_MODE, IDX_ROTATE};
 use autoblink_core_ui::joystick;
@@ -346,7 +347,13 @@ fn snapshot(state: &State) -> Snapshot {
             return None;
         };
         let p = phrase_status(ss, beat_count)?;
-        Some(format!("{} {} bars left", p.kind, p.beats_left.div_ceil(4)))
+        // The page shows the buckets of the DMX scenes (DROP, BREAK), not the rekordbox kinds.
+        let name = p
+            .kind
+            .code()
+            .and_then(Event::bucket)
+            .map_or_else(|| p.kind.to_string(), |e| format!("{e:?}").to_uppercase());
+        Some(format!("{name} {} bars left", p.beats_left.div_ceil(4)))
     });
     let blinks = crate::led::blinks(state);
     let ip = state.link.lock().unwrap().map(|l| l.ip.to_string());

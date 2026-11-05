@@ -61,6 +61,8 @@ pub fn lines(s: &Snapshot) -> Lines {
         "---.-".into()
     };
     let net = match (s.blinks, &s.ip) {
+        // The virtual CDJ joins for about 4 s. The beats arrive already, so this is no error.
+        (Some(2), Some(ip)) => format!("{ip} joining"),
         (Some(b), _) => blink_text(b).into(),
         (None, Some(ip)) => ip.clone(),
         (None, None) => String::new(),
@@ -117,6 +119,16 @@ mod tests {
         assert_eq!(l.bpm, "---.-");
         assert_eq!(l.net, "No player found");
         assert_eq!(l.dmx, "DMX IN: no signal");
+    }
+
+    #[test]
+    fn the_address_shows_while_the_virtual_cdj_joins() {
+        let l = lines(&Snapshot {
+            blinks: Some(2),
+            ip: Some("192.168.1.104".into()),
+            ..Default::default()
+        });
+        assert_eq!(l.net, "192.168.1.104 joining");
     }
 
     #[test]
