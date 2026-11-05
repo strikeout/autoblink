@@ -266,36 +266,43 @@ fn preset_name(cfg: &ScenesConfig, preset: u8) -> String {
     }
 }
 
-/// The Scenes page: the player state, the phrase, the row that is on, its preset and the next
-/// preset.
-pub fn scenes_lines(cfg: &ScenesConfig, s: &SceneStatus) -> Vec<String> {
-    let mut out = vec![Page::Scenes.header()];
-    let state = if cfg.enabled { "ON" } else { "OFF" };
-    out.push(pair("Player", state, COLS));
+/// The Scenes page: the player state with the phrase, the row that is on, its preset, the next
+/// preset, and the preset of a flash. `flash` is the preset that the firmware shows as a flash.
+pub fn scenes_lines(cfg: &ScenesConfig, s: &SceneStatus, flash: Option<u8>) -> Vec<String> {
+    let state = format!("Player {}", if cfg.enabled { "ON" } else { "OFF" });
     let phrase = s.phrase.map_or("-".into(), event_name);
-    out.push(pair("Phrase", &phrase, COLS));
+    let mut out = vec![Page::Scenes.header(), pair(&state, &phrase, COLS)];
     if !cfg.enabled {
         out.push("Push: turn on".into());
         return out;
     }
-    let Some((e, row)) = s.row.and_then(|e| Some((e, cfg.row(e)?))) else {
-        out.push("No scene now".into());
-        out.push("Push: turn off".into());
-        return out;
-    };
-    let at = |i: u8| {
-        row.presets
-            .get(usize::from(i))
-            .map_or(String::new(), |&p| preset_name(cfg, p))
-    };
-    out.push(pair("Row", &event_name(e), COLS));
-    out.push(cut(format!("> {}", s.step.map(at).unwrap_or_default())));
-    let next = match (s.next, s.bars_left) {
-        (None, _) => "Next: random".into(),
-        (Some(i), Some(b)) => format!("Next {} in {b}", at(i)),
-        (Some(i), None) => format!("Next {}", at(i)),
-    };
-    out.push(cut(next));
+    match s.row.and_then(|e| Some((e, cfg.row(e)?))) {
+        None => out.extend([
+            "No scene now".into(),
+            "Push: turn off".into(),
+            String::new(),
+        ]),
+        Some((e, row)) => {
+            let at = |i: u8| {
+                row.presets
+                    .get(usize::from(i))
+                    .map_or(String::new(), |&p| preset_name(cfg, p))
+            };
+            let next = match (s.next, s.bars_left) {
+                (None, _) => "Next: random".into(),
+                (Some(i), Some(b)) => format!("Next {} in {b}", at(i)),
+                (Some(i), None) => format!("Next {}", at(i)),
+            };
+            out.extend([
+                pair("Row", &event_name(e), COLS),
+                cut(format!("> {}", s.step.map(at).unwrap_or_default())),
+                cut(next),
+            ]);
+        }
+    }
+    out.push(flash.map_or(String::new(), |p| {
+        cut(format!("* Flash {}", preset_name(cfg, p)))
+    }));
     out
 }
 
@@ -430,13 +437,14 @@ mod tests {
             phrase: Some(Event::Drop),
             ..Default::default()
         };
-        let l = scenes_lines(&cfg, &s);
+        let l = scenes_lines(&cfg, &s, Some(0));
         assert_eq!(l[0], "< Scenes        5/7 >");
-        assert_eq!(l[1], "Player             ON");
-        assert_eq!(l[2], "Phrase           DROP");
-        assert_eq!(l[3], "Row              DROP");
-        assert_eq!(l[4], "> 2 Strobe Rot");
-        assert_eq!(l[5], "Next X1 Fog");
+        assert_eq!(l[1], "Player ON        DROP");
+        assert_eq!(l[2], "Row              DROP");
+        assert_eq!(l[3], "> 2 Strobe Rot");
+        assert_eq!(l[4], "Next X1 Fog");
+        assert_eq!(l[5], "* Flash 1 Wash");
+        assert_eq!(l.len(), ROWS);
         assert!(l.iter().all(|t| t.len() <= COLS));
         // An empty name shows the number only.
         let s = SceneStatus {
@@ -444,20 +452,22 @@ mod tests {
             next: None,
             ..s
         };
-        let l = scenes_lines(&cfg, &s);
-        assert_eq!(l[4], "> 3");
-        assert_eq!(l[5], "Next: random");
+        let l = scenes_lines(&cfg, &s, None);
+        assert_eq!(l[3], "> 3");
+        assert_eq!(l[4], "Next: random");
+        assert_eq!(l[5], "");
     }
 
     #[test]
     fn the_scenes_page_without_a_scene() {
         let mut cfg = scenes();
-        let l = scenes_lines(&cfg, &SceneStatus::default());
-        assert_eq!(l[3], "No scene now");
+        let l = scenes_lines(&cfg, &SceneStatus::default(), Some(EXTRA_BASE));
+        assert_eq!(l[2], "No scene now");
+        assert_eq!(l[5], "* Flash X1 Fog");
         cfg.enabled = false;
-        let l = scenes_lines(&cfg, &SceneStatus::default());
-        assert_eq!(l[1], "Player            OFF");
-        assert_eq!(l[3], "Push: turn on");
+        let l = scenes_lines(&cfg, &SceneStatus::default(), None);
+        assert_eq!(l[1], "Player OFF          -");
+        assert_eq!(l[2], "Push: turn on");
     }
 
     #[test]

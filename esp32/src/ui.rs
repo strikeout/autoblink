@@ -58,6 +58,9 @@ const TICK: Duration = Duration::from_millis(20);
 /// full frame over I2C at 400 kHz takes about 25 ms.
 const FRAME_TICKS: u32 = 10;
 
+/// The Scenes page shows a flash for at least this time, so that a short flash is visible.
+const FLASH_SHOW_MS: u64 = 300;
+
 /// The I2C addresses of an SSD1306 or SSD1315 module.
 const ADDRESSES: [u8; 2] = [0x3C, 0x3D];
 
@@ -220,6 +223,8 @@ impl Ui<'_> {
         let mut active = Instant::now();
         let mut failed = false;
         let mut tick = 0u32;
+        // The preset of the last flash and the time when the thread saw it.
+        let mut shown_flash: Option<(u8, u64)> = None;
         loop {
             let now = self.state.now_ms();
             // ESP32 errata 3.11: a power-on of ADC1 pulls IO36 (DMX IN) and IO39 low for about
@@ -237,6 +242,13 @@ impl Ui<'_> {
                 }
                 input
             });
+            // A flash can be shorter than one frame. The thread looks for it at each tick and
+            // shows it for `FLASH_SHOW_MS`.
+            if menu.page() == Page::Scenes {
+                if let Some(p) = self.state.midi.lock().unwrap().scene.flash {
+                    shown_flash = Some((p, now));
+                }
+            }
             if let Some(input) = input {
                 active = Instant::now();
                 self.apply(menu.input(input, now, |idx| self.values.number(idx)));
@@ -280,7 +292,10 @@ impl Ui<'_> {
                     result = result.and(display.set_brightness(Brightness::custom(2, brightness)));
                 }
                 display.clear_buffer();
-                self.draw_page(&mut display, &menu, &snap);
+                let flash = shown_flash
+                    .filter(|&(_, t)| now.saturating_sub(t) < FLASH_SHOW_MS)
+                    .map(|f| f.0);
+                self.draw_page(&mut display, &menu, &snap, flash);
                 result = result.and(display.flush());
                 // Log only the change, not each frame. A loose wire can fail each frame.
                 if result.is_err() != failed {
@@ -297,7 +312,13 @@ impl Ui<'_> {
     }
 
     /// Draws the page of the menu. Only the data of that page is read from the state.
-    fn draw_page(&self, display: &mut Display<'_>, menu: &Menu, snap: &Snapshot) {
+    fn draw_page(
+        &self,
+        display: &mut Display<'_>,
+        menu: &Menu,
+        snap: &Snapshot,
+        flash: Option<u8>,
+    ) {
         let text = match menu.page() {
             Page::Main => return draw(display, &lines(snap)),
             Page::Decks => decks_lines(&deck_rows(self.state)),
@@ -325,7 +346,7 @@ impl Ui<'_> {
                 // Each lock alone. The text is built under the scenes lock: a copy of the scenes
                 // every 200 ms gives many heap blocks.
                 let status = self.state.midi.lock().unwrap().scene;
-                scenes_lines(&self.values.scenes.lock().unwrap(), &status)
+                scenes_lines(&self.values.scenes.lock().unwrap(), &status, flash)
             }
             Page::Network => {
                 let iface = self.state.iface.lock().unwrap().clone();
