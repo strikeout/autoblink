@@ -11,10 +11,8 @@ pub enum Input {
     Down,
     Left,
     Right,
-    /// A short push of the switch.
+    /// A push of the switch.
     Select,
-    /// A push of the switch for `LONG_MS` or more.
-    Back,
 }
 
 /// The highest value of the 12-bit ADC.
@@ -25,13 +23,12 @@ const CALIBRATION_SAMPLES: i32 = 16;
 const START: i32 = 700;
 /// A held direction stops below this part of the travel (per mille).
 const STOP: i32 = 400;
-/// A held direction repeats after this time, then every `REPEAT_MS`.
+/// A held up or down repeats after this time, then every `REPEAT_MS`. Left and right do not
+/// repeat: one push of the stick flips one page.
 const FIRST_REPEAT_MS: u64 = 500;
 const REPEAT_MS: u64 = 150;
 /// The switch must stay in one state for this time.
 const DEBOUNCE_MS: u64 = 30;
-/// A push of this time or longer is "back".
-const LONG_MS: u64 = 1000;
 
 const DIRECTIONS: [Input; 4] = [Input::Up, Input::Down, Input::Left, Input::Right];
 
@@ -45,10 +42,8 @@ pub struct Joystick {
     /// The last raw switch state and the time of its last change.
     raw: bool,
     raw_since: u64,
-    /// The debounced switch state, and `true` when the long push sent "back".
+    /// The debounced switch state.
     pressed: bool,
-    pressed_since: u64,
-    long_sent: bool,
 }
 
 impl Joystick {
@@ -98,15 +93,8 @@ impl Joystick {
         if self.raw != self.pressed && now - self.raw_since >= DEBOUNCE_MS {
             self.pressed = self.raw;
             if self.pressed {
-                self.pressed_since = now;
-                self.long_sent = false;
-            } else if !self.long_sent {
                 return Some(Input::Select);
             }
-        }
-        if self.pressed && !self.long_sent && now - self.pressed_since >= LONG_MS {
-            self.long_sent = true;
-            return Some(Input::Back);
         }
         None
     }
@@ -131,7 +119,7 @@ impl Joystick {
             self.held = None;
         }
         match self.held {
-            Some(d) if now >= self.next_repeat => {
+            Some(d @ (Input::Up | Input::Down)) if now >= self.next_repeat => {
                 self.next_repeat = now + REPEAT_MS;
                 Some(d)
             }
@@ -203,19 +191,26 @@ mod tests {
     }
 
     #[test]
-    fn a_short_push_selects_and_a_long_push_goes_back() {
+    fn a_held_left_or_right_gives_one_input() {
+        let mut j = calibrated();
+        assert_eq!(j.update(4095, C, false, 1000), Some(Input::Right));
+        for t in (1020..3000).step_by(20) {
+            assert_eq!(j.update(4095, C, false, t), None);
+        }
+        assert_eq!(j.update(C, C, false, 3000), None);
+        assert_eq!(j.update(4095, C, false, 3020), Some(Input::Right));
+    }
+
+    #[test]
+    fn the_push_selects_at_once() {
         let mut j = calibrated();
         assert_eq!(j.update(C, C, true, 100), None);
         // A bounce shorter than the debounce time is ignored.
         assert_eq!(j.update(C, C, false, 110), None);
         assert_eq!(j.update(C, C, true, 115), None);
-        assert_eq!(j.update(C, C, true, 150), None);
-        assert_eq!(j.update(C, C, false, 300), None);
-        assert_eq!(j.update(C, C, false, 330), Some(Input::Select));
-
-        assert_eq!(j.update(C, C, true, 1000), None);
-        assert_eq!(j.update(C, C, true, 1030), None);
-        assert_eq!(j.update(C, C, true, 2030), Some(Input::Back));
+        assert_eq!(j.update(C, C, true, 145), Some(Input::Select));
+        // A long push gives no second input. The release gives none.
+        assert_eq!(j.update(C, C, true, 2000), None);
         assert_eq!(j.update(C, C, false, 2100), None);
         assert_eq!(j.update(C, C, false, 2200), None);
     }

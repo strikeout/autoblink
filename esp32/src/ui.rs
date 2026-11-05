@@ -1,6 +1,6 @@
 //! The OLED status screen: a 128×64 SSD1306 or SSD1315 on I2C0 (SCL IO14, SDA IO15, address
-//! 0x3C or 0x3D). An analog joystick opens a small menu: VRx on IO39, VRy on IO35 (ADC1), the
-//! switch on IO5 with the internal pull-up. The joystick is optional.
+//! 0x3C or 0x3D). An analog joystick flips the pages and changes the settings: VRx on IO39, VRy on
+//! IO35 (ADC1), the switch on IO5 with the internal pull-up. The joystick is optional.
 //!
 //! The `ui` thread runs on core 0 with a low priority. The `midi` and `prolink-rx` threads run on
 //! core 1, so a slow I2C write cannot delay them. Until a display answers, the thread looks for
@@ -14,11 +14,15 @@ use std::time::{Duration, Instant};
 use autoblink_core_dbserver::phrase_status;
 use autoblink_core_midi::scenes::Event;
 use autoblink_core_midi::MidiConfig;
-use autoblink_core_ui::config::{IDX_BEAT_CHANNEL, IDX_DMX_MODE, IDX_ROTATE};
+use autoblink_core_prolink::Deck;
+use autoblink_core_ui::config::{IDX_BEAT_CHANNEL, IDX_BRIGHTNESS, IDX_DMX_MODE, IDX_ROTATE};
 use autoblink_core_ui::joystick;
-use autoblink_core_ui::menu::{Action, Menu, View};
-use autoblink_core_ui::screen::{lines, Lines, Snapshot};
-use autoblink_core_ui::BoxConfig;
+use autoblink_core_ui::menu::{Action, Menu, Page};
+use autoblink_core_ui::screen::{
+    decks_lines, dmx_lines, lines, network_lines, track_lines, DeckRow, DmxInfo, Lines, Snapshot,
+    TrackInfo,
+};
+use autoblink_core_ui::{BoxConfig, DmxMode};
 use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
@@ -79,26 +83,32 @@ struct Values {
 }
 
 impl Values {
+    /// The present value of a setting of the menu.
     fn number(&self, idx: usize) -> i64 {
+        let cfg = || self.box_cfg.lock().unwrap().clone();
         match idx {
             2 => self.device.load(Ordering::Relaxed).into(),
+            9 => i64::from(self.midi.lock().unwrap().note_channel) + 1,
+            IDX_DMX_MODE => {
+                let mode = cfg().dmx_mode;
+                DmxMode::ALL.iter().position(|&m| m == mode).unwrap_or(0) as i64
+            }
+            IDX_BEAT_CHANNEL => cfg().beat_channel.into(),
+            IDX_ROTATE => cfg().rotate.into(),
+            IDX_BRIGHTNESS => cfg().brightness.into(),
             _ => 0,
         }
     }
 
-    fn text(&self, idx: usize) -> String {
+    /// The shown text of the value `v` of a setting.
+    fn text(&self, idx: usize, v: i64) -> String {
         match idx {
-            2 => self.device.load(Ordering::Relaxed).to_string(),
-            9 => (self.midi.lock().unwrap().note_channel + 1).to_string(),
-            IDX_DMX_MODE => self.box_cfg.lock().unwrap().dmx_mode.label().into(),
-            IDX_BEAT_CHANNEL => self.box_cfg.lock().unwrap().beat_channel.to_string(),
-            IDX_ROTATE => if self.box_cfg.lock().unwrap().rotate {
-                "On"
-            } else {
-                "Off"
-            }
-            .into(),
-            _ => String::new(),
+            IDX_DMX_MODE => DmxMode::ALL
+                .get(v as usize)
+                .map_or("?", |m| m.label())
+                .into(),
+            IDX_ROTATE => if v != 0 { "On" } else { "Off" }.into(),
+            _ => v.to_string(),
         }
     }
 }
@@ -210,15 +220,11 @@ impl Ui<'_> {
         let mut tick = 0u32;
         loop {
             let now = self.state.now_ms();
-            // ESP32 errata 3.11: ADC1 can pull IO36 and IO39 low for about 80 ns. IO36 is DMX IN.
-            // Thus the thread reads the axes only for the calibration and while the menu is open.
-            // The switch on IO5 opens the menu.
-            let menu_open = menu.view() != View::Status;
+            // ESP32 errata 3.11: a power-on of ADC1 pulls IO36 (DMX IN) and IO39 low for about
+            // 80 ns. The oneshot driver of ESP-IDF 5.5 keeps ADC1 on while the unit exists, so
+            // the reads cause no power-on.
             let input = stick.as_mut().and_then(|(x, y, sw)| {
-                let (xv, yv) = match joy.center() {
-                    Some(c) if !menu_open => c,
-                    _ => (x.read_raw().ok()?, y.read_raw().ok()?),
-                };
+                let (xv, yv) = (x.read_raw().ok()?, y.read_raw().ok()?);
                 joy.update(xv, yv, sw.is_low(), now)
             });
             if let Some(input) = input {
@@ -264,15 +270,7 @@ impl Ui<'_> {
                     result = result.and(display.set_brightness(Brightness::custom(2, brightness)));
                 }
                 display.clear_buffer();
-                if menu.view() == View::Status {
-                    draw(&mut display, &lines(&snap));
-                } else {
-                    let iface = self.state.iface.lock().unwrap().clone();
-                    let mut network = self.network.to_vec();
-                    network.extend(iface.split(" · ").map(String::from));
-                    let text = menu.lines(|idx| self.values.text(idx), &network);
-                    draw_menu(&mut display, &text);
-                }
+                self.draw_page(&mut display, &menu, &snap);
                 result = result.and(display.flush());
                 // Log only the change, not each frame. A loose wire can fail each frame.
                 if result.is_err() != failed {
@@ -288,6 +286,38 @@ impl Ui<'_> {
         }
     }
 
+    /// Draws the page of the menu. Only the data of that page is read from the state.
+    fn draw_page(&self, display: &mut Display<'_>, menu: &Menu, snap: &Snapshot) {
+        let text = match menu.page() {
+            Page::Main => return draw(display, &lines(snap)),
+            Page::Decks => decks_lines(&deck_rows(self.state)),
+            Page::Track => {
+                let (info, progress) = track_info(self.state);
+                if let Some(p) = progress {
+                    // The phrase bar under the last line.
+                    let _ = Rectangle::new(Point::new(0, 61), Size::new((128.0 * p) as u32, 2))
+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                        .draw(display);
+                }
+                track_lines(info.as_ref())
+            }
+            Page::Dmx => dmx_lines(&DmxInfo {
+                mode: self.values.box_cfg.lock().unwrap().dmx_mode.label(),
+                beat_channel: self.values.box_cfg.lock().unwrap().beat_channel,
+                input: snap.dmx,
+            }),
+            Page::Network => {
+                let iface = self.state.iface.lock().unwrap().clone();
+                network_lines(self.network, &iface, snap.blinks)
+            }
+            Page::Settings => menu.lines(
+                |idx, v| self.values.text(idx, v),
+                |idx| self.values.number(idx),
+            ),
+        };
+        draw_menu(display, &text);
+    }
+
     /// Does a change of the menu with the functions of the page commands. Then the page gets the
     /// new settings.
     fn apply(&self, action: Option<Action>) {
@@ -297,7 +327,6 @@ impl Ui<'_> {
                 log::info!("Restart from the menu of the OLED");
                 crate::restart_soon().map_err(|e| e.to_string())
             }
-            Some(Action::Step { idx, dir }) => self.settings.lock().unwrap().step(idx, dir),
             Some(Action::Set { idx, value }) => {
                 self.settings.lock().unwrap().set(idx, &value.to_string())
             }
@@ -337,24 +366,7 @@ fn stick<'a>(
 /// Copies the values of the screen from the state. Each lock is taken alone.
 fn snapshot(state: &State) -> Snapshot {
     let master = state.tracker.lock().unwrap().master().cloned();
-    let phrase = master.as_ref().and_then(|d| {
-        let beat_count = d.beat_count?;
-        let tracks = state.tracks.0.lock().unwrap();
-        let t = tracks
-            .get(&d.num)
-            .filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0)?;
-        let Some(Ok(ss)) = &t.structure else {
-            return None;
-        };
-        let p = phrase_status(ss, beat_count)?;
-        // The page shows the buckets of the DMX scenes (DROP, BREAK), not the rekordbox kinds.
-        let name = p
-            .kind
-            .code()
-            .and_then(Event::bucket)
-            .map_or_else(|| p.kind.to_string(), |e| format!("{e:?}").to_uppercase());
-        Some(format!("{name} {} bars left", p.beats_left.div_ceil(4)))
-    });
+    let phrase = master.as_ref().and_then(|d| phrase(state, d)).map(|p| p.0);
     let blinks = crate::led::blinks(state);
     let ip = state.link.lock().unwrap().map(|l| l.ip.to_string());
     let dmx = state.dmx.lock().unwrap().map(|d| (d.signal, d.in_fps));
@@ -369,6 +381,74 @@ fn snapshot(state: &State) -> Snapshot {
         ip,
         dmx,
     }
+}
+
+/// The phrase of deck `d` for the screen, for example "DROP 3 bars left", and its progress.
+fn phrase(state: &State, d: &Deck) -> Option<(String, f64)> {
+    let beat_count = d.beat_count?;
+    let tracks = state.tracks.0.lock().unwrap();
+    let t = tracks
+        .get(&d.num)
+        .filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0)?;
+    let Some(Ok(ss)) = &t.structure else {
+        return None;
+    };
+    let p = phrase_status(ss, beat_count)?;
+    // The page shows the buckets of the DMX scenes (DROP, BREAK), not the rekordbox kinds.
+    let name = p
+        .kind
+        .code()
+        .and_then(Event::bucket)
+        .map_or_else(|| p.kind.to_string(), |e| format!("{e:?}").to_uppercase());
+    let text = format!("{name} {} bars left", p.beats_left.div_ceil(4));
+    Some((text, p.progress))
+}
+
+/// The rows of the Decks page, sorted by deck number.
+fn deck_rows(state: &State) -> Vec<DeckRow> {
+    let now = state.now_ms();
+    let tracker = state.tracker.lock().unwrap();
+    let master = tracker.master().map(|d| d.num);
+    let mut rows: Vec<DeckRow> = tracker
+        .decks()
+        .iter()
+        .map(|d| DeckRow {
+            num: d.num,
+            master: Some(d.num) == master,
+            playing: d.is_playing(now),
+            bpm: d.bpm,
+            pitch: d.pitch,
+        })
+        .collect();
+    rows.sort_by_key(|r| r.num);
+    rows
+}
+
+/// The track of the master deck and the progress of its phrase. Each lock is taken alone.
+fn track_info(state: &State) -> (Option<TrackInfo>, Option<f64>) {
+    let Some(d) = state.tracker.lock().unwrap().master().cloned() else {
+        return (None, None);
+    };
+    let phrase = phrase(state, &d);
+    let info = {
+        let tracks = state.tracks.0.lock().unwrap();
+        tracks
+            .get(&d.num)
+            .filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0)
+            .and_then(|t| t.metadata.as_ref())
+            .map(|m| TrackInfo {
+                deck: d.num,
+                title: m.title.clone(),
+                artist: m.artist.clone(),
+                key: m.key.clone(),
+                left_s: d
+                    .track_len_ms
+                    .zip(d.playhead_ms)
+                    .map(|(len, pos)| len.saturating_sub(pos) / 1000),
+                phrase: phrase.as_ref().map(|p| p.0.clone()),
+            })
+    };
+    (info, phrase.map(|p| p.1))
 }
 
 fn draw(display: &mut Display<'_>, l: &Lines) {
