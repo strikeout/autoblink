@@ -37,6 +37,9 @@ autoblink-core-dbserver = { path = "../crates/autoblink-core-dbserver" }
 autoblink-core-midi = { path = "../crates/autoblink-core-midi" }
 autoblink-core-prolink = { path = "../crates/autoblink-core-prolink" }
 autoblink-core-ui = { path = "../crates/autoblink-core-ui" }
+# The OLED driver and the fonts. ssd1306 0.10 uses embedded-hal 1.0, like the I2C driver of esp-idf-hal.
+embedded-graphics = "0.8"
+ssd1306 = "0.10"
 
 [build-dependencies]
 embuild = "0.33.5"

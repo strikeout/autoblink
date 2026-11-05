@@ -8,9 +8,14 @@ use crate::DmxMode;
 
 pub const IDX_DMX_MODE: usize = 110;
 pub const IDX_BEAT_CHANNEL: usize = 111;
+pub const IDX_ROTATE: usize = 120;
+pub const IDX_BRIGHTNESS: usize = 121;
 
 /// The indices of the rows that `BoxConfig` has.
-pub const INDICES: [usize; 2] = [IDX_DMX_MODE, IDX_BEAT_CHANNEL];
+pub const INDICES: [usize; 4] = [IDX_DMX_MODE, IDX_BEAT_CHANNEL, IDX_ROTATE, IDX_BRIGHTNESS];
+
+/// One step of the brightness for the arrows of the page.
+const BRIGHTNESS_STEP: u8 = 16;
 
 /// The settings of the box hardware. NVS keeps them as JSON.
 ///
@@ -21,6 +26,10 @@ pub struct BoxConfig {
     pub dmx_mode: DmxMode,
     /// The channel of the beat flash, 1 to 512.
     pub beat_channel: u16,
+    /// Turns the OLED by 180°, for a display that is upside down on the front panel.
+    pub rotate: bool,
+    /// The contrast of the OLED, 1 to 255.
+    pub brightness: u8,
 }
 
 impl Default for BoxConfig {
@@ -28,6 +37,8 @@ impl Default for BoxConfig {
         Self {
             dmx_mode: DmxMode::Merge,
             beat_channel: 1,
+            rotate: false,
+            brightness: 128,
         }
     }
 }
@@ -36,11 +47,13 @@ impl BoxConfig {
     /// Puts each value back into its range. A value from NVS can come from an older firmware.
     pub fn sanitize(&mut self) {
         self.beat_channel = self.beat_channel.clamp(1, 512);
+        self.brightness = self.brightness.max(1);
     }
 
     /// Builds the rows of the settings message.
     pub fn items(&self) -> Vec<SettingItem> {
         let channel = self.beat_channel.to_string();
+        let brightness = self.brightness.to_string();
         vec![
             SettingItem {
                 idx: IDX_DMX_MODE,
@@ -62,6 +75,26 @@ impl BoxConfig {
                 step: true,
                 on: None,
             },
+            SettingItem {
+                idx: IDX_ROTATE,
+                label: "Display Rotate 180°",
+                section: Some("Display"),
+                kind: "toggle",
+                value: if self.rotate { "✓" } else { "✗" }.into(),
+                raw: None,
+                step: false,
+                on: None,
+            },
+            SettingItem {
+                idx: IDX_BRIGHTNESS,
+                label: "Display Brightness",
+                section: Some("Display"),
+                kind: "number",
+                value: brightness.clone(),
+                raw: Some(brightness),
+                step: true,
+                on: None,
+            },
         ]
     }
 
@@ -78,6 +111,15 @@ impl BoxConfig {
                     .ok_or_else(range)?;
                 Ok(())
             }
+            IDX_BRIGHTNESS => {
+                self.brightness = value
+                    .trim()
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|v| *v >= 1)
+                    .ok_or_else(range)?;
+                Ok(())
+            }
             _ => Err(format!("Setting {idx} does not take a value")),
         }
     }
@@ -91,6 +133,14 @@ impl BoxConfig {
                     .beat_channel
                     .saturating_add_signed(dir.into())
                     .clamp(1, 512)
+            }
+            IDX_ROTATE => self.rotate = !self.rotate,
+            IDX_BRIGHTNESS => {
+                self.brightness = if dir < 0 {
+                    self.brightness.saturating_sub(BRIGHTNESS_STEP).max(1)
+                } else {
+                    self.brightness.saturating_add(BRIGHTNESS_STEP)
+                }
             }
             _ => return Err(format!("Setting {idx} cannot cycle")),
         }
@@ -121,6 +171,20 @@ mod tests {
         cfg.cycle(IDX_DMX_MODE, 1).unwrap();
         assert_eq!(cfg.dmx_mode, DmxMode::Pass);
         assert_eq!(cfg.items()[0].value, "Pass");
+    }
+
+    #[test]
+    fn display_rows_flip_and_step() {
+        let mut cfg = BoxConfig::default();
+        cfg.cycle(IDX_ROTATE, 1).unwrap();
+        assert!(cfg.rotate);
+        cfg.set(IDX_BRIGHTNESS, "10").unwrap();
+        cfg.cycle(IDX_BRIGHTNESS, -1).unwrap();
+        assert_eq!(cfg.brightness, 1);
+        cfg.set(IDX_BRIGHTNESS, "250").unwrap();
+        cfg.cycle(IDX_BRIGHTNESS, 1).unwrap();
+        assert_eq!(cfg.brightness, 255);
+        assert!(cfg.set(IDX_BRIGHTNESS, "0").is_err());
     }
 
     #[test]

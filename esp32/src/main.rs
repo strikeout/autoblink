@@ -19,6 +19,7 @@ mod ota;
 mod prolink;
 mod settings;
 mod tracks;
+mod ui;
 mod webui;
 
 use std::ffi::CStr;
@@ -225,6 +226,9 @@ fn run() -> anyhow::Result<()> {
         state.clone(),
         settings.lock().unwrap().box_cfg.clone(),
     )?;
+
+    let box_cfg = settings.lock().unwrap().box_cfg.clone();
+    ui::start(p.i2c0, p.pins.gpio15, p.pins.gpio14, state.clone(), box_cfg)?;
 
     prolink::spawn(
         state.clone(),
