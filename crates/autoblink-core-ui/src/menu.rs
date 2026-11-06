@@ -68,7 +68,7 @@ pub enum Kind {
     Number { lo: i64, hi: i64, step: i64 },
     /// One of `n` values (0 to n - 1). Up and down wrap around.
     Choice { n: i64 },
-    /// A push starts the test of the MIDI output pin.
+    /// A push starts or stops the test of the MIDI output pin.
     PinTest,
     /// A push asks for a confirmation. The second push restarts the box.
     Restart,
@@ -111,7 +111,7 @@ pub const ITEMS: [Item; 8] = [
     },
     Item {
         label: "MIDI Pin Test",
-        idx: 0,
+        idx: IDX_PIN_TEST,
         kind: Kind::PinTest,
     },
     Item {
@@ -120,6 +120,10 @@ pub const ITEMS: [Item; 8] = [
         kind: Kind::Restart,
     },
 ];
+
+/// The index of the MIDI pin test in the menu. It is not a setting: the firmware gives 1 while
+/// the test runs.
+pub const IDX_PIN_TEST: usize = 200;
 
 /// A change that the firmware must do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,8 +135,8 @@ pub enum Action {
     },
     /// Turn the DMX scene player on or off.
     ToggleScenes,
-    /// Hold the MIDI output low for 1 s and release it for 1 s, five times. An LED in the place
-    /// of the MIDI receiver then blinks.
+    /// Start or stop the MIDI pin test. While it runs, the MIDI output is low for 1 s and high
+    /// for 1 s. An LED in the place of the MIDI receiver then blinks.
     MidiPinTest,
     Restart,
 }
@@ -246,7 +250,7 @@ impl Menu {
         for (i, item) in ITEMS.iter().enumerate().skip(first).take(shown) {
             let mark = if i == self.sel { ">" } else { " " };
             let value = match (i == self.sel, self.edit, item.kind) {
-                (_, _, Kind::PinTest | Kind::Restart) => String::new(),
+                (_, _, Kind::Restart) => String::new(),
                 (true, Some(v), _) => format!("[{}]", text(item.idx, v)),
                 _ => text(item.idx, current(item.idx)),
             };

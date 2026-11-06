@@ -38,8 +38,6 @@ use crate::State;
 
 /// The CCs go out at most this often.
 const CC_INTERVAL: Duration = Duration::from_millis(10);
-/// The pin test takes 5 periods of 1 s low and 1 s high.
-const PIN_TEST_MS: u64 = 10_000;
 
 /// The counters and the clock state for the "output" and "clock" parts of the status.
 #[derive(Default)]
@@ -97,7 +95,7 @@ pub fn start(
         let mut last_master = 0u8;
         let mut next_pulse: Option<u64> = None;
         let mut next_cc = Instant::now();
-        // The start of the pin test, and true while the output is inverted.
+        // The start of the pin test while it runs, and true while the output is inverted.
         let mut pin_test: Option<u64> = None;
         let mut inverted = false;
 
@@ -126,18 +124,20 @@ pub fn start(
 
             // The pin test inverts the output: the idle level is then low, and current flows
             // through the MIDI loop. An LED between DIN pin 4 (anode) and pin 5 shows it.
-            if state.midi_pin_test.swap(false, Ordering::Relaxed) {
-                log::info!("MIDI pin test: IO17 goes low for 1 s, 5 times");
-                pin_test = Some(state.now_ms());
+            // The test runs until the menu stops it.
+            match (state.midi_pin_test.load(Ordering::Relaxed), pin_test) {
+                (true, None) => {
+                    log::info!("MIDI pin test: IO17 goes low for 1 s, then high for 1 s");
+                    pin_test = Some(state.now_ms());
+                }
+                (false, Some(_)) => {
+                    log::info!("MIDI pin test: stopped");
+                    pin_test = None;
+                }
+                _ => {}
             }
-            let low = pin_test.is_some_and(|t0| {
-                let ms = state.now_ms().saturating_sub(t0);
-                ms < PIN_TEST_MS && (ms / 1000) % 2 == 0
-            });
-            if pin_test.is_some_and(|t0| state.now_ms().saturating_sub(t0) >= PIN_TEST_MS) {
-                pin_test = None;
-                log::info!("MIDI pin test: done");
-            }
+            let low =
+                pin_test.is_some_and(|t0| (state.now_ms().saturating_sub(t0) / 1000) % 2 == 0);
             if low != inverted {
                 inverted = low;
                 let mask = if low {

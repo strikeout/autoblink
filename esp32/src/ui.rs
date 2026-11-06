@@ -17,7 +17,7 @@ use autoblink_core_midi::MidiConfig;
 use autoblink_core_prolink::Deck;
 use autoblink_core_ui::config::{IDX_BEAT_CHANNEL, IDX_BRIGHTNESS, IDX_DMX_MODE, IDX_ROTATE};
 use autoblink_core_ui::joystick;
-use autoblink_core_ui::menu::{Action, Menu, Page};
+use autoblink_core_ui::menu::{Action, Menu, Page, IDX_PIN_TEST};
 use autoblink_core_ui::screen::{
     decks_lines, dmx_lines, event_name, lines, network_lines, scenes_lines, track_lines, DeckRow,
     DmxInfo, Lines, Snapshot, TrackInfo,
@@ -111,7 +111,7 @@ impl Values {
                 .get(v as usize)
                 .map_or("?", |m| m.label())
                 .into(),
-            IDX_ROTATE => if v != 0 { "On" } else { "Off" }.into(),
+            IDX_ROTATE | IDX_PIN_TEST => if v != 0 { "On" } else { "Off" }.into(),
             _ => v.to_string(),
         }
     }
@@ -354,7 +354,10 @@ impl Ui<'_> {
             }
             Page::Settings => menu.lines(
                 |idx, v| self.values.text(idx, v),
-                |idx| self.values.number(idx),
+                |idx| match idx {
+                    IDX_PIN_TEST => self.state.midi_pin_test.load(Ordering::Relaxed).into(),
+                    _ => self.values.number(idx),
+                },
             ),
         };
         draw_menu(display, &text);
@@ -373,8 +376,7 @@ impl Ui<'_> {
                 self.settings.lock().unwrap().set(idx, &value.to_string())
             }
             Some(Action::MidiPinTest) => {
-                log::info!("MIDI pin test from the menu of the OLED");
-                self.state.midi_pin_test.store(true, Ordering::Relaxed);
+                self.state.midi_pin_test.fetch_xor(true, Ordering::Relaxed);
                 return;
             }
             Some(Action::ToggleScenes) => {
