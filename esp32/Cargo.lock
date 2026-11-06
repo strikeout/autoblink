@@ -58,11 +58,11 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "autoblink-core-dbserver"
-version = "1.29.0"
+version = "1.30.0"
 
 [[package]]
 name = "autoblink-core-dmx"
-version = "1.29.0"
+version = "1.30.0"
 dependencies = [
  "autoblink-core-midi",
  "serde",
@@ -71,30 +71,41 @@ dependencies = [
 
 [[package]]
 name = "autoblink-core-midi"
-version = "1.29.0"
+version = "1.30.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "autoblink-core-prolink"
-version = "1.29.0"
+version = "1.30.0"
+
+[[package]]
+name = "autoblink-core-ui"
+version = "1.30.0"
+dependencies = [
+ "autoblink-core-midi",
+ "serde",
+]
 
 [[package]]
 name = "autoblink-esp32"
-version = "1.29.0"
+version = "1.30.0"
 dependencies = [
  "anyhow",
  "autoblink-core-dbserver",
  "autoblink-core-dmx",
  "autoblink-core-midi",
  "autoblink-core-prolink",
+ "autoblink-core-ui",
+ "embedded-graphics",
  "embuild",
  "esp-idf-svc",
  "flate2",
  "log",
  "serde",
  "serde_json",
+ "ssd1306",
 ]
 
 [[package]]
@@ -102,6 +113,12 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "az"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b7e4c2464d97fe331d41de9d5db0def0a96f4d823b8b32a2efd503578988973"
 
 [[package]]
 name = "bindgen"
@@ -163,6 +180,12 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
+name = "byte-slice-cast"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7575182f7272186991736b70173b0ea045398f984bf5ebbb3804736ce1330c9d"
 
 [[package]]
 name = "byteorder"
@@ -412,6 +435,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "display-interface"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ba2aab1ef3793e6f7804162debb5ac5edb93b3d650fbcc5aeb72fcd0e6c03a0"
+
+[[package]]
+name = "display-interface-i2c"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d964fa85bbbb5a6ecd06e58699407ac5dc3e3ad72dac0ab7e6b0d00a1cd262d"
+dependencies = [
+ "display-interface",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+]
+
+[[package]]
+name = "display-interface-spi"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86b9ec30048b1955da2038fcc3c017f419ab21bb0001879d16c0a3749dc6b7a"
+dependencies = [
+ "byte-slice-cast",
+ "display-interface",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -444,6 +496,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9d2e857f87ac832df68fa498d18ddc679175cf3d2e4aa893988e5601baf9438"
 dependencies = [
  "nb 1.1.0",
+]
+
+[[package]]
+name = "embedded-graphics"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e8da660bb0c829b34a56a965490597f82a55e767b91f9543be80ce8ccb416fe"
+dependencies = [
+ "az",
+ "byteorder",
+ "embedded-graphics-core",
+ "float-cmp",
+ "micromath",
+]
+
+[[package]]
+name = "embedded-graphics-core"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95743bef3ff70fcba3930246c4e6872882bbea0dcc6da2ca860112e0cd4bd09f"
+dependencies = [
+ "az",
+ "byteorder",
 ]
 
 [[package]]
@@ -678,6 +753,15 @@ dependencies = [
  "crc32fast",
  "miniz_oxide",
  "zlib-rs",
+]
+
+[[package]]
+name = "float-cmp"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -955,10 +1039,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "maybe-async-cfg"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1e083394889336bc66a4eaf1011ffbfa74893e910f902a9f271fa624c61e1b2"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro2",
+ "pulldown-cmark",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "micromath"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
 
 [[package]]
 name = "minimal-lexical"
@@ -1085,12 +1188,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-error"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
+dependencies = [
+ "proc-macro-error-attr",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "version_check",
+]
+
+[[package]]
+name = "proc-macro-error-attr"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "version_check",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "679341d22c78c6c649893cbd6c3278dcbe9fc4faa62fea3a9296ae2b50c14625"
+dependencies = [
+ "bitflags 2.13.2",
+ "memchr",
+ "unicase",
 ]
 
 [[package]]
@@ -1283,6 +1421,20 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "ssd1306"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ea6aac2d078bbc71d9b8ac3f657335311f3b6625e9a1a96ccc29f5abfa77c56"
+dependencies = [
+ "display-interface",
+ "display-interface-i2c",
+ "display-interface-spi",
+ "embedded-graphics-core",
+ "embedded-hal 1.0.0",
+ "maybe-async-cfg",
+]
 
 [[package]]
 name = "stable_deref_trait"
@@ -1498,6 +1650,12 @@ checksum = "e1b88fcfe09e89d3866a5c11019378088af2d24c3fbd4f0543f96b479ec90697"
 dependencies = [
  "version_check",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-ident"

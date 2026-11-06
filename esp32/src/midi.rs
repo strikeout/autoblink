@@ -28,7 +28,7 @@ use autoblink_core_midi::scenes::{SceneInput, ScenePhrase, SceneStatus, Scenes, 
 use autoblink_core_midi::{Clock, Mapper, MidiConfig, Out, Phrase, Smoother, Snapshot, CLOCK};
 use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::delay::TickType;
-use esp_idf_svc::hal::gpio::{Gpio17, Gpio35};
+use esp_idf_svc::hal::gpio::{Gpio17, Gpio2};
 use esp_idf_svc::hal::task::queue::Queue;
 use esp_idf_svc::hal::uart::{config, UartDriver, UART2};
 use esp_idf_svc::hal::units::Hertz;
@@ -68,18 +68,18 @@ pub struct Beat {
 /// Starts the MIDI thread. Returns the queue for the master beats.
 ///
 /// `rx` is not used yet. The UART driver of ESP-IDF 5.5 does not install without a receive
-/// buffer, and `UartTxDriver` asks for none. IO35 is input-only, so it can be a MIDI input later.
+/// buffer, and `UartTxDriver` asks for none. IO2 has no wire. The joystick uses IO35.
 pub fn start(
     uart: UART2<'static>,
     tx: Gpio17<'static>,
-    rx: Gpio35<'static>,
+    rx: Gpio2<'static>,
     state: Arc<State>,
     cfg: Arc<Mutex<MidiConfig>>,
     scenes_cfg: Arc<Mutex<ScenesConfig>>,
     #[cfg(feature = "dmx")] dmx: Arc<Queue<DmxMsg>>,
 ) -> anyhow::Result<Arc<Queue<Beat>>> {
     let uart_cfg = config::Config::new().baudrate(Hertz(31_250));
-    let uart = UartDriver::new(uart, tx, rx, None::<Gpio35>, None::<Gpio17>, &uart_cfg)?;
+    let uart = UartDriver::new(uart, tx, rx, None::<Gpio2>, None::<Gpio17>, &uart_cfg)?;
     let beats = Arc::new(Queue::<Beat>::new(16));
     let beat_rx = beats.clone();
 

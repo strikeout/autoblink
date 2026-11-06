@@ -25,6 +25,7 @@ mod settings;
 #[cfg(feature = "dmx")]
 mod show;
 mod tracks;
+mod ui;
 mod webui;
 
 use std::ffi::CStr;
@@ -175,7 +176,14 @@ fn run() -> anyhow::Result<()> {
     });
     // The maintenance start of a firmware update also sends the idle look.
     #[cfg(feature = "dmx")]
-    let dmx_q = dmx::start(p.uart1, p.pins.gpio4, p.pins.gpio36, state.clone(), show)?;
+    let dmx_q = dmx::start(
+        p.uart1,
+        p.pins.gpio4,
+        p.pins.gpio36,
+        state.clone(),
+        show,
+        settings.box_cfg.clone(),
+    )?;
 
     let ssid = settings.ssid();
     let join = settings.join();
@@ -234,7 +242,7 @@ fn run() -> anyhow::Result<()> {
     let midi_beats = midi::start(
         p.uart2,
         p.pins.gpio17,
-        p.pins.gpio35,
+        p.pins.gpio2,
         state.clone(),
         settings.midi.clone(),
         settings.scenes.clone(),
@@ -252,6 +260,20 @@ fn run() -> anyhow::Result<()> {
     let track_changes = tracks::start(state.clone())?;
 
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
+
+    ui::start(
+        p.i2c0,
+        p.pins.gpio15,
+        p.pins.gpio14,
+        ui::Joystick {
+            adc: p.adc1,
+            x: p.pins.gpio39,
+            y: p.pins.gpio35,
+            sw: p.pins.gpio5,
+        },
+        state.clone(),
+        settings.clone(),
+    )?;
 
     prolink::spawn(
         state.clone(),

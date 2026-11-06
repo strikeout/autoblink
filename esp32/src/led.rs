@@ -92,7 +92,7 @@ pub fn start(
 
 /// Returns the number of blinks for the first check that fails. Returns `None` when the box is
 /// ready.
-fn blinks(state: &State) -> Option<u64> {
+pub fn blinks(state: &State) -> Option<u64> {
     if state.link.lock().unwrap().is_none() {
         return Some(1);
     }
