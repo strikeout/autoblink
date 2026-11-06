@@ -16,8 +16,6 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 
 /// The host index of "Device Number": the number that the virtual CDJ asks for.
 const IDX_DEVICE: usize = 2;
-/// The host index of "Note Channel".
-const IDX_NOTE_CHANNEL: usize = 9;
 const DEFAULT_DEVICE: u8 = 7;
 const IDX_SSID: usize = 100;
 const IDX_PASSWORD: usize = 101;
@@ -230,16 +228,6 @@ impl Settings {
             return self.change_box(|cfg| cfg.cycle(idx, dir));
         }
         self.change_midi(|cfg| midi_settings::cycle(cfg, idx, dir))
-    }
-
-    /// Steps a number or a switch by one, or flips a toggle. The menu of the OLED uses it.
-    /// "Note Channel" (index 9) has no `cycle` on the page, so this function steps it here.
-    pub fn step(&mut self, idx: usize, dir: i8) -> Result<(), String> {
-        if idx == IDX_NOTE_CHANNEL {
-            let ch = i16::from(self.midi.lock().unwrap().note_channel) + 1 + i16::from(dir);
-            return self.set(idx, &ch.clamp(1, 16).to_string());
-        }
-        self.cycle(idx, dir)
     }
 
     /// Changes the box settings in RAM. `save` writes them to NVS later, like the MIDI settings.

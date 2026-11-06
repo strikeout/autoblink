@@ -252,6 +252,15 @@ impl ScenesConfig {
             .find(|r| r.event == event && !r.presets.is_empty())
     }
 
+    /// Returns the preset of a note: the 0-based index, or `EXTRA_BASE` and up for an extra note.
+    pub fn preset_of(&self, note: u8) -> Option<u8> {
+        if (self.first_note..self.first_note.saturating_add(self.count)).contains(&note) {
+            return Some(note - self.first_note);
+        }
+        let k = self.extra.iter().position(|x| x.note == note)?;
+        Some(EXTRA_BASE + k as u8)
+    }
+
     /// Returns the note of a 0-based preset index, or of an extra note.
     pub fn note(&self, preset: u8) -> u8 {
         match preset.checked_sub(EXTRA_BASE) {
@@ -308,6 +317,9 @@ pub struct SceneStatus {
     pub events: [u8; EVENT_COUNT],
     /// The position of the preset that each row sent last, in the order of `Event::ALL`.
     pub last: [Option<u8>; EVENT_COUNT],
+    /// The preset of the newest flash that is on: 0-based, or `EXTRA_BASE` and up for an extra
+    /// note.
+    pub flash: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -522,11 +534,16 @@ impl Scenes {
             .phrase
             .and_then(|p| p.code)
             .and_then(Event::bucket);
+        let flash = self
+            .flashes
+            .last()
+            .and_then(|&(_, _, note)| cfg.preset_of(note));
         let Some((e, row)) = self.current.and_then(|e| Some((e, cfg.row(e)?))) else {
             return SceneStatus {
                 phrase,
                 events: self.events,
                 last: self.last,
+                flash,
                 ..SceneStatus::default()
             };
         };
@@ -545,6 +562,7 @@ impl Scenes {
             phrase,
             events: self.events,
             last: self.last,
+            flash,
         }
     }
 
@@ -789,6 +807,23 @@ mod tests {
             }),
             bass_cut: None,
         }
+    }
+
+    #[test]
+    fn a_note_gives_its_preset() {
+        let cfg = ScenesConfig {
+            first_note: 36,
+            count: 4,
+            extra: vec![Extra {
+                note: 90,
+                label: String::new(),
+            }],
+            ..ScenesConfig::default()
+        };
+        assert_eq!(cfg.preset_of(36), Some(0));
+        assert_eq!(cfg.preset_of(39), Some(3));
+        assert_eq!(cfg.preset_of(40), None);
+        assert_eq!(cfg.preset_of(90), Some(EXTRA_BASE));
     }
 
     #[test]

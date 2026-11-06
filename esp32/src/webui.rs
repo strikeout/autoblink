@@ -102,6 +102,13 @@ pub fn settings_changed() {
     SETTINGS_CHANGED.store(true, Ordering::Relaxed);
 }
 
+static SCENES_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Makes the `web-status` thread send the scenes message to the active page.
+pub fn scenes_changed() {
+    SCENES_CHANGED.store(true, Ordering::Relaxed);
+}
+
 /// Starts the web server and the thread that sends the beats and the status to the page.
 ///
 /// Returns the server and the sender for the beats: (device number, beat in the bar). Use
@@ -295,6 +302,10 @@ pub fn start(
             }
             if SETTINGS_CHANGED.swap(false, Ordering::Relaxed) && active.is_some() {
                 let msg = push_settings.lock().unwrap().message();
+                active.send(msg.as_bytes());
+            }
+            if SCENES_CHANGED.swap(false, Ordering::Relaxed) && active.is_some() {
+                let msg = push_settings.lock().unwrap().scenes_message();
                 active.send(msg.as_bytes());
             }
             if Instant::now() >= next_status {

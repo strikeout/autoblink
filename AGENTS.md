@@ -66,10 +66,10 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (DMX OUT and DMX IN, feature `dmx`), `ui.rs` (OLED, joystick menu), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (DMX OUT and DMX IN, feature `dmx`), `ui.rs` (OLED pages, joystick), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS), `logring.rs` (log that stays through a restart, core dump report) |
 | `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable. The host uses `scenes.rs` too. | `clock.rs`, `mapper.rs`, `scenes.rs` (DMX scenes), `settings.rs` (host setting indices) |
-| `crates/autoblink-core-ui` | Logic of the box hardware of the firmware, host-testable | `dmx.rs` (DMX modes, HTP merge), `config.rs` (settings 110 to 121), `screen.rs` (OLED text), `joystick.rs` (input state machine), `menu.rs` (OLED menu) |
+| `crates/autoblink-core-ui` | Logic of the box hardware of the firmware, host-testable | `dmx.rs` (DMX modes, HTP merge), `config.rs` (settings 110 to 121), `screen.rs` (OLED text), `joystick.rs` (input state machine), `menu.rs` (OLED pages, settings menu) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
 ### Host library exports (`host/src/lib.rs`)
@@ -194,11 +194,15 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - "DMX Mode" (110) is Off, Box only, Merge (HTP, the default) or Pass. Without a DMX IN signal, Merge and Pass send the effect of the box.
 - The status field `dmx` has `mode`, `in_fps` and `signal`. The firmware without the feature `dmx` sends `null`.
 - The `ui` thread always starts. It has priority 3 on core 0. It looks for the OLED at address 0x3C and 0x3D every 5 s. The first failure logs the I2C addresses that answer. When the OLED answers, the thread draws 5 frames each second. After a write error, it initializes the OLED again before each frame, so that a display that lost its power comes back.
-- The joystick is optional. Without it, the status screen works, and the pull-up of IO5 keeps the menu closed.
-- The OLED fonts are ASCII only. The menu labels and values must not use other characters.
-- When no deck plays for 10 minutes, the OLED goes to the minimum brightness. A push of the joystick sets it back.
-- ESP32 errata 3.11: ADC1 can pull IO36 and IO39 low for about 80 ns. IO36 is DMX IN. The `ui` thread therefore reads the joystick axes only for the calibration and while the menu is open. The switch (IO5) is a digital input.
-- A change in the menu goes through `Settings::set` or `Settings::step`, like a page command. Then `webui::settings_changed` sets a flag, and the `web-status` thread sends the settings message to the active page. A flag and not a channel: the `ui` thread has a lower priority than `web-status`.
+- The joystick is optional. Without it, the OLED shows the Main page.
+- The OLED has seven pages: Main, Decks, Track, DMX, Scenes, Network and Settings (`menu::Page`). Left and right flip the pages. Each tilt flips one page.
+- On the Settings page, up and down move the cursor, and a push starts an edit. In an edit, up and down change the shown value. A push applies it, and left or right cancel it.
+- On the Scenes page, a push turns the DMX scene player on or off. The page shows the phrase, the row that is on, its preset, the next preset and the preset of a flash. A flash can be shorter than one frame, so the `ui` thread reads `SceneStatus::flash` at each tick and shows it for 300 ms. The firmware sets the scenes like `scenes_set` and sends the scenes message to the page (`webui::scenes_changed`).
+- After 15 s without input, an edit stops and the Settings page goes back to Main. The other pages stay.
+- The OLED fonts are ASCII only. The labels and values must not use other characters. `screen::ascii` replaces the other characters of a track title with "?".
+- When no deck plays for 10 minutes, the OLED goes to the minimum brightness. An input of the joystick sets it back.
+- ESP32 errata 3.11: a power-on of ADC1 pulls IO36 and IO39 low for about 80 ns. IO36 is DMX IN. The oneshot driver of ESP-IDF 5.5 keeps ADC1 on while the unit exists (`adc_oneshot.c`). Thus the `ui` thread reads the axes all the time. The switch (IO5) is a digital input.
+- A change in the menu goes through `Settings::set`, like a page command. The menu sets DMX Mode (110) by its index in `DmxMode::ALL` and Rotate (120) with 0 or 1. Then `webui::settings_changed` sets a flag, and the `web-status` thread sends the settings message to the active page. A flag and not a channel: the `ui` thread has a lower priority than `web-status`.
 
 ### DMX scenes
 

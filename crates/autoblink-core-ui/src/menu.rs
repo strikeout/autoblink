@@ -1,29 +1,74 @@
-//! The small menu of the OLED. The page keeps all the settings. The menu has only the settings
-//! that a user changes at the booth.
+//! The pages of the OLED and the settings menu. The page keeps all the settings. The menu has
+//! only the settings that a user changes at the booth.
+//!
+//! Left and right flip the pages. On the Settings page, up and down move the cursor, and a push
+//! starts an edit. In an edit, up and down change the shown value, a push applies it, and left or
+//! right cancel it. A push of the stick never changes a setting by accident.
 //!
 //! The menu gives an `Action` for each change. The firmware sends the action through the same
 //! settings functions as the page, so the side effects stay the same.
 
 use crate::joystick::Input;
+use crate::screen::{pair, COLS};
 
-/// The characters in one line (see `screen::COLS`).
-const COLS: usize = crate::screen::COLS;
 /// The lines of the display (6 lines of 10 pixels).
-const ROWS: usize = 6;
-/// Without an input for this time, the menu closes.
+pub const ROWS: usize = 6;
+/// Without an input for this time, an edit stops and the Settings page goes back to Main.
 const TIMEOUT_MS: u64 = 15_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Page {
+    /// The status screen with the large BPM.
+    #[default]
+    Main,
+    Decks,
+    Track,
+    Dmx,
+    /// The DMX scene player: a push turns it on or off.
+    Scenes,
+    Network,
+    Settings,
+}
+
+impl Page {
+    /// The pages in the order of the right flips.
+    pub const ALL: [Page; 7] = [
+        Page::Main,
+        Page::Decks,
+        Page::Track,
+        Page::Dmx,
+        Page::Scenes,
+        Page::Network,
+        Page::Settings,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Page::Main => "Main",
+            Page::Decks => "Decks",
+            Page::Track => "Track",
+            Page::Dmx => "DMX",
+            Page::Scenes => "Scenes",
+            Page::Network => "Network",
+            Page::Settings => "Settings",
+        }
+    }
+
+    /// The header line of the page: "< Decks         2/6 >". The arrows show the flips.
+    pub fn header(self) -> String {
+        let n = Page::ALL.iter().position(|&p| p == self).unwrap_or(0) + 1;
+        let count = format!("{n}/{} >", Page::ALL.len());
+        format!("< {}", pair(self.title(), &count, COLS - 2))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// Left and right step the value at once.
-    Step,
-    /// Left and right change a shown value. Select applies it.
-    Pending { lo: i64, hi: i64 },
-    /// Select, left and right flip the value.
-    Flip,
-    /// Select shows the network page.
-    Network,
-    /// Select asks for a confirmation. The second select restarts the box.
+    /// A number from `lo` to `hi`. Up and down step it by `step`.
+    Number { lo: i64, hi: i64, step: i64 },
+    /// One of `n` values (0 to n - 1). Up and down wrap around.
+    Choice { n: i64 },
+    /// A push asks for a confirmation. The second push restarts the box.
     Restart,
 }
 
@@ -35,38 +80,32 @@ pub struct Item {
     pub kind: Kind,
 }
 
-/// The items of the menu. The device number applies on select, because each change writes NVS
-/// and makes the virtual CDJ join the network again.
+const fn number(label: &'static str, idx: usize, lo: i64, hi: i64, step: i64) -> Item {
+    Item {
+        label,
+        idx,
+        kind: Kind::Number { lo, hi, step },
+    }
+}
+
+/// The items of the Settings page. Each value applies only on a push, because a change of the
+/// device number makes the virtual CDJ join the network again.
 pub const ITEMS: [Item; 7] = [
-    Item {
-        label: "Device Number",
-        idx: 2,
-        kind: Kind::Pending { lo: 1, hi: 15 },
-    },
-    Item {
-        label: "Note Channel",
-        idx: 9,
-        kind: Kind::Step,
-    },
+    number("Device Number", 2, 1, 15, 1),
+    number("Note Channel", 9, 1, 16, 1),
     Item {
         label: "DMX Mode",
         idx: 110,
-        kind: Kind::Step,
+        kind: Kind::Choice { n: 4 },
     },
-    Item {
-        label: "DMX Beat Ch",
-        idx: 111,
-        kind: Kind::Step,
-    },
+    // ponytail: the beat channel steps by 1 (150 ms per step while held). Add an acceleration
+    // if the users set high channels from the box.
+    number("DMX Beat Ch", 111, 1, 512, 1),
+    number("Brightness", 121, 1, 255, 16),
     Item {
         label: "Rotate 180",
         idx: 120,
-        kind: Kind::Flip,
-    },
-    Item {
-        label: "Network",
-        idx: 0,
-        kind: Kind::Network,
+        kind: Kind::Choice { n: 2 },
     },
     Item {
         label: "Restart",
@@ -78,34 +117,23 @@ pub const ITEMS: [Item; 7] = [
 /// A change that the firmware must do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Step setting `idx` up (1) or down (-1), or flip it.
-    Step {
-        idx: usize,
-        dir: i8,
-    },
     /// Set setting `idx` to `value`.
     Set {
         idx: usize,
         value: i64,
     },
+    /// Turn the DMX scene player on or off.
+    ToggleScenes,
     Restart,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum View {
-    /// The status screen. The menu is closed.
-    #[default]
-    Status,
-    List,
-    Network,
-    Confirm,
 }
 
 #[derive(Debug, Default)]
 pub struct Menu {
-    view: View,
+    page: usize,
     sel: usize,
-    pending: Option<i64>,
+    /// The shown value of the edit of `ITEMS[sel]`.
+    edit: Option<i64>,
+    confirm: bool,
     last_ms: u64,
 }
 
@@ -114,23 +142,24 @@ impl Menu {
         Self::default()
     }
 
-    pub fn view(&self) -> View {
-        self.view
+    pub fn page(&self) -> Page {
+        Page::ALL[self.page]
     }
 
-    /// Closes the menu when it had no input for `TIMEOUT_MS`.
+    /// Stops an edit or a confirmation, and leaves the Settings page, after `TIMEOUT_MS` without
+    /// an input. The other pages stay, so that a user can keep the Decks page open.
     pub fn tick(&mut self, now_ms: u64) {
-        if self.view != View::Status && now_ms.saturating_sub(self.last_ms) >= TIMEOUT_MS {
-            self.close();
+        if now_ms.saturating_sub(self.last_ms) < TIMEOUT_MS {
+            return;
+        }
+        self.edit = None;
+        self.confirm = false;
+        if self.page() == Page::Settings {
+            self.page = 0;
         }
     }
 
-    fn close(&mut self) {
-        self.view = View::Status;
-        self.pending = None;
-    }
-
-    /// Takes one input. `current` gives the present value of a `Pending` setting.
+    /// Takes one input. `current` gives the present value of a setting.
     pub fn input(
         &mut self,
         input: Input,
@@ -139,104 +168,81 @@ impl Menu {
     ) -> Option<Action> {
         self.last_ms = now_ms;
         let item = ITEMS[self.sel];
-        match (self.view, input) {
-            (View::Status, Input::Select) => {
-                self.view = View::List;
-                None
-            }
-            (View::Status, _) => None,
-            (View::Network, _) => {
-                self.view = View::List;
-                None
-            }
-            (View::Confirm, Input::Select) => {
-                self.close();
-                Some(Action::Restart)
-            }
-            (View::Confirm, _) => {
-                self.view = View::List;
-                None
-            }
-            (View::List, Input::Back) => {
-                self.close();
-                None
-            }
-            (View::List, Input::Up | Input::Down) => {
-                let n = ITEMS.len();
-                self.sel = if input == Input::Up {
-                    (self.sel + n - 1) % n
-                } else {
-                    (self.sel + 1) % n
-                };
-                self.pending = None;
-                None
-            }
-            (View::List, Input::Left | Input::Right) => {
-                let dir: i8 = if input == Input::Left { -1 } else { 1 };
-                match item.kind {
-                    Kind::Step | Kind::Flip => Some(Action::Step { idx: item.idx, dir }),
-                    Kind::Pending { lo, hi } => {
-                        let v = self.pending.unwrap_or_else(|| current(item.idx));
-                        self.pending = Some((v + i64::from(dir)).clamp(lo, hi));
-                        None
-                    }
-                    Kind::Network | Kind::Restart => None,
+        if self.confirm {
+            self.confirm = false;
+            return (input == Input::Select).then_some(Action::Restart);
+        }
+        if let Some(v) = self.edit {
+            match input {
+                Input::Select => {
+                    self.edit = None;
+                    return Some(Action::Set {
+                        idx: item.idx,
+                        value: v,
+                    });
+                }
+                Input::Left | Input::Right => self.edit = None,
+                Input::Up | Input::Down => {
+                    let up = input == Input::Up;
+                    self.edit = Some(match item.kind {
+                        Kind::Number { lo, hi, step } => {
+                            (if up { v + step } else { v - step }).clamp(lo, hi)
+                        }
+                        Kind::Choice { n } => (v + if up { 1 } else { n - 1 }) % n,
+                        Kind::Restart => v,
+                    });
                 }
             }
-            (View::List, Input::Select) => match item.kind {
-                Kind::Flip => Some(Action::Step {
-                    idx: item.idx,
-                    dir: 1,
-                }),
-                Kind::Pending { .. } => self.pending.take().map(|value| Action::Set {
-                    idx: item.idx,
-                    value,
-                }),
-                Kind::Network => {
-                    self.view = View::Network;
-                    None
-                }
-                Kind::Restart => {
-                    self.view = View::Confirm;
-                    None
-                }
-                Kind::Step => None,
+            return None;
+        }
+        let n = Page::ALL.len();
+        match input {
+            Input::Left => self.page = (self.page + n - 1) % n,
+            Input::Right => self.page = (self.page + 1) % n,
+            Input::Select if self.page() == Page::Scenes => return Some(Action::ToggleScenes),
+            _ if self.page() != Page::Settings => {}
+            Input::Up => self.sel = (self.sel + ITEMS.len() - 1) % ITEMS.len(),
+            Input::Down => self.sel = (self.sel + 1) % ITEMS.len(),
+            Input::Select => match item.kind {
+                Kind::Restart => self.confirm = true,
+                _ => self.edit = Some(current(item.idx)),
             },
         }
+        None
     }
 
-    /// Makes the lines of the open menu. `value` gives the shown value of a setting. `network`
-    /// has the lines of the network page.
-    pub fn lines(&self, value: impl Fn(usize) -> String, network: &[String]) -> Vec<String> {
-        let cut = |t: String| t.chars().take(COLS).collect::<String>();
-        match self.view {
-            View::Status => Vec::new(),
-            View::Network => std::iter::once("Network".to_string())
-                .chain(network.iter().cloned())
-                .take(ROWS)
-                .map(cut)
-                .collect(),
-            View::Confirm => ["Restart the box?", "", "Push: restart", "Hold: cancel"]
-                .map(String::from)
-                .to_vec(),
-            View::List => {
-                let shown = ROWS - 1;
-                let first = self.sel.saturating_sub(shown - 1).min(ITEMS.len() - shown);
-                let mut out = vec!["Menu   hold: back".to_string()];
-                for (i, item) in ITEMS.iter().enumerate().skip(first).take(shown) {
-                    let mark = if i == self.sel { '>' } else { ' ' };
-                    let v = match (i == self.sel, self.pending, item.idx) {
-                        (true, Some(p), _) => format!("{p}*"),
-                        (_, _, 0) => String::new(),
-                        _ => value(item.idx),
-                    };
-                    let width = COLS.saturating_sub(1 + item.label.len());
-                    let line = format!("{mark}{}{v:>width$}", item.label);
-                    out.push(cut(line.trim_end().to_string()));
-                }
-                out
-            }
+    /// Makes the lines of the Settings page. `text` gives the shown text of a value of a setting.
+    pub fn lines(
+        &self,
+        text: impl Fn(usize, i64) -> String,
+        current: impl Fn(usize) -> i64,
+    ) -> Vec<String> {
+        let mut out = vec![Page::Settings.header()];
+        if self.confirm {
+            out.extend(
+                [
+                    "Restart the box?",
+                    "",
+                    "Push: restart",
+                    "Left/right: cancel",
+                ]
+                .map(String::from),
+            );
+            return out;
         }
+        let shown = ROWS - 1;
+        let first = self.sel.saturating_sub(shown - 1).min(ITEMS.len() - shown);
+        for (i, item) in ITEMS.iter().enumerate().skip(first).take(shown) {
+            let mark = if i == self.sel { ">" } else { " " };
+            let value = match (i == self.sel, self.edit, item.kind) {
+                (_, _, Kind::Restart) => String::new(),
+                (true, Some(v), _) => format!("[{}]", text(item.idx, v)),
+                _ => text(item.idx, current(item.idx)),
+            };
+            let line = format!("{mark}{}", pair(item.label, &value, COLS - 1));
+            out.push(line.trim_end().into());
+        }
+        out
     }
 }
 
@@ -244,77 +250,137 @@ impl Menu {
 mod tests {
     use super::*;
 
-    fn open() -> Menu {
+    fn text(_: usize, v: i64) -> String {
+        v.to_string()
+    }
+
+    /// A menu on the Settings page.
+    fn settings() -> Menu {
         let mut m = Menu::new();
-        assert_eq!(m.input(Input::Select, 0, |_| 7), None);
-        assert_eq!(m.view(), View::List);
+        assert_eq!(m.input(Input::Left, 0, |_| 7), None);
+        assert_eq!(m.page(), Page::Settings);
         m
     }
 
     #[test]
-    fn the_device_number_applies_on_select() {
-        let mut m = open();
-        assert_eq!(m.input(Input::Right, 1, |_| 7), None);
-        assert_eq!(m.input(Input::Right, 2, |_| 7), None);
-        let lines = m.lines(|_| "7".into(), &[]);
+    fn left_and_right_flip_the_pages_in_a_ring() {
+        let mut m = Menu::new();
+        for p in &Page::ALL[1..] {
+            m.input(Input::Right, 0, |_| 0);
+            assert_eq!(m.page(), *p);
+        }
+        m.input(Input::Right, 0, |_| 0);
+        assert_eq!(m.page(), Page::Main);
+        // Up, down and a push do nothing on an info page.
+        m.input(Input::Right, 0, |_| 0);
+        for i in [Input::Up, Input::Down, Input::Select] {
+            assert_eq!(m.input(i, 0, |_| 0), None);
+            assert_eq!(m.page(), Page::Decks);
+        }
+    }
+
+    #[test]
+    fn a_push_on_the_scenes_page_toggles_the_player() {
+        let mut m = Menu::new();
+        for _ in 0..4 {
+            m.input(Input::Right, 0, |_| 0);
+        }
+        assert_eq!(m.page(), Page::Scenes);
+        assert_eq!(m.input(Input::Select, 1, |_| 0), Some(Action::ToggleScenes));
+        assert_eq!(m.page(), Page::Scenes);
+    }
+
+    #[test]
+    fn a_value_applies_only_on_the_push() {
+        let mut m = settings();
+        // The cursor starts on Device Number.
+        assert_eq!(m.input(Input::Select, 1, |_| 7), None);
+        assert_eq!(m.input(Input::Up, 2, |_| 7), None);
+        assert_eq!(m.input(Input::Up, 3, |_| 7), None);
+        let lines = m.lines(text, |_| 7);
         assert!(lines[1].starts_with(">Device Number"));
-        assert!(lines[1].ends_with("9*"));
+        assert!(lines[1].ends_with("[9]"));
         assert_eq!(
-            m.input(Input::Select, 3, |_| 7),
+            m.input(Input::Select, 4, |_| 7),
             Some(Action::Set { idx: 2, value: 9 })
         );
         // The value stays in its range.
-        for t in 0..20 {
-            m.input(Input::Right, 10 + t, |_| 14);
+        m.input(Input::Select, 5, |_| 14);
+        for t in 0..5 {
+            m.input(Input::Up, 6 + t, |_| 14);
         }
         assert_eq!(
-            m.input(Input::Select, 40, |_| 14),
+            m.input(Input::Select, 20, |_| 14),
             Some(Action::Set { idx: 2, value: 15 })
         );
     }
 
     #[test]
-    fn a_step_item_changes_at_once() {
-        let mut m = open();
+    fn left_or_right_cancels_an_edit_and_stays_on_the_page() {
+        let mut m = settings();
         m.input(Input::Down, 1, |_| 0);
+        m.input(Input::Down, 2, |_| 0);
+        m.input(Input::Select, 3, |_| 2);
+        m.input(Input::Down, 4, |_| 2);
+        assert!(m.lines(text, |_| 2)[3].ends_with("[1]"));
+        assert_eq!(m.input(Input::Left, 5, |_| 2), None);
+        assert_eq!(m.page(), Page::Settings);
+        assert!(m.lines(text, |_| 2)[3].ends_with('2'));
+    }
+
+    #[test]
+    fn a_choice_wraps_around() {
+        let mut m = settings();
+        m.input(Input::Down, 1, |_| 0);
+        m.input(Input::Down, 2, |_| 0);
+        m.input(Input::Select, 3, |_| 3);
+        m.input(Input::Up, 4, |_| 3);
         assert_eq!(
-            m.input(Input::Left, 2, |_| 0),
-            Some(Action::Step { idx: 9, dir: -1 })
+            m.input(Input::Select, 5, |_| 3),
+            Some(Action::Set { idx: 110, value: 0 })
         );
     }
 
     #[test]
     fn restart_needs_a_confirmation() {
-        let mut m = open();
+        let mut m = settings();
         m.input(Input::Up, 1, |_| 0);
         assert_eq!(m.input(Input::Select, 2, |_| 0), None);
-        assert_eq!(m.view(), View::Confirm);
-        assert_eq!(m.input(Input::Back, 3, |_| 0), None);
-        assert_eq!(m.view(), View::List);
+        assert_eq!(m.lines(text, |_| 0)[1], "Restart the box?");
+        assert_eq!(m.input(Input::Right, 3, |_| 0), None);
+        assert_eq!(m.page(), Page::Settings);
         m.input(Input::Select, 4, |_| 0);
         assert_eq!(m.input(Input::Select, 5, |_| 0), Some(Action::Restart));
-        assert_eq!(m.view(), View::Status);
     }
 
     #[test]
-    fn back_and_the_timeout_close_the_menu() {
-        let mut m = open();
-        m.input(Input::Back, 1, |_| 0);
-        assert_eq!(m.view(), View::Status);
-        let mut m = open();
-        m.tick(14_999);
-        assert_eq!(m.view(), View::List);
+    fn the_timeout_stops_an_edit_and_leaves_the_settings() {
+        let mut m = settings();
+        m.input(Input::Select, 1, |_| 7);
         m.tick(15_000);
-        assert_eq!(m.view(), View::Status);
+        assert_eq!(m.page(), Page::Settings);
+        m.tick(15_001);
+        assert_eq!(m.page(), Page::Main);
+        // An info page stays.
+        let mut m = Menu::new();
+        m.input(Input::Right, 1, |_| 0);
+        m.tick(60_000);
+        assert_eq!(m.page(), Page::Decks);
     }
 
     #[test]
     fn the_list_scrolls_to_the_selected_item() {
-        let mut m = open();
+        let mut m = settings();
         m.input(Input::Up, 1, |_| 0);
-        let lines = m.lines(|_| "x".into(), &[]);
+        let lines = m.lines(text, |_| 0);
         assert_eq!(lines.len(), ROWS);
         assert_eq!(lines[ROWS - 1], ">Restart");
         assert!(lines.iter().all(|l| l.chars().count() <= COLS));
+    }
+
+    #[test]
+    fn the_header_shows_the_page_and_the_arrows() {
+        assert_eq!(Page::Decks.header(), "< Decks         2/7 >");
+        assert_eq!(Page::Decks.header().len(), COLS);
     }
 }
