@@ -198,7 +198,6 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The OLED has seven pages: Main, Decks, Track, DMX, Scenes, Network and Settings (`menu::Page`). Left and right flip the pages. Each tilt flips one page.
 - On the Settings page, up and down move the cursor, and a push starts an edit. In an edit, up and down change the shown value. A push applies it, and left or right cancel it.
 - On the Scenes page, a push turns the DMX scene player on or off. The page shows the phrase, the row that is on, its preset, the next preset and the preset of a flash. A flash can be shorter than one frame, so the `ui` thread reads `SceneStatus::flash` at each tick and shows it for 300 ms. The firmware sets the scenes like `scenes_set` and sends the scenes message to the page (`webui::scenes_changed`).
-- The Settings item "MIDI Pin Test" inverts the output of UART2 (`uart_set_line_inverse`): IO17 goes low for 1 s and high for 1 s until a second push stops the test. The item shows On while the test runs. An LED between DIN pin 4 (anode) and DIN pin 5 of the MIDI adapter then blinks. The test needs no meter.
 - After 15 s without input, an edit stops and the Settings page goes back to Main. The other pages stay.
 - The OLED fonts are ASCII only. The labels and values must not use other characters. `screen::ascii` replaces the other characters of a track title with "?".
 - When no deck plays for 10 minutes, the OLED goes to the minimum brightness. An input of the joystick sets it back.

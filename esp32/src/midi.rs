@@ -95,9 +95,6 @@ pub fn start(
         let mut last_master = 0u8;
         let mut next_pulse: Option<u64> = None;
         let mut next_cc = Instant::now();
-        // The start of the pin test while it runs, and true while the output is inverted.
-        let mut pin_test: Option<u64> = None;
-        let mut inverted = false;
 
         loop {
             // SAFETY: the task subscribed above. A reset of an unsubscribed task only gives an
@@ -121,36 +118,6 @@ pub fn start(
             };
             let ticks = wait.map_or(0, |w| TickType::from(w).ticks());
             let beat = beat_rx.recv_front(ticks).map(|(b, _)| b);
-
-            // The pin test inverts the output: the idle level is then low, and current flows
-            // through the MIDI loop. An LED between DIN pin 4 (anode) and pin 5 shows it.
-            // The test runs until the menu stops it.
-            match (state.midi_pin_test.load(Ordering::Relaxed), pin_test) {
-                (true, None) => {
-                    log::info!("MIDI pin test: IO17 goes low for 1 s, then high for 1 s");
-                    pin_test = Some(state.now_ms());
-                }
-                (false, Some(_)) => {
-                    log::info!("MIDI pin test: stopped");
-                    pin_test = None;
-                }
-                _ => {}
-            }
-            let low =
-                pin_test.is_some_and(|t0| (state.now_ms().saturating_sub(t0) / 1000) % 2 == 0);
-            if low != inverted {
-                inverted = low;
-                let mask = if low {
-                    sys::uart_signal_inv_t_UART_SIGNAL_TXD_INV
-                } else {
-                    0
-                };
-                // SAFETY: the port belongs to the driver of this thread.
-                if let Err(e) = sys::esp!(unsafe { sys::uart_set_line_inverse(uart.port(), mask) })
-                {
-                    log::warn!("MIDI pin test: cannot set the output level: {e}");
-                }
-            }
 
             let cfg = cfg.lock().unwrap().clone();
             let mut status = MidiStatus::default();

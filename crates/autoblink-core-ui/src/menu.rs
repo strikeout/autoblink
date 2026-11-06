@@ -68,8 +68,6 @@ pub enum Kind {
     Number { lo: i64, hi: i64, step: i64 },
     /// One of `n` values (0 to n - 1). Up and down wrap around.
     Choice { n: i64 },
-    /// A push starts or stops the test of the MIDI output pin.
-    PinTest,
     /// A push asks for a confirmation. The second push restarts the box.
     Restart,
 }
@@ -92,7 +90,7 @@ const fn number(label: &'static str, idx: usize, lo: i64, hi: i64, step: i64) ->
 
 /// The items of the Settings page. Each value applies only on a push, because a change of the
 /// device number makes the virtual CDJ join the network again.
-pub const ITEMS: [Item; 8] = [
+pub const ITEMS: [Item; 7] = [
     number("Device Number", 2, 1, 15, 1),
     number("Note Channel", 9, 1, 16, 1),
     Item {
@@ -110,20 +108,11 @@ pub const ITEMS: [Item; 8] = [
         kind: Kind::Choice { n: 2 },
     },
     Item {
-        label: "MIDI Pin Test",
-        idx: IDX_PIN_TEST,
-        kind: Kind::PinTest,
-    },
-    Item {
         label: "Restart",
         idx: 0,
         kind: Kind::Restart,
     },
 ];
-
-/// The index of the MIDI pin test in the menu. It is not a setting: the firmware gives 1 while
-/// the test runs.
-pub const IDX_PIN_TEST: usize = 200;
 
 /// A change that the firmware must do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,9 +124,6 @@ pub enum Action {
     },
     /// Turn the DMX scene player on or off.
     ToggleScenes,
-    /// Start or stop the MIDI pin test. While it runs, the MIDI output is low for 1 s and high
-    /// for 1 s. An LED in the place of the MIDI receiver then blinks.
-    MidiPinTest,
     Restart,
 }
 
@@ -203,7 +189,7 @@ impl Menu {
                             (if up { v + step } else { v - step }).clamp(lo, hi)
                         }
                         Kind::Choice { n } => (v + if up { 1 } else { n - 1 }) % n,
-                        Kind::PinTest | Kind::Restart => v,
+                        Kind::Restart => v,
                     });
                 }
             }
@@ -219,7 +205,6 @@ impl Menu {
             Input::Down => self.sel = (self.sel + 1) % ITEMS.len(),
             Input::Select => match item.kind {
                 Kind::Restart => self.confirm = true,
-                Kind::PinTest => return Some(Action::MidiPinTest),
                 _ => self.edit = Some(current(item.idx)),
             },
         }
@@ -354,14 +339,6 @@ mod tests {
             m.input(Input::Select, 5, |_| 3),
             Some(Action::Set { idx: 110, value: 0 })
         );
-    }
-
-    #[test]
-    fn the_pin_test_starts_on_the_push() {
-        let mut m = settings();
-        m.input(Input::Up, 1, |_| 0);
-        m.input(Input::Up, 2, |_| 0);
-        assert_eq!(m.input(Input::Select, 3, |_| 0), Some(Action::MidiPinTest));
     }
 
     #[test]
