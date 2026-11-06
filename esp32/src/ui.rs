@@ -1,6 +1,6 @@
 //! The OLED status screen: a 128×64 SSD1306 or SSD1315 on I2C0 (SCL IO14, SDA IO15, address
-//! 0x3C or 0x3D). An analog joystick opens a small menu: VRx on IO39, VRy on IO35 (ADC1), the
-//! switch on IO5 with the internal pull-up. The joystick is optional.
+//! 0x3C or 0x3D). An analog joystick flips the pages and changes the settings: VRx on IO39, VRy on
+//! IO35 (ADC1), the switch on IO5 with the internal pull-up. The joystick is optional.
 //!
 //! The `ui` thread runs on core 0 with a low priority. The `midi` and `prolink-rx` threads run on
 //! core 1, so a slow I2C write cannot delay them. Until a display answers, the thread looks for
@@ -12,12 +12,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use autoblink_core_dbserver::phrase_status;
+use autoblink_core_midi::scenes::{Event, ScenesConfig};
 use autoblink_core_midi::MidiConfig;
-use autoblink_core_ui::config::{IDX_BEAT_CHANNEL, IDX_DMX_MODE, IDX_ROTATE};
+use autoblink_core_prolink::Deck;
+use autoblink_core_ui::config::{IDX_BEAT_CHANNEL, IDX_BRIGHTNESS, IDX_DMX_MODE, IDX_ROTATE};
 use autoblink_core_ui::joystick;
-use autoblink_core_ui::menu::{Action, Menu, View};
-use autoblink_core_ui::screen::{lines, Lines, Snapshot};
-use autoblink_core_ui::BoxConfig;
+use autoblink_core_ui::menu::{Action, Menu, Page};
+use autoblink_core_ui::screen::{
+    decks_lines, dmx_lines, event_name, lines, network_lines, scenes_lines, track_lines, DeckRow,
+    DmxInfo, Lines, Snapshot, TrackInfo,
+};
+use autoblink_core_ui::{BoxConfig, DmxMode};
 use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
@@ -53,6 +58,9 @@ const TICK: Duration = Duration::from_millis(20);
 /// full frame over I2C at 400 kHz takes about 25 ms.
 const FRAME_TICKS: u32 = 10;
 
+/// The Scenes page shows a flash for at least this time, so that a short flash is visible.
+const FLASH_SHOW_MS: u64 = 300;
+
 /// The I2C addresses of an SSD1306 or SSD1315 module.
 const ADDRESSES: [u8; 2] = [0x3C, 0x3D];
 
@@ -75,29 +83,36 @@ struct Values {
     device: Arc<AtomicU8>,
     midi: Arc<Mutex<MidiConfig>>,
     box_cfg: Arc<Mutex<BoxConfig>>,
+    scenes: Arc<Mutex<ScenesConfig>>,
 }
 
 impl Values {
+    /// The present value of a setting of the menu.
     fn number(&self, idx: usize) -> i64 {
+        let cfg = || self.box_cfg.lock().unwrap().clone();
         match idx {
             2 => self.device.load(Ordering::Relaxed).into(),
+            9 => i64::from(self.midi.lock().unwrap().note_channel) + 1,
+            IDX_DMX_MODE => {
+                let mode = cfg().dmx_mode;
+                DmxMode::ALL.iter().position(|&m| m == mode).unwrap_or(0) as i64
+            }
+            IDX_BEAT_CHANNEL => cfg().beat_channel.into(),
+            IDX_ROTATE => cfg().rotate.into(),
+            IDX_BRIGHTNESS => cfg().brightness.into(),
             _ => 0,
         }
     }
 
-    fn text(&self, idx: usize) -> String {
+    /// The shown text of the value `v` of a setting.
+    fn text(&self, idx: usize, v: i64) -> String {
         match idx {
-            2 => self.device.load(Ordering::Relaxed).to_string(),
-            9 => (self.midi.lock().unwrap().note_channel + 1).to_string(),
-            IDX_DMX_MODE => self.box_cfg.lock().unwrap().dmx_mode.label().into(),
-            IDX_BEAT_CHANNEL => self.box_cfg.lock().unwrap().beat_channel.to_string(),
-            IDX_ROTATE => if self.box_cfg.lock().unwrap().rotate {
-                "On"
-            } else {
-                "Off"
-            }
-            .into(),
-            _ => String::new(),
+            IDX_DMX_MODE => DmxMode::ALL
+                .get(v as usize)
+                .map_or("?", |m| m.label())
+                .into(),
+            IDX_ROTATE => if v != 0 { "On" } else { "Off" }.into(),
+            _ => v.to_string(),
         }
     }
 }
@@ -118,6 +133,7 @@ pub fn start(
             device: s.device_number.clone(),
             midi: s.midi.clone(),
             box_cfg: s.box_cfg.clone(),
+            scenes: s.scenes.clone(),
         };
         // The WiFi settings apply after a restart, so the start values stay right.
         let mut network = vec![format!("AP {}", s.ssid()), format!("Page {AP_IP}")];
@@ -207,19 +223,32 @@ impl Ui<'_> {
         let mut active = Instant::now();
         let mut failed = false;
         let mut tick = 0u32;
+        // The preset of the last flash and the time when the thread saw it.
+        let mut shown_flash: Option<(u8, u64)> = None;
         loop {
             let now = self.state.now_ms();
-            // ESP32 errata 3.11: ADC1 can pull IO36 and IO39 low for about 80 ns. IO36 is DMX IN.
-            // Thus the thread reads the axes only for the calibration and while the menu is open.
-            // The switch on IO5 opens the menu.
-            let menu_open = menu.view() != View::Status;
+            // ESP32 errata 3.11: a power-on of ADC1 pulls IO36 (DMX IN) and IO39 low for about
+            // 80 ns. The oneshot driver of ESP-IDF 5.5 keeps ADC1 on while the unit exists, so
+            // the reads cause no power-on.
             let input = stick.as_mut().and_then(|(x, y, sw)| {
-                let (xv, yv) = match joy.center() {
-                    Some(c) if !menu_open => c,
-                    _ => (x.read_raw().ok()?, y.read_raw().ok()?),
-                };
-                joy.update(xv, yv, sw.is_low(), now)
+                let (xv, yv) = (x.read_raw().ok()?, y.read_raw().ok()?);
+                let calibrated = joy.center().is_some();
+                let input = joy.update(xv, yv, sw.is_low(), now);
+                if let Some((cx, cy)) = joy.center().filter(|_| !calibrated) {
+                    log::info!("Joystick center: x {cx}, y {cy}");
+                }
+                if let Some(i) = input {
+                    log::info!("Joystick {i:?} (x {xv}, y {yv}) on page {:?}", menu.page());
+                }
+                input
             });
+            // A flash can be shorter than one frame. The thread looks for it at each tick and
+            // shows it for `FLASH_SHOW_MS`.
+            if menu.page() == Page::Scenes {
+                if let Some(p) = self.state.midi.lock().unwrap().scene.flash {
+                    shown_flash = Some((p, now));
+                }
+            }
             if let Some(input) = input {
                 active = Instant::now();
                 self.apply(menu.input(input, now, |idx| self.values.number(idx)));
@@ -263,15 +292,10 @@ impl Ui<'_> {
                     result = result.and(display.set_brightness(Brightness::custom(2, brightness)));
                 }
                 display.clear_buffer();
-                if menu.view() == View::Status {
-                    draw(&mut display, &lines(&snap));
-                } else {
-                    let iface = self.state.iface.lock().unwrap().clone();
-                    let mut network = self.network.to_vec();
-                    network.extend(iface.split(" · ").map(String::from));
-                    let text = menu.lines(|idx| self.values.text(idx), &network);
-                    draw_menu(&mut display, &text);
-                }
+                let flash = shown_flash
+                    .filter(|&(_, t)| now.saturating_sub(t) < FLASH_SHOW_MS)
+                    .map(|f| f.0);
+                self.draw_page(&mut display, &menu, &snap, flash);
                 result = result.and(display.flush());
                 // Log only the change, not each frame. A loose wire can fail each frame.
                 if result.is_err() != failed {
@@ -287,6 +311,55 @@ impl Ui<'_> {
         }
     }
 
+    /// Draws the page of the menu. Only the data of that page is read from the state.
+    fn draw_page(
+        &self,
+        display: &mut Display<'_>,
+        menu: &Menu,
+        snap: &Snapshot,
+        flash: Option<u8>,
+    ) {
+        let text = match menu.page() {
+            Page::Main => return draw(display, &lines(snap)),
+            Page::Decks => decks_lines(&deck_rows(self.state)),
+            Page::Track => {
+                let (info, progress) = track_info(self.state);
+                if let Some(p) = progress {
+                    // The phrase bar under the last line.
+                    let _ = Rectangle::new(Point::new(0, 61), Size::new((128.0 * p) as u32, 2))
+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                        .draw(display);
+                }
+                track_lines(snap.master, info.as_ref())
+            }
+            Page::Dmx => {
+                // One lock only. A second lock in the same statement waits for the first
+                // forever, and the web server then waits for the settings too.
+                let cfg = self.values.box_cfg.lock().unwrap().clone();
+                dmx_lines(&DmxInfo {
+                    mode: cfg.dmx_mode.label(),
+                    beat_channel: cfg.beat_channel,
+                    input: snap.dmx,
+                })
+            }
+            Page::Scenes => {
+                // Each lock alone. The text is built under the scenes lock: a copy of the scenes
+                // every 200 ms gives many heap blocks.
+                let status = self.state.midi.lock().unwrap().scene;
+                scenes_lines(&self.values.scenes.lock().unwrap(), &status, flash)
+            }
+            Page::Network => {
+                let iface = self.state.iface.lock().unwrap().clone();
+                network_lines(self.network, &iface, snap.blinks)
+            }
+            Page::Settings => menu.lines(
+                |idx, v| self.values.text(idx, v),
+                |idx| self.values.number(idx),
+            ),
+        };
+        draw_menu(display, &text);
+    }
+
     /// Does a change of the menu with the functions of the page commands. Then the page gets the
     /// new settings.
     fn apply(&self, action: Option<Action>) {
@@ -296,9 +369,21 @@ impl Ui<'_> {
                 log::info!("Restart from the menu of the OLED");
                 crate::restart_soon().map_err(|e| e.to_string())
             }
-            Some(Action::Step { idx, dir }) => self.settings.lock().unwrap().step(idx, dir),
             Some(Action::Set { idx, value }) => {
                 self.settings.lock().unwrap().set(idx, &value.to_string())
+            }
+            Some(Action::ToggleScenes) => {
+                // The same path as `scenes_set` of the page. Clone first: `set_scenes` takes the
+                // scenes lock.
+                let mut cfg = self.values.scenes.lock().unwrap().clone();
+                cfg.enabled = !cfg.enabled;
+                log::info!(
+                    "DMX scenes {} from the OLED",
+                    if cfg.enabled { "on" } else { "off" }
+                );
+                self.settings.lock().unwrap().set_scenes(cfg);
+                crate::webui::scenes_changed();
+                return;
             }
         };
         match result {
@@ -336,18 +421,7 @@ fn stick<'a>(
 /// Copies the values of the screen from the state. Each lock is taken alone.
 fn snapshot(state: &State) -> Snapshot {
     let master = state.tracker.lock().unwrap().master().cloned();
-    let phrase = master.as_ref().and_then(|d| {
-        let beat_count = d.beat_count?;
-        let tracks = state.tracks.0.lock().unwrap();
-        let t = tracks
-            .get(&d.num)
-            .filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0)?;
-        let Some(Ok(ss)) = &t.structure else {
-            return None;
-        };
-        let p = phrase_status(ss, beat_count)?;
-        Some(format!("{} {} bars left", p.kind, p.beats_left.div_ceil(4)))
-    });
+    let phrase = master.as_ref().and_then(|d| phrase(state, d)).map(|p| p.0);
     let blinks = crate::led::blinks(state);
     let ip = state.link.lock().unwrap().map(|l| l.ip.to_string());
     #[cfg(feature = "dmx")]
@@ -365,6 +439,74 @@ fn snapshot(state: &State) -> Snapshot {
         ip,
         dmx,
     }
+}
+
+/// The phrase of deck `d` for the screen, for example "DROP 3 bars left", and its progress.
+fn phrase(state: &State, d: &Deck) -> Option<(String, f64)> {
+    let beat_count = d.beat_count?;
+    let tracks = state.tracks.0.lock().unwrap();
+    let t = tracks
+        .get(&d.num)
+        .filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0)?;
+    let Some(Ok(ss)) = &t.structure else {
+        return None;
+    };
+    let p = phrase_status(ss, beat_count)?;
+    // The page shows the buckets of the DMX scenes (DROP, BREAK), not the rekordbox kinds.
+    let name = p
+        .kind
+        .code()
+        .and_then(Event::bucket)
+        .map_or_else(|| p.kind.to_string(), event_name);
+    let text = format!("{name} {} bars left", p.beats_left.div_ceil(4));
+    Some((text, p.progress))
+}
+
+/// The rows of the Decks page, sorted by deck number.
+fn deck_rows(state: &State) -> Vec<DeckRow> {
+    let now = state.now_ms();
+    let tracker = state.tracker.lock().unwrap();
+    let master = tracker.master().map(|d| d.num);
+    let mut rows: Vec<DeckRow> = tracker
+        .decks()
+        .iter()
+        .map(|d| DeckRow {
+            num: d.num,
+            master: Some(d.num) == master,
+            playing: d.is_playing(now),
+            bpm: d.bpm,
+            pitch: d.pitch,
+        })
+        .collect();
+    rows.sort_by_key(|r| r.num);
+    rows
+}
+
+/// The track of the master deck and the progress of its phrase. Each lock is taken alone.
+fn track_info(state: &State) -> (Option<TrackInfo>, Option<f64>) {
+    let Some(d) = state.tracker.lock().unwrap().master().cloned() else {
+        return (None, None);
+    };
+    let phrase = phrase(state, &d);
+    let info = {
+        let tracks = state.tracks.0.lock().unwrap();
+        tracks
+            .get(&d.num)
+            .filter(|t| t.rekordbox_id == d.track.rekordbox_id && t.rekordbox_id != 0)
+            .and_then(|t| t.metadata.as_ref())
+            .map(|m| TrackInfo {
+                deck: d.num,
+                title: m.title.clone(),
+                artist: m.artist.clone(),
+                key: m.key.clone(),
+                left_s: d
+                    .track_len_ms
+                    .zip(d.playhead_ms)
+                    .map(|(len, pos)| len.saturating_sub(pos) / 1000),
+                phrase: phrase.as_ref().map(|p| p.0.clone()),
+            })
+    };
+    (info, phrase.map(|p| p.1))
 }
 
 fn draw(display: &mut Display<'_>, l: &Lines) {

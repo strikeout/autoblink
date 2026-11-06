@@ -120,6 +120,24 @@ impl BoxConfig {
                     .ok_or_else(range)?;
                 Ok(())
             }
+            // The menu of the OLED sets the mode by its index in `DmxMode::ALL`.
+            IDX_DMX_MODE => {
+                self.dmx_mode = value
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| DmxMode::ALL.get(i).copied())
+                    .ok_or_else(range)?;
+                Ok(())
+            }
+            IDX_ROTATE => {
+                self.rotate = match value.trim() {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(range()),
+                };
+                Ok(())
+            }
             _ => Err(format!("Setting {idx} does not take a value")),
         }
     }
@@ -163,6 +181,17 @@ mod tests {
         assert!(cfg.set(IDX_BEAT_CHANNEL, "0").is_err());
         assert!(cfg.set(IDX_BEAT_CHANNEL, "513").is_err());
         assert_eq!(cfg.beat_channel, 512);
+    }
+
+    #[test]
+    fn the_menu_sets_the_mode_and_the_rotation_by_number() {
+        let mut c = BoxConfig::default();
+        c.set(IDX_DMX_MODE, "3").unwrap();
+        assert_eq!(c.dmx_mode, DmxMode::Pass);
+        assert!(c.set(IDX_DMX_MODE, "4").is_err());
+        c.set(IDX_ROTATE, "1").unwrap();
+        assert!(c.rotate);
+        assert!(c.set(IDX_ROTATE, "2").is_err());
     }
 
     #[test]
