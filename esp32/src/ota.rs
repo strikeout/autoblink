@@ -275,24 +275,42 @@ fn install(state: &Mutex<OtaStatus>) -> anyhow::Result<()> {
 
 /// Sends a GET request. Returns the connection after a 200 response.
 fn get(url: &str) -> anyhow::Result<EspHttpConnection> {
+    let conn = request(Method::Get, url, &[], &[], Duration::from_secs(15))?;
+    match conn.status() {
+        200 => Ok(conn),
+        status => bail!("GET {url} gave the status {status}"),
+    }
+}
+
+/// Sends an HTTPS request with `body` and reads the response headers. Returns the connection
+/// for each status. `ofl.rs` uses this function too.
+///
+/// The server certificate must chain to a root of the common certificate bundle. `timeout` is the
+/// longest wait for the connection and for each read. For a body, give a `Content-Length` header.
+/// Without it, the client sends a POST body in chunks.
+pub fn request(
+    method: Method,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+    timeout: Duration,
+) -> anyhow::Result<EspHttpConnection> {
     fix_dns();
     let mut conn = EspHttpConnection::new(&Configuration {
         // GitHub redirects a release file to a URL with more than 500 characters.
         buffer_size: Some(4096),
         buffer_size_tx: Some(2048),
-        timeout: Some(Duration::from_secs(15)),
+        timeout: Some(timeout),
         crt_bundle_attach: Some(sys::esp_crt_bundle_attach),
         ..Default::default()
     })?;
-    conn.initiate_request(Method::Get, url, &[])
+    conn.initiate_request(method, url, headers)
         .with_context(|| {
             format!("No connection to {url}. The box needs a network with internet.")
         })?;
+    conn.write_all(body)?;
     conn.initiate_response()?;
-    match conn.status() {
-        200 => Ok(conn),
-        status => bail!("GET {url} gave the status {status}"),
-    }
+    Ok(conn)
 }
 
 /// The DNS server for a joined network in the subnet of the own WiFi network.

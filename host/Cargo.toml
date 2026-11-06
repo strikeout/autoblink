@@ -26,6 +26,7 @@ serde_json = "1"
 
 rusty_link = "0.2"
 autoblink-core-midi = { path = "../crates/autoblink-core-midi" }
+autoblink-core-dmx = { path = "../crates/autoblink-core-dmx" }
 autoblink-core-prolink = { path = "../crates/autoblink-core-prolink" }
 
 [dev-dependencies]

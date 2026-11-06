@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
+use autoblink_core_dmx::{Show, ARTNET_PORT};
 use autoblink_core_midi::scenes::ScenesConfig;
 use parking_lot::RwLock;
 use serde::Deserialize;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 
 // ── Beat source selector ──────────────────────────────────────────────────────
@@ -33,12 +35,16 @@ pub struct Config {
     pub link: LinkConfig,
     pub web: WebConfig,
     pub osc: OscConfig,
+    pub dmx: DmxConfig,
     /// The DMX scenes. The page changes them, and the app stores them in `scenes_path`.
     #[serde(skip)]
     pub scenes: ScenesConfig,
     /// The JSON file of the scenes, next to the config file. `None` stores nothing.
     #[serde(skip)]
     pub scenes_path: Option<PathBuf>,
+    /// The JSON file of the DMX show, next to the config file. `None` stores nothing.
+    #[serde(skip)]
+    pub show_path: Option<PathBuf>,
 }
 
 pub type SharedConfig = Arc<RwLock<Config>>;
@@ -58,8 +64,10 @@ impl Default for Config {
             link: LinkConfig::default(),
             web: WebConfig::default(),
             osc: OscConfig::default(),
+            dmx: DmxConfig::default(),
             scenes: ScenesConfig::default(),
             scenes_path: None,
+            show_path: None,
         }
     }
 }
@@ -392,6 +400,61 @@ impl Default for OscConfig {
     }
 }
 
+// ── DMX output config ─────────────────────────────────────────────────────────
+
+/// The DMX engine of the host. It sends Art-Net to a DMX node while no AUTOBLINK box is on the
+/// network.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct DmxConfig {
+    /// The Art-Net node as "IP" or "IP:port". The default port is 6454. A broadcast address is
+    /// permitted. Without a target, the host starts no DMX engine.
+    ///
+    /// The engine stops while a device with the name "autoblink" and another device number is on
+    /// the network. Two hosts with the default `device_name` thus see each other as a box, and
+    /// neither host sends Art-Net.
+    pub artnet_target: Option<String>,
+    /// The Art-Net universe (Net << 8 | SubUni), 0 to 32767.
+    pub universe: u16,
+}
+
+/// The Art-Net universe cannot be higher than this value, because the Net field has 7 bits.
+const MAX_UNIVERSE: u16 = 0x7fff;
+
+impl DmxConfig {
+    /// Returns the address of the Art-Net node, or `None` when the target is not set or not valid.
+    pub fn target(&self) -> Option<SocketAddrV4> {
+        let t = self.artnet_target.as_deref()?.trim();
+        t.parse::<SocketAddrV4>()
+            .ok()
+            .or_else(|| {
+                t.parse::<Ipv4Addr>()
+                    .ok()
+                    .map(|ip| SocketAddrV4::new(ip, ARTNET_PORT))
+            })
+            .filter(|a| a.port() != 0 && !a.ip().is_unspecified())
+    }
+
+    /// Removes a target that is not valid. The app then starts without the DMX engine.
+    fn check(&mut self) {
+        let Some(t) = &self.artnet_target else {
+            return;
+        };
+        if self.target().is_none() {
+            tracing::warn!(
+                "dmx.artnet_target {t:?} is not an IPv4 address or IP:port. The DMX engine is off."
+            );
+            self.artnet_target = None;
+        } else if self.universe > MAX_UNIVERSE {
+            tracing::warn!(
+                "dmx.universe must be 0 to {MAX_UNIVERSE}, got {}. The DMX engine is off.",
+                self.universe
+            );
+            self.artnet_target = None;
+        }
+    }
+}
+
 // ── Loader ────────────────────────────────────────────────────────────────────
 
 pub fn load(path: &Path) -> anyhow::Result<Config> {
@@ -400,7 +463,13 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
         return Ok(Config::default());
     }
     let text = std::fs::read_to_string(path)?;
-    let cfg: Config = toml::from_str(&text)?;
+    parse(&text)
+}
+
+/// Reads a config from TOML text and checks it.
+pub fn parse(text: &str) -> anyhow::Result<Config> {
+    let mut cfg: Config = toml::from_str(text)?;
+    cfg.dmx.check();
     validate(&cfg)?;
     Ok(cfg)
 }
@@ -427,6 +496,27 @@ pub fn load_scenes(path: &Path) -> ScenesConfig {
 pub fn save_scenes(path: &Path, scenes: &ScenesConfig) -> anyhow::Result<()> {
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(scenes)?)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Returns the path of the show file: `show.json` in the folder of the config file.
+pub fn show_path(config_path: &Path) -> PathBuf {
+    config_path.with_file_name("show.json")
+}
+
+/// Reads the show file. A missing or bad file gives the empty show.
+pub fn load_show(path: &Path) -> Show {
+    match std::fs::read(path) {
+        Ok(bytes) => Show::from_json(&bytes),
+        Err(_) => Show::default(),
+    }
+}
+
+/// Writes the show file. This is a blocking call.
+pub fn save_show(path: &Path, show: &Show) -> anyhow::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(show)?)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -484,4 +574,72 @@ pub(crate) fn validate(cfg: &Config) -> anyhow::Result<()> {
         cfg.link.poll_interval_us
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    #[test]
+    fn a_config_without_dmx_has_no_artnet_target() {
+        let cfg = parse("device_number = 7\n").unwrap();
+        assert_eq!(cfg.dmx.artnet_target, None);
+        assert_eq!(cfg.dmx.universe, 0);
+        assert_eq!(cfg.dmx.target(), None);
+    }
+
+    #[test]
+    fn dmx_section_gives_the_artnet_target() {
+        let cfg = parse("[dmx]\nartnet_target = \"10.0.0.5\"\nuniverse = 3\n").unwrap();
+        assert_eq!(
+            cfg.dmx.target(),
+            Some(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 5), 6454))
+        );
+        assert_eq!(cfg.dmx.universe, 3);
+
+        let cfg = parse("[dmx]\nartnet_target = \"2.255.255.255:6455\"\n").unwrap();
+        assert_eq!(
+            cfg.dmx.target(),
+            Some(SocketAddrV4::new(Ipv4Addr::new(2, 255, 255, 255), 6455))
+        );
+    }
+
+    #[test]
+    fn a_bad_artnet_target_disables_the_engine() {
+        for bad in [
+            "[dmx]\nartnet_target = \"node.example\"\n",
+            "[dmx]\nartnet_target = \"10.0.0.5:0\"\n",
+            "[dmx]\nartnet_target = \"10.0.0.5\"\nuniverse = 40000\n",
+        ] {
+            let cfg = parse(bad).unwrap();
+            assert_eq!(cfg.dmx.artnet_target, None, "{bad}");
+            assert_eq!(cfg.dmx.target(), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn show_file_round_trip() {
+        let dir = std::env::temp_dir().join(format!("xdj-show-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = show_path(&dir.join("config.toml"));
+        assert_eq!(path, dir.join("show.json"));
+        assert_eq!(load_show(&path), Show::default());
+
+        let show = Show {
+            fixtures: vec![autoblink_core_dmx::Fixture {
+                name: "par".into(),
+                address: 10,
+                channels: vec![autoblink_core_dmx::Channel::Dimmer],
+                ofl: None,
+            }],
+            ..Show::default()
+        };
+        save_show(&path, &show).unwrap();
+        assert_eq!(load_show(&path), show);
+
+        std::fs::write(&path, b"not json").unwrap();
+        assert_eq!(load_show(&path), Show::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

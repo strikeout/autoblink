@@ -1,7 +1,7 @@
 [package]
 name = "autoblink-esp32"
 # The firmware is not in the workspace. Keep this version the same as the workspace version.
-version = "1.27.3"
+version = "1.30.0"
 edition = "2021"
 license = "Proprietary"
 authors = ["AUTOBLINK team"]
@@ -23,8 +23,9 @@ debug = true
 opt-level = "z"
 
 [features]
+# DMX512 output on IO4 and input on IO36 (dmx.rs). It is on by default.
+# Build with `--no-default-features` to remove it.
 default = ["dmx"]
-# DMX512 output on IO4 and input on IO36. Build with `--no-default-features` to remove it.
 dmx = []
 
 [dependencies]
@@ -34,6 +35,7 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 autoblink-core-dbserver = { path = "../crates/autoblink-core-dbserver" }
+autoblink-core-dmx = { path = "../crates/autoblink-core-dmx" }
 autoblink-core-midi = { path = "../crates/autoblink-core-midi" }
 autoblink-core-prolink = { path = "../crates/autoblink-core-prolink" }
 autoblink-core-ui = { path = "../crates/autoblink-core-ui" }

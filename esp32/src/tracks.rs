@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use autoblink_core_dbserver::{
     asking_player, fetch_with, SongStructure, TrackMetadata, TrackOverview,
 };
+use autoblink_core_midi::guess::DropGuess;
 use autoblink_core_prolink::TrackRef;
 
 use esp_idf_svc::sys;
@@ -40,6 +41,8 @@ pub struct TrackData {
     /// `None` while the fetch runs. `Err` holds the reason that no song structure is available.
     pub structure: Option<Result<SongStructure, String>>,
     pub overview: Option<Arc<TrackOverview>>,
+    /// The drop guess from the preview. Only a track without phrases has one.
+    pub guess: Option<DropGuess>,
 }
 
 /// The tracks by deck number.
@@ -159,6 +162,16 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
                 .set_track_length(track.device, track.rekordbox_id, secs);
         }
     }
+    // Build the guess before the lock. It takes about 4 KB of heap for a short time.
+    let guess = result
+        .as_ref()
+        .ok()
+        .filter(|f| {
+            !f.song_structure
+                .as_ref()
+                .is_ok_and(|ss| !ss.phrases.is_empty())
+        })
+        .and_then(|f| DropGuess::from_preview(&f.overview.as_ref()?.preview));
     let mut tracks = state.tracks.0.lock().unwrap();
     // A newer track on the deck makes this result stale.
     let Some(data) = tracks
@@ -178,9 +191,18 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
                 f.metadata.artist,
                 f.metadata.title
             );
+            if let Some(g) = &guess {
+                let (hi, lo, mid) = g.thresholds();
+                let (first, last) = g.mid_columns();
+                log::info!(
+                    "Deck {}: guess thresholds hi {hi}, lo {lo}, mid {mid}, columns {first} to {last}.",
+                    track.device
+                );
+            }
             data.metadata = Some(f.metadata);
             data.structure = Some(f.song_structure);
             data.overview = f.overview.map(Arc::new);
+            data.guess = guess;
             true
         }
         Err(e) => {

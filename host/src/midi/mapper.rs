@@ -5,13 +5,14 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
 use crate::config::{CcConfig, NoteConfig, SharedConfig};
+use crate::dmx::{DmxMsg, DmxTx};
 use crate::midi::activity::{remember, MidiActivity};
 use crate::midi::MidiTransport;
 use crate::osc::{Arg, OscOut};
 use crate::prolink::beat_listener::BeatEvent;
 use crate::prolink::status_listener::StatusEvent;
 use crate::state::{BeatSource, SharedState};
-use autoblink_core_midi::scenes::{SceneInput, ScenePhrase, Scenes};
+use autoblink_core_midi::scenes::{Event, SceneInput, ScenePhrase, Scenes, ScenesConfig};
 use autoblink_core_midi::Out;
 
 // ── MIDI byte helpers ─────────────────────────────────────────────────────────
@@ -142,6 +143,7 @@ mod tests {
             status_rx,
             cfg,
             activity,
+            None,
         ));
         let wake = || {
             let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
@@ -193,6 +195,7 @@ mod tests {
                 order: Order::Up,
                 gate: Gate::Hold,
                 decay: Decay::default(),
+                holds: Vec::new(),
             }];
         }
         let state = new_shared_state(30);
@@ -226,6 +229,7 @@ mod tests {
             status_rx,
             cfg,
             Arc::new(Mutex::new(MidiActivity::default())),
+            None,
         ));
         let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
             device_number: 16,
@@ -239,6 +243,60 @@ mod tests {
         assert!(msgs.contains(&note_on(3, 2, 127).to_vec()));
         assert!(!msgs.contains(&note_on(3, 2, 0).to_vec()));
         handle.abort();
+    }
+
+    #[test]
+    fn scene_input_guesses_only_without_phrases() {
+        use crate::state::{PhraseEntry, PhraseKind, SongStructure, TrackMood, TrackOverview};
+
+        let state = new_shared_state(30);
+        {
+            let mut st = state.write();
+            st.master.device_number = 1;
+            st.apply_cdj_status(&cdj_at(7, 5));
+            st.master.bpm = 128.0;
+            st.master.phrase_16_beat = 0;
+            // A quiet first half and a loud second half, 1200 columns.
+            let mut preview = vec![20u8; 600 * 6];
+            preview.extend(vec![200u8; 600 * 6]);
+            st.set_overview(
+                1,
+                TrackOverview {
+                    rekordbox_id: 7,
+                    preview,
+                    ..Default::default()
+                },
+            );
+            let d = st.devices.get_mut(&1).unwrap();
+            d.playhead_ms = Some(150_000);
+            d.track_length_ms = Some(200_000);
+        }
+        let input = scene_input(&state, (0, 0, None));
+        assert_eq!(input.guess, Some(Event::Drop));
+        assert_eq!(input.phrase16, 1);
+
+        // Without a playhead, the guess has no position.
+        state.write().devices.get_mut(&1).unwrap().playhead_ms = None;
+        assert_eq!(scene_input(&state, (0, 0, None)).guess, None);
+        state.write().devices.get_mut(&1).unwrap().playhead_ms = Some(150_000);
+
+        // The phrases of the player replace the guess.
+        state.write().set_song_structure(
+            1,
+            7,
+            SongStructure {
+                mood: TrackMood::Mid,
+                end_beat: 65,
+                phrases: vec![PhraseEntry {
+                    index: 1,
+                    beat: 1,
+                    kind: PhraseKind::Intro,
+                    has_fill: false,
+                    fill_beat: 0,
+                }],
+            },
+        );
+        assert_eq!(scene_input(&state, (0, 0, None)).guess, None);
     }
 
     #[tokio::test]
@@ -257,6 +315,7 @@ mod tests {
                 order: Order::Up,
                 gate: Gate::Flash,
                 decay: Decay::Ms(80),
+                holds: Vec::new(),
             }];
         }
         let state = new_shared_state(30);
@@ -270,6 +329,7 @@ mod tests {
             status_rx,
             cfg,
             Arc::new(Mutex::new(MidiActivity::default())),
+            None,
         ));
         let _ = beat_tx.send(BeatEvent::LinkBeat {
             bpm: 120.0,
@@ -285,6 +345,62 @@ mod tests {
         // No other event wakes the task. The note off comes from the timer alone.
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(midi.get_messages().contains(&note_on(0, 5, 0).to_vec()));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn scene_notes_and_fired_presets_go_to_the_dmx_engine() {
+        use crate::dmx::DmxMsg;
+        use autoblink_core_midi::scenes::{Decay, Event, Gate, Order, Row};
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let cfg = new_shared(Config::default());
+        {
+            let mut c = cfg.write();
+            c.scenes.enabled = true;
+            c.scenes.rows = vec![Row {
+                event: Event::Beat,
+                presets: vec![5],
+                advance: 0,
+                order: Order::Up,
+                gate: Gate::Flash,
+                decay: Decay::Ms(80),
+                holds: Vec::new(),
+            }];
+        }
+        let state = new_shared_state(30);
+        state.write().master.source = Some(BeatSource::AbletonLink);
+        let (_status_tx, status_rx) = broadcast::channel(8);
+        let (beat_tx, beat_rx) = broadcast::channel(8);
+        let (dmx_tx, mut dmx_rx) = tokio::sync::mpsc::channel(64);
+        let handle = tokio::spawn(run_with_midi(
+            midi.clone(),
+            state,
+            beat_rx,
+            status_rx,
+            cfg,
+            Arc::new(Mutex::new(MidiActivity::default())),
+            Some(dmx_tx),
+        ));
+        let _ = beat_tx.send(BeatEvent::LinkBeat {
+            bpm: 120.0,
+            beat_in_bar: 2,
+            bar_phase: 0.25,
+            beat_phase: 0.0,
+            received_at: Instant::now(),
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let mut got = Vec::new();
+        while let Ok(m) = dmx_rx.try_recv() {
+            got.push(m);
+        }
+        assert!(
+            matches!(got.first(), Some(DmxMsg::Beat { beat_in_bar: 2, bpm, .. }) if *bpm == 120.0),
+            "{got:?}"
+        );
+        assert!(got.contains(&DmxMsg::On(5)), "{got:?}");
+        assert!(got.contains(&DmxMsg::Fired(Event::Beat, 5)), "{got:?}");
+        assert!(got.contains(&DmxMsg::Off(5)), "{got:?}");
         handle.abort();
     }
 
@@ -405,6 +521,7 @@ mod tests {
             status_rx,
             new_shared(Config::default()),
             activity,
+            None,
         ));
         let wake = || {
             let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
@@ -449,6 +566,7 @@ mod tests {
             status_rx,
             cfg.clone(),
             activity,
+            None,
         ));
 
         let _ = beat_tx.send(BeatEvent::LinkBeat {
@@ -503,6 +621,7 @@ mod tests {
             status_rx,
             cfg,
             Arc::new(Mutex::new(MidiActivity::default())),
+            None,
         ));
 
         let _ = beat_tx.send(BeatEvent::LinkBeat {
@@ -553,6 +672,7 @@ mod tests {
             status_rx,
             cfg.clone(),
             activity,
+            None,
         ));
 
         let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
@@ -607,6 +727,7 @@ mod tests {
             status_rx,
             cfg.clone(),
             activity,
+            None,
         ));
         let downbeat = || {
             let _ = beat_tx.send(BeatEvent::LinkBeat {
@@ -657,6 +778,7 @@ mod tests {
             status_rx,
             cfg.clone(),
             activity,
+            None,
         ));
         let wake = || {
             let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
@@ -791,10 +913,61 @@ fn send_scene(midi: &dyn MidiTransport, o: Out, activity: &Arc<Mutex<MidiActivit
     }
 }
 
-/// Returns the state of the master deck for the DMX scenes.
-fn scene_input(state: &SharedState) -> SceneInput {
+/// Sends a message to the DMX engine. A full channel drops the message, so that the mapper does
+/// not wait.
+fn dmx_send(dmx: Option<&DmxTx>, msg: DmxMsg) {
+    if let Some(tx) = dmx {
+        let _ = tx.try_send(msg);
+    }
+}
+
+/// Sends the note of a preset to the DMX engine, as the firmware does. The other messages and the
+/// extra notes go only to MIDI.
+fn scene_to_dmx(dmx: Option<&DmxTx>, c: &ScenesConfig, o: Out) {
+    let preset = |ch: u8, note: u8| {
+        note.checked_sub(c.first_note)
+            .filter(|p| ch == c.channel && *p < c.count)
+    };
+    let msg = match o {
+        Out::NoteOn { ch, note, .. } => preset(ch, note).map(DmxMsg::On),
+        Out::NoteOff { ch, note } => preset(ch, note).map(DmxMsg::Off),
+        _ => None,
+    };
+    if let Some(m) = msg {
+        dmx_send(dmx, m);
+    }
+}
+
+/// Sends the presets that the scenes fired to the DMX engine.
+fn fired_to_dmx(scenes: &mut Scenes, dmx: Option<&DmxTx>) {
+    scenes.drain_fired(|e, p| dmx_send(dmx, DmxMsg::Fired(e, p)));
+}
+
+/// Returns the state of the master deck for the DMX scenes. `prev_guess` is the master deck, the
+/// track and the guess of the previous call. A new master deck or a new track starts without a
+/// previous guess.
+fn scene_input(state: &SharedState, prev_guess: (u8, u32, Option<Event>)) -> SceneInput {
     let st = state.read();
     let dev = st.devices.get(&st.master.device_number);
+    let prev_guess = (prev_guess.0 == st.master.device_number
+        && Some(prev_guess.1) == dev.map(|d| d.rekordbox_id))
+    .then_some(prev_guess.2)
+    .flatten();
+    // The guess is only for a track without phrases.
+    let guess = dev
+        .filter(|d| {
+            d.song_structure
+                .as_ref()
+                .is_none_or(|ss| ss.phrases.is_empty())
+        })
+        .and_then(|d| {
+            d.guess.as_ref()?.bucket_ahead(
+                d.playhead_ms?,
+                d.track_length_ms?,
+                st.master.bpm,
+                prev_guess,
+            )
+        });
     let phrase = st.master_phrase().zip(dev).map(|(info, d)| {
         let entry = d
             .song_structure
@@ -816,6 +989,13 @@ fn scene_input(state: &SharedState) -> SceneInput {
         bpm: st.master.bpm,
         phrase,
         bass_cut: Some(st.no_bass()),
+        guess,
+        // DjState stores 0..=15. The web status uses the same rule.
+        phrase16: if st.master.bpm > 0.0 {
+            st.master.phrase_16_beat.min(15) + 1
+        } else {
+            0
+        },
     }
 }
 
@@ -844,7 +1024,9 @@ async fn run_with_midi(
     mut status_rx: broadcast::Receiver<StatusEvent>,
     cfg: SharedConfig,
     activity: Arc<Mutex<MidiActivity>>,
+    dmx: Option<DmxTx>,
 ) {
+    let dmx = dmx.as_ref();
     let mut prev = PrevCc::default();
     let mut prev_phrase_idx: Option<usize> = None;
     // (device, rekordbox_id, phrase index) of the last phrase kind that was sent.
@@ -861,6 +1043,9 @@ async fn run_with_midi(
     // (device, rekordbox_id, title) of the last track that was sent over OSC.
     let mut prev_osc_track: Option<(u8, u32, String)> = None;
     let mut scenes = Scenes::default();
+    // The master deck and the last guess of `scene_input`. The guess keeps a Drop or a Break near
+    // its threshold.
+    let mut prev_guess: (u8, u32, Option<Event>) = (0, 0, None);
     let start = Instant::now();
     let now_ms = || start.elapsed().as_millis() as u64;
     tracing::info!("MIDI mapper task started");
@@ -875,7 +1060,7 @@ async fn run_with_midi(
 
             evt = beat_rx.recv() => {
                 match evt {
-                    Ok(BeatEvent::Beat { packet: bp, .. }) => {
+                    Ok(BeatEvent::Beat { packet: bp, received_at }) => {
                         // Only trigger notes / CCs for the master deck of the active source.
                         let (master_num, master_source) = {
                             let st = state.read();
@@ -891,9 +1076,16 @@ async fn run_with_midi(
                             let c = cfg.read();
                             (c.scenes.clone(), c.midi.notes.off_vel0)
                         };
-                        scenes.beat(&scene_cfg, now_ms(), bp.beat_in_bar, &mut |o| {
-                            send_scene(midi.as_ref(), o, &activity, vel0)
+                        dmx_send(dmx, DmxMsg::Beat {
+                            beat_in_bar: bp.beat_in_bar,
+                            bpm: bp.effective_bpm,
+                            at: received_at,
                         });
+                        scenes.beat(&scene_cfg, now_ms(), bp.beat_in_bar, &mut |o| {
+                            send_scene(midi.as_ref(), o, &activity, vel0);
+                            scene_to_dmx(dmx, &scene_cfg, o);
+                        });
+                        fired_to_dmx(&mut scenes, dmx);
                         send_osc_beat(&osc, &cfg, bp.beat_in_bar);
                         tracing::debug!(
                             device = bp.device_number,
@@ -905,7 +1097,7 @@ async fn run_with_midi(
                     Ok(BeatEvent::AbsPosition { .. }) => {
                         // Phase updates handled via shared state CCs below.
                     }
-                    Ok(BeatEvent::LinkBeat { bpm, beat_in_bar, .. }) => {
+                    Ok(BeatEvent::LinkBeat { bpm, beat_in_bar, received_at, .. }) => {
                         if !link_beat_allowed(state.read().master.source) {
                             continue;
                         }
@@ -915,9 +1107,12 @@ async fn run_with_midi(
                             let c = cfg.read();
                             (c.scenes.clone(), c.midi.notes.off_vel0)
                         };
+                        dmx_send(dmx, DmxMsg::Beat { beat_in_bar, bpm, at: received_at });
                         scenes.beat(&scene_cfg, now_ms(), beat_in_bar, &mut |o| {
-                            send_scene(midi.as_ref(), o, &activity, vel0)
+                            send_scene(midi.as_ref(), o, &activity, vel0);
+                            scene_to_dmx(dmx, &scene_cfg, o);
                         });
+                        fired_to_dmx(&mut scenes, dmx);
                         send_osc_beat(&osc, &cfg, beat_in_bar);
                         tracing::debug!(
                             beat = beat_in_bar,
@@ -1211,10 +1406,13 @@ async fn run_with_midi(
             let c = cfg.read();
             (c.scenes.clone(), c.midi.notes.off_vel0)
         };
-        let input = scene_input(&state);
+        let input = scene_input(&state, prev_guess);
+        prev_guess = (input.device, input.track, input.guess);
         scenes.update(&scene_cfg, now_ms(), &input, &mut |o| {
-            send_scene(midi.as_ref(), o, &activity, vel0)
+            send_scene(midi.as_ref(), o, &activity, vel0);
+            scene_to_dmx(dmx, &scene_cfg, o);
         });
+        fired_to_dmx(&mut scenes, dmx);
         // The UI counters are optional. Do not wait for the lock.
         if let Some(mut act) = activity.try_lock() {
             act.scene = scenes.status(&scene_cfg);
@@ -1229,6 +1427,7 @@ pub async fn run(
     status_rx: broadcast::Receiver<StatusEvent>,
     cfg: SharedConfig,
     activity: Arc<Mutex<MidiActivity>>,
+    dmx: Option<DmxTx>,
 ) {
-    run_with_midi(midi, state, beat_rx, status_rx, cfg, activity).await;
+    run_with_midi(midi, state, beat_rx, status_rx, cfg, activity, dmx).await;
 }

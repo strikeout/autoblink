@@ -7,6 +7,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod guess;
 pub mod mapper;
 pub mod scenes;
 pub mod settings;
