@@ -280,7 +280,8 @@ async fn run(task: Task) {
         tracing::warn!(error = %e, "The DMX engine cannot enable broadcast");
     }
     let mut rx = rx.lock().await;
-    let start = Instant::now();
+    // The mapper uses the same epoch. Thus the times of the autopilot actions match.
+    let start = crate::runtime::epoch();
     let ms = |t: Instant| t.saturating_duration_since(start).as_millis() as u64;
     let mut lights = Lights::default();
     let mut clock = BeatClock::default();
@@ -343,10 +344,9 @@ async fn run(task: Task) {
             let beat = clock.now(now_ms);
             lights.frame(&show, beat.as_ref(), &live, now_ms, &mut frame);
             // The host has no DMX IN. The room level acts on the own frame of the engine.
-            if show.auto.on || live.blackout {
-                let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
-                apply_room(&show, console, all, &mut frame);
-            }
+            // A trial move of the page acts also while the autopilot is off.
+            let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
+            apply_room(&show, console, all, &mut frame);
         }
         // The task does not wait for the status lock, and it writes only a change. Thus a frame
         // without a change allocates nothing. The next frame tries again.

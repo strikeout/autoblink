@@ -123,7 +123,7 @@ pub fn start(
         let mut next_cc = Instant::now();
         // The pilot holds about 1 KB of arrays. It is on the heap, not on the stack.
         #[cfg(feature = "dmx")]
-        let mut ap = Box::new(Autopilot::new(night, state.now_ms()));
+        let mut ap = Box::new(Autopilot::new(night, state.now_ms(), state.reset_reason));
 
         loop {
             // SAFETY: the task subscribed above. A reset of an unsubscribed task only gives an
@@ -409,8 +409,15 @@ struct Autopilot {
 
 #[cfg(feature = "dmx")]
 impl Autopilot {
-    fn new(night: Night, now_ms: u64) -> Self {
+    /// A power-on or a brownout starts a new night: the club cut the power at the close. A
+    /// software restart, a panic or a watchdog continues the night.
+    fn new(mut night: Night, now_ms: u64, reset_reason: &str) -> Self {
+        // `saved` keeps the old bytes. Thus the first save writes the new night.
         let saved = night.to_bytes();
+        if matches!(reset_reason, "power-on" | "brownout") {
+            night.start_new_night();
+            log::info!("The autopilot starts a new night after the {reset_reason}");
+        }
         let mut pilot = Pilot::default();
         pilot.set_night(night);
         Self {

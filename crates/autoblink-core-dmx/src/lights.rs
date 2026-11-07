@@ -161,8 +161,8 @@ impl Lights {
         }
     }
 
-    /// An action of the pilot. The state stays until the next action. The engine ignores the
-    /// state while `show.auto.on` is false.
+    /// An action of the pilot. The state stays until the next action. While `show.auto.on` is
+    /// false, the engine uses only the tier and the energy, for a trial of `try_move`.
     pub fn auto(&mut self, action: Action, now_ms: u64) {
         match action {
             Action::Program(_) => {}
@@ -192,11 +192,16 @@ impl Lights {
         self.trial = Some((index, now_ms + (32.0 * mpb) as u64));
     }
 
+    /// True while a trial of `try_move` runs.
+    fn trial_runs(&self, now_ms: u64) -> bool {
+        self.trial.is_some_and(|(_, until)| now_ms < until)
+    }
+
     /// The (console, all) room levels for `apply_room`, after the merge. `console` is the dip
     /// of a build for the console fixtures. `all` is 0 in the blackout before a drop, and with
-    /// the blackout of the page.
+    /// the blackout of the page. While the autopilot is off, only a trial move changes `all`.
     pub fn room(&self, show: &Show, beat: Option<&Beat>, live: &Live, now_ms: u64) -> (u8, u8) {
-        if !show.auto.on {
+        if !show.auto.on && !self.trial_runs(now_ms) {
             return (255, if live.blackout { 0 } else { 255 });
         }
         let mpb = beat
@@ -205,7 +210,7 @@ impl Lights {
             .unwrap_or(DEFAULT_MS_PER_BEAT);
         let mut console = 255;
         let mut dark = live.blackout;
-        if let Some((from, drop)) = self.build {
+        if let Some((from, drop)) = self.build.filter(|_| show.auto.on) {
             let frac = build_fraction(from, drop, now_ms, mpb);
             let dip = f64::from(show.auto.drop.dip);
             console = (dip + (255.0 - dip) * frac).round() as u8;
@@ -214,7 +219,7 @@ impl Lights {
                 dark |= now_ms < d && now_ms as f64 >= start;
             }
         }
-        let st = self.auto_look(now_ms, mpb);
+        let st = self.auto_look(show, now_ms, mpb);
         let all = if dark {
             0
         } else {
@@ -223,15 +228,16 @@ impl Lights {
         (console, all)
     }
 
-    /// What the autopilot shows at `now_ms`.
-    fn auto_look(&self, now_ms: u64, mpb: f64) -> AutoLook {
+    /// What the autopilot shows at `now_ms`. While the autopilot is off, a trial shows without
+    /// the build.
+    fn auto_look(&self, show: &Show, now_ms: u64, mpb: f64) -> AutoLook {
         let mut st = self.look;
         if let Some((i, until)) = self.trial {
             if now_ms < until {
                 st.moves = 1u32.checked_shl(u32::from(i)).unwrap_or(0);
             }
         }
-        if let Some((from, drop)) = self.build {
+        if let Some((from, drop)) = self.build.filter(|_| show.auto.on) {
             let frac = build_fraction(from, drop, now_ms, mpb);
             st.level = (128.0 + 127.0 * frac).round() as u8;
             if frac >= 0.5 {
@@ -291,15 +297,13 @@ impl Lights {
         mpb: f64,
         out: &mut Universe,
     ) {
-        if self.trial.is_some_and(|(_, until)| until <= now_ms) {
-            self.trial = None;
-        }
-        let st = self.auto_look(now_ms, mpb);
+        let st = self.auto_look(show, now_ms, mpb);
         render_auto(show, &st, beat, now_ms, out);
         let hit_ms = f64::from(show.auto.drop.strobe_beats) * mpb;
-        if self
-            .hit_at
-            .is_some_and(|t| (now_ms.saturating_sub(t) as f64) < hit_ms)
+        if show.auto.on
+            && self
+                .hit_at
+                .is_some_and(|t| (now_ms.saturating_sub(t) as f64) < hit_ms)
         {
             for f in show.fixtures.iter().filter(|f| !f.console) {
                 for (i, c) in fixture_channels(f) {
@@ -336,7 +340,11 @@ impl Lights {
             }
         }
 
-        if show.auto.on {
+        if !self.trial_runs(now_ms) {
+            self.trial = None;
+        }
+        // A trial of the page shows the auto frame also while the autopilot is off.
+        if show.auto.on || self.trial.is_some() {
             self.frame_auto(show, beat, now_ms, mpb, out);
         } else {
             let stopped = self.stopped_at.is_some_and(|s| {
@@ -919,6 +927,54 @@ mod tests {
             // 32 beats of 500 ms later the set of Action::Moves returns.
             l.frame(&s, Some(&B120), &live(false), 17_001, &mut out);
             assert_eq!(out[0], 88);
+        }
+
+        #[test]
+        fn try_move_works_while_auto_off() {
+            let mut s = auto_show();
+            s.auto.on = false;
+            s.auto.moves = vec![
+                Move {
+                    shape: MoveShape::Hold,
+                    target: Target::Group(0),
+                    param: Param::Dimmer,
+                    half_beats: 4,
+                    size: 40,
+                    spread: Spread::Together,
+                    color: None,
+                    faster: false,
+                    spot: 0,
+                },
+                Move {
+                    shape: MoveShape::Blackout,
+                    target: Target::Room,
+                    param: Param::Dimmer,
+                    half_beats: 8,
+                    size: 100,
+                    spread: Spread::Together,
+                    color: None,
+                    faster: false,
+                    spot: 0,
+                },
+            ];
+            s.idle = None;
+            let mut l = Lights::default();
+            l.test(&s, 0, 0);
+            let mut out = [0; UNIVERSE];
+            l.frame(&s, Some(&B120), &live(false), 500, &mut out);
+            assert_eq!(out[..4], [255, 255, 0, 0]);
+            l.try_move(0, 1000);
+            l.frame(&s, Some(&B120), &live(false), 2000, &mut out);
+            // The base of Groove at spot 50 is 175. The hold of size 40 gives 70.
+            assert_eq!(out[0], 70);
+            assert_eq!(l.room(&s, Some(&B120), &live(false), 2000), (255, 255));
+            // 32 beats of 500 ms later the manual frame returns.
+            l.frame(&s, Some(&B120), &live(false), 17_001, &mut out);
+            assert_eq!(out[..4], [255, 255, 0, 0]);
+            // A trial of a Room move darkens the room only while it runs.
+            l.try_move(1, 20_000);
+            assert_eq!(l.room(&s, Some(&B120), &live(false), 20_000), (255, 0));
+            assert_eq!(l.room(&s, Some(&B120), &live(false), 36_001), (255, 255));
         }
 
         #[test]

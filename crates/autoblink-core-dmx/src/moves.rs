@@ -99,11 +99,7 @@ fn move_speed(st: &AutoLook, m: &Move) -> u8 {
 }
 
 /// The cycle phase 0.0..1.0 of a move. A cycle starts on a bar line, as in `shape_offset`.
-/// Without a beat, the phase is 0.
-fn cycle_phase(beat: Option<&Beat>, m: &Move, speed: u8) -> f64 {
-    let Some(b) = beat else {
-        return 0.0;
-    };
+fn cycle_phase(b: &Beat, m: &Move, speed: u8) -> f64 {
     let period = f64::from(m.half_beats.max(1)) / 2.0 / f64::from(speed.max(1));
     let i = if b.beat_in_bar == 0 {
         b.count
@@ -165,8 +161,19 @@ fn aim_offset(m: &Move, p: f64, k: usize, n: usize) -> (f64, f64) {
     }
 }
 
+/// The home of a head: its aim in the first position of the show, or the centre.
+fn home(show: &Show, i: usize) -> (f64, f64) {
+    show.positions
+        .first()
+        .and_then(|p| p.aims.iter().find(|a| usize::from(a.fixture) == i))
+        .map_or((32768.0, 32768.0), |a| {
+            (f64::from(a.pan), f64::from(a.tilt))
+        })
+}
+
 /// Writes the base (tier colour at the energy level) and the active moves into `out`.
 /// It writes only fixtures with `console == false`. Room moves act through `room_factor`.
+/// Without a beat, the moves stop and the fixtures show the base. A head sits at its home.
 pub fn render_auto(
     show: &Show,
     st: &AutoLook,
@@ -184,13 +191,16 @@ pub fn render_auto(
         let mut dim = 1.0;
         let mut mix = (0.0, [0u8; 3]);
         let mut strobe = 0u8;
-        let (mut pan, mut tilt) = (0.0, 0.0);
+        let (mut pan, mut tilt) = home(show, i);
         for m in active(show, st) {
+            let Some(b) = beat else {
+                break;
+            };
             let Some((k, n)) = slot(show, m.target, i) else {
                 continue;
             };
             let speed = move_speed(st, m);
-            let p = cycle_phase(beat, m, speed);
+            let p = cycle_phase(b, m, speed);
             let v = shape_value(m.shape, m.spread, m.size, p, k, n);
             match m.param {
                 Param::Dimmer => dim *= v,
@@ -222,8 +232,8 @@ pub fn render_auto(
                 (v * lvl / 255) as u8
             }
         };
-        let pan16 = (32768.0 + pan).clamp(0.0, 65535.0) as u16;
-        let tilt16 = (32768.0 + tilt).clamp(0.0, 65535.0) as u16;
+        let pan16 = pan.clamp(0.0, 65535.0) as u16;
+        let tilt16 = tilt.clamp(0.0, 65535.0) as u16;
         for (idx, c) in fixture_channels(f) {
             out[idx] = match c {
                 Channel::Dimmer => lvl as u8,
@@ -250,12 +260,15 @@ pub fn render_auto(
     }
 }
 
-/// The room level 0..=255 that Room moves give now (255 without a Room move).
+/// The room level 0..=255 that Room moves give now (255 without a Room move or without a beat).
 pub fn room_factor(show: &Show, st: &AutoLook, beat: Option<&Beat>) -> u8 {
+    let Some(b) = beat else {
+        return 255;
+    };
     let mut f = 1.0;
     for m in active(show, st) {
         if m.target == Target::Room && m.param == Param::Dimmer {
-            let p = cycle_phase(beat, m, move_speed(st, m));
+            let p = cycle_phase(b, m, move_speed(st, m));
             f *= shape_value(m.shape, m.spread, m.size, p, 0, 1);
         }
     }
@@ -450,6 +463,94 @@ mod tests {
         // Phase 0: x = cos 0 = 1, y = sin 0 = 0. The amplitude is 16384.
         // Pan = 32768 + 16384 = 49152 = 0xC000. Tilt = 32768 = 0x8000.
         assert_eq!(out[..4], [0xC0, 0x00, 0x80, 0x00]);
+    }
+
+    fn mv(shape: MoveShape, target: Target, param: Param, size: u8) -> Move {
+        Move {
+            shape,
+            target,
+            param,
+            half_beats: 8,
+            size,
+            spread: Spread::Together,
+            color: None,
+            faster: false,
+            spot: 0,
+        }
+    }
+
+    #[test]
+    fn moves_pause_without_beat() {
+        let mut s = show_with(vec![fx(1, &[Dimmer, Strobe], false)]);
+        s.auto.moves = vec![
+            mv(MoveShape::Ramp, Target::Group(0), Param::Dimmer, 100),
+            mv(MoveShape::StrobeBurst, Target::Group(0), Param::Strobe, 100),
+            mv(MoveShape::Ramp, Target::Room, Param::Dimmer, 100),
+        ];
+        let st = AutoLook {
+            moves: 0b111,
+            ..AutoLook::default()
+        };
+        let mut out = [0; UNIVERSE];
+        render_auto(&s, &st, None, 0, &mut out);
+        // The base of Groove at spot 50 is 175. The ramp at phase 0 would give 0.
+        assert_eq!(out[..2], [175, 0]);
+        assert_eq!(room_factor(&s, &st, None), 255);
+        let b = Beat {
+            phase: 0.0,
+            beat_in_bar: 1,
+            count: 0,
+            ms_per_beat: 500.0,
+        };
+        render_auto(&s, &st, Some(&b), 0, &mut out);
+        assert_eq!(out[..2], [0, 255]);
+        assert_eq!(room_factor(&s, &st, Some(&b)), 0);
+    }
+
+    #[test]
+    fn head_moves_around_first_position() {
+        use crate::show::{Aim, Position};
+        let mut s = show_with(vec![
+            fx(1, &[Pan, PanFine, Tilt, TiltFine], false),
+            fx(5, &[Pan, PanFine, Tilt, TiltFine], false),
+        ]);
+        s.positions = vec![
+            Position {
+                name: "home".into(),
+                aims: vec![Aim {
+                    fixture: 0,
+                    pan: 0x2000,
+                    tilt: 0x3000,
+                }],
+            },
+            Position {
+                name: "other".into(),
+                aims: vec![Aim {
+                    fixture: 1,
+                    pan: 0x1000,
+                    tilt: 0x1000,
+                }],
+            },
+        ];
+        s.auto.moves = vec![mv(MoveShape::Sweep, Target::Group(0), Param::Pan, 100)];
+        let st = AutoLook {
+            moves: 1,
+            ..AutoLook::default()
+        };
+        let mut out = [0; UNIVERSE];
+        render_auto(&s, &st, None, 0, &mut out);
+        assert_eq!(out[..4], [0x20, 0x00, 0x30, 0x00]);
+        assert_eq!(out[4..8], [0x80, 0x00, 0x80, 0x00]);
+        // A quarter cycle: sin = 1, so the pan moves by 16384 (0x4000).
+        let b = Beat {
+            phase: 0.0,
+            beat_in_bar: 2,
+            count: 1,
+            ms_per_beat: 500.0,
+        };
+        render_auto(&s, &st, Some(&b), 0, &mut out);
+        assert_eq!(out[..4], [0x60, 0x00, 0x30, 0x00]);
+        assert_eq!(out[4..8], [0xC0, 0x00, 0x80, 0x00]);
     }
 
     #[test]

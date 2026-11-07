@@ -510,10 +510,28 @@ pub fn night_path(config_path: &Path) -> PathBuf {
     config_path.with_file_name("night.bin")
 }
 
-/// Reads the night file. A missing file or a bad file gives the default night.
+/// Reads the night file. A missing file or a bad file gives the default night. A file that is
+/// older than `NIGHT_GAP_MS` holds an earlier night, so a new night starts.
 pub fn load_night(path: &Path) -> [u8; autoblink_core_dmx::NIGHT_BYTES] {
     let bytes = std::fs::read(path).unwrap_or_default();
-    autoblink_core_dmx::Night::from_bytes(&bytes).to_bytes()
+    let age = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok());
+    night_from_file(&bytes, age)
+}
+
+/// The night of the file content `bytes`. When the file is older than `NIGHT_GAP_MS`, the night
+/// goes into the prior, and a new night starts.
+fn night_from_file(
+    bytes: &[u8],
+    age: Option<std::time::Duration>,
+) -> [u8; autoblink_core_dmx::NIGHT_BYTES] {
+    let mut night = autoblink_core_dmx::Night::from_bytes(bytes);
+    if age.is_some_and(|a| a.as_millis() > u128::from(autoblink_core_dmx::NIGHT_GAP_MS)) {
+        night.start_new_night();
+    }
+    night.to_bytes()
 }
 
 /// Writes the night file. This is a blocking call.
@@ -687,5 +705,26 @@ mod tests {
         std::fs::write(&path, [1u8, 2, 3]).unwrap();
         assert_eq!(load_night(&path), default, "a short file gives the default");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn old_night_file_starts_a_new_night() {
+        use autoblink_core_dmx::{Night, NIGHT_GAP_MS};
+        use std::time::Duration;
+        let mut night = Night::default();
+        for i in 0..600u64 {
+            night.sample(230, true, i * 1000);
+        }
+        let bytes = night.to_bytes();
+        let gap = Duration::from_millis(NIGHT_GAP_MS);
+        // A young file continues the night.
+        assert_eq!(night_from_file(&bytes, Some(gap / 2)), bytes);
+        assert_eq!(night_from_file(&bytes, None), bytes);
+        // An old file starts a new night with the old night in the prior.
+        let mut folded = night.clone();
+        folded.start_new_night();
+        let old = night_from_file(&bytes, Some(gap + Duration::from_secs(1)));
+        assert_eq!(old, folded.to_bytes());
+        assert_ne!(old, bytes);
     }
 }

@@ -63,6 +63,13 @@ where
     }
 }
 
+/// The start of the clock in ms that the MIDI mapper and the DMX engine share. A time that one
+/// task calculates is thus the same time in the other task, also after a restart of a task.
+pub fn epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
+}
+
 /// Spawns `factory` under [`supervise`] on the current runtime.
 pub fn spawn_supervised<F, Fut>(name: &'static str, factory: F)
 where
@@ -168,7 +175,8 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         midi_out: midi_out.clone(),
         midi_activity: Arc::clone(&midi_activity),
         dmx_tx: dmx.as_ref().map(|d| d.tx.clone()),
-        auto: Some(Arc::clone(&auto)),
+        // The pilot runs only with the DMX engine. Without it, the page hides the autopilot.
+        auto: dmx.as_ref().map(|_| Arc::clone(&auto)),
     };
 
     dj_state.write().set_source_mode(startup_cfg.source.clone());
@@ -254,11 +262,22 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{source_flags, supervise};
+    use super::{epoch, source_flags, supervise};
     use crate::config::Source;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn epoch_is_the_same_in_each_task() {
+        let mapper = epoch();
+        let t = Instant::now();
+        // A restarted task on another thread gets the same epoch.
+        let engine = std::thread::spawn(epoch).join().unwrap();
+        assert_eq!(mapper, engine);
+        let ms = |start: Instant| t.saturating_duration_since(start).as_millis() as u64;
+        assert_eq!(ms(mapper), ms(engine));
+    }
 
     #[tokio::test]
     async fn supervise_restarts_a_task_that_panics_or_returns() {

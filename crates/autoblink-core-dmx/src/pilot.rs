@@ -277,12 +277,18 @@ impl Pilot {
         let drop_on = matches!(pin_tier, None | Some(Tier::Peak));
 
         // The build ends at a stop, a track change, a pin that turns the drop off, or a drop that
-        // does not come.
+        // does not come. A build without a drop time also ends at the next bucket that is not
+        // a Build or a Drop.
         if self.build_open {
-            let gone = self.build_drop_ms.is_some_and(|d| {
-                (input.drop_at_ms.is_none() && now + 1000 < d)
-                    || now > d.saturating_add(LATE_DROP_MS)
-            });
+            let gone = match self.build_drop_ms {
+                Some(d) => {
+                    (input.drop_at_ms.is_none() && now + 1000 < d)
+                        || now > d.saturating_add(LATE_DROP_MS)
+                }
+                None => [Event::Intro, Event::Groove, Event::Break, Event::Outro]
+                    .iter()
+                    .any(|&e| ev.contains(e)),
+            };
             if !input.playing
                 || !drop_on
                 || gone
@@ -805,6 +811,26 @@ mod tests {
         i.playing = false;
         assert_eq!(run(&mut p, &a, &i), vec![Action::EndBuild]);
         assert!(run(&mut p, &a, &i).is_empty());
+    }
+
+    #[test]
+    fn guessed_build_ends_at_next_bucket() {
+        let a = tiered();
+        let mut p = Pilot::default();
+        run(&mut p, &a, &input(1000, &[Event::Build]));
+        assert!(!run(&mut p, &a, &input(1010, &[Event::Build])).contains(&Action::EndBuild));
+        let v = run(&mut p, &a, &input(1020, &[Event::Groove]));
+        assert!(v.contains(&Action::EndBuild));
+        assert!(!p.build_open);
+        // A build with a known drop time does not end at a bucket event.
+        let mut q = Pilot::default();
+        let mut i = input(1000, &[]);
+        i.bpm = 128.0;
+        i.drop_at_ms = Some(31_000);
+        run(&mut q, &a, &i);
+        i.now_ms = 1010;
+        i.events.insert(Event::Break);
+        assert!(!run(&mut q, &a, &i).contains(&Action::EndBuild));
     }
 
     #[test]

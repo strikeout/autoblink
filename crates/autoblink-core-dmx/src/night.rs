@@ -81,7 +81,7 @@ impl Night {
         {
             self.last_sample_ms = Some(now_ms);
             let bin = usize::from(raw) * BINS / 256;
-            self.now[bin] += 1;
+            self.now[bin] = self.now[bin].saturating_add(1);
             if self.now[bin] >= BIN_LIMIT {
                 for b in &mut self.now {
                     *b /= 2;
@@ -89,6 +89,14 @@ impl Night {
             }
         }
         new_night
+    }
+
+    /// Folds this night into the prior and starts an empty night. The caller uses it after a
+    /// restored night that is from an earlier night, for example after a power-on.
+    pub fn start_new_night(&mut self) {
+        self.fold();
+        self.last_play_ms = None;
+        self.last_sample_ms = None;
     }
 
     /// Keeps half of the old prior, adds this night (normalized), and clears this night.
@@ -139,14 +147,16 @@ impl Night {
         out
     }
 
+    // `as_chunks` needs Rust 1.88. The esp toolchain is older, so the chunk size stays constant.
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
     /// A wrong length or version gives `Night::default()`. The restored night has no play time,
-    /// so the next play continues this night.
+    /// so the next play continues this night. To start a new night, call `start_new_night`.
     pub fn from_bytes(b: &[u8]) -> Night {
         if b.len() != NIGHT_BYTES || b[0] != VERSION {
             return Night::default();
         }
         let mut n = Night::default();
-        for (i, c) in b[1..].as_chunks::<2>().0.iter().enumerate() {
+        for (i, c) in b[1..].chunks_exact(2).enumerate() {
             let v = u16::from_le_bytes([c[0], c[1]]);
             if i < BINS {
                 n.now[i] = v;
@@ -218,6 +228,28 @@ mod tests {
         n.sample(100, true, 0);
         let mut r = Night::from_bytes(&n.to_bytes());
         assert!(!r.sample(100, true, 10));
+    }
+
+    #[test]
+    fn start_new_night_folds_into_prior() {
+        let mut n = Night::default();
+        for i in 0..600u64 {
+            n.sample(230, true, i * S);
+        }
+        let before = Night::default().spot(230);
+        n.start_new_night();
+        assert!(n.now.iter().all(|&b| b == 0));
+        // The prior now holds the loud night, so the same energy reads lower than before.
+        assert!(n.spot(230) < before, "{} {}", n.spot(230), before);
+        assert!(!n.sample(230, true, 0));
+    }
+
+    #[test]
+    fn bin_count_saturates() {
+        let mut n = Night::default();
+        n.now[3] = u16::MAX;
+        n.sample(3 * 8, true, 0);
+        assert!(n.now[3] < u16::MAX);
     }
 
     #[test]

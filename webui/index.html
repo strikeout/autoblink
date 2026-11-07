@@ -519,7 +519,7 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
     <div id="ltpatch" class="cardrow"></div>
     <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
     <div id="ltgroups" class="cardrow"></div>
-    <div class="section" title="A position is a pan and a tilt for each moving head. A row of a look can use one.">Positions <button id="ltaddpos">+ Position</button></div>
+    <div class="section" title="A position is a pan and a tilt for each moving head. A row of a look can use one. The first position is the home of the autopilot.">Positions <button id="ltaddpos">+ Position</button></div>
     <div id="ltpos" class="cardrow"></div>
     <div class="section">Idle look</div>
     <div id="ltidle" class="cardrow"></div>
@@ -2241,7 +2241,7 @@ function aimSend(fixture, a) {
 function renderPositions() {
   const heads = show.fixtures.map((f, i) => [f, i]).filter(([f]) => isHead(f));
   $('ltaddpos').disabled = !heads.length;
-  $('ltpos').replaceChildren(...(show.positions.length || !heads.length ? [] : [h('span', 'hint', 'Add a position to aim the moving heads.')]),
+  $('ltpos').replaceChildren(...(show.positions.length || !heads.length ? [] : [h('span', 'hint', 'Add a position to aim the moving heads. The first position is the home of the autopilot.')]),
     ...(heads.length ? show.positions.map((p, pi) => {
       const del = h('button', null, '×');
       del.title = 'Remove this position.';

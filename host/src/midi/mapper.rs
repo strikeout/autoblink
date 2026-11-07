@@ -1132,7 +1132,8 @@ async fn run_with_midi(
     // The master deck and the last guess of `scene_input`. The guess keeps a Drop or a Break near
     // its threshold.
     let mut prev_guess: (u8, u32, Option<Event>) = (0, 0, None);
-    let start = Instant::now();
+    // The DMX engine uses the same epoch. Thus the times of the autopilot actions match.
+    let start = crate::runtime::epoch();
     let now_ms = || start.elapsed().as_millis() as u64;
     // The pilot ticks at each pass, also when the MIDI sources are quiet.
     let mut pilot = auto.map(|ctl| HostPilot::new(ctl, now_ms()));

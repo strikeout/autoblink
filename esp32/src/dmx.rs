@@ -417,10 +417,9 @@ fn run(
             };
             // The room level comes after the merge. Thus the dip and the blackout also apply
             // to the light of the outside source.
-            if show.auto.on || live.blackout {
-                let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
-                apply_room(&show, console, all, channels);
-            }
+            // A trial move of the page acts also while the autopilot is off.
+            let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
+            apply_room(&show, console, all, channels);
             send
         };
         // The page and the display read the status. The thread does not wait for the lock, and
