@@ -105,6 +105,13 @@ impl DropGuess {
         Some(self.bucket_at(frac.clamp(0.0, 1.0), prev))
     }
 
+    /// The smoothed energy 0..=255 at the position `frac` (0.0 to 1.0).
+    pub fn energy_at(&self, frac: f64) -> u8 {
+        let n = self.profile.len();
+        let i = ((frac.clamp(0.0, 1.0) * n as f64) as usize).min(n - 1);
+        self.profile[i]
+    }
+
     /// The bucket at the position `frac` (0.0 to 1.0) of the track. `prev` is the bucket that
     /// the guess gave last. The classifier keeps a Drop or a Break while the energy stays
     /// within a small band of the threshold that started it.
@@ -144,6 +151,12 @@ impl DropGuess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn energy_at_follows_profile() {
+        let g = DropGuess::from_preview(&preview(&[(100, 40), (100, 200)])).unwrap();
+        assert!(g.energy_at(0.1) < g.energy_at(0.9));
+    }
 
     /// A preview with 6 equal bytes for each column. `runs` is (columns, value).
     fn preview(runs: &[(usize, u8)]) -> Vec<u8> {

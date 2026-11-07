@@ -6,6 +6,8 @@
 
 pub mod auto;
 pub use auto::*;
+pub mod night;
+pub use night::*;
 pub mod show;
 pub use show::*;
 pub mod render;
