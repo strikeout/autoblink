@@ -22,3 +22,5 @@ pub mod artnet;
 pub use artnet::*;
 pub mod merge;
 pub use merge::*;
+pub mod pilot;
+pub use pilot::*;
