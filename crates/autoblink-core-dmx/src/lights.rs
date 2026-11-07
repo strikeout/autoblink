@@ -433,6 +433,8 @@ impl Lights {
                 for (i, c) in fixture_channels(f) {
                     if is_light(c, has_dimmer) {
                         out[i] = (u32::from(out[i]) * m / 255) as u8;
+                    } else if c == Channel::Strobe && m == 0 {
+                        out[i] = 0;
                     }
                 }
             }
@@ -962,5 +964,19 @@ mod tests {
             apply_room(&s, 255, 128, &mut o);
             assert_eq!(o[..3], [100; 3]);
         }
+    }
+
+    #[test]
+    fn master_zero_clears_strobe_hold() {
+        let s = show();
+        let mut l = Lights::default();
+        let mut out = [0; UNIVERSE];
+        let live = Live {
+            master: 0,
+            strobe_hold: true,
+            blackout: false,
+        };
+        l.frame(&s, None, &live, 0, &mut out);
+        assert_eq!(out[9], 0);
     }
 }

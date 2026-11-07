@@ -209,6 +209,10 @@ pub fn render_auto(
         }
         let lvl = (f64::from(base) * dim).round() as u32;
         let has_dimmer = f.channels.contains(&Channel::Dimmer);
+        let has_rgb = f
+            .channels
+            .iter()
+            .any(|c| matches!(c, Channel::Red | Channel::Green | Channel::Blue));
         let colour = |j: usize| {
             let a = f64::from(tier_color[j]);
             let v = (a + (f64::from(mix.1[j]) - a) * mix.0).round() as u32;
@@ -226,6 +230,14 @@ pub fn render_auto(
                 Channel::Red => colour(0),
                 Channel::Green => colour(1),
                 Channel::Blue => colour(2),
+                // A fixture without red, green and blue shows its white at the level.
+                Channel::White if !has_rgb => {
+                    if has_dimmer {
+                        255
+                    } else {
+                        lvl as u8
+                    }
+                }
                 Channel::White | Channel::Amber | Channel::Uv | Channel::Fog => 0,
                 Channel::Strobe => strobe,
                 Channel::Pan => (pan16 >> 8) as u8,
@@ -251,7 +263,7 @@ pub fn room_factor(show: &Show, st: &AutoLook, beat: Option<&Beat>) -> u8 {
 }
 
 /// Scales the light channels of the fixtures in place. `console` scales the console fixtures,
-/// `all` scales every fixture. The strobe channel scales too, so that a blackout stops it.
+/// `all` scales every fixture. At level 0, the strobe channel goes to 0 too.
 pub fn apply_room(show: &Show, console: u8, all: u8, out: &mut Universe) {
     for f in &show.fixtures {
         let s = if f.console {
@@ -264,8 +276,11 @@ pub fn apply_room(show: &Show, console: u8, all: u8, out: &mut Universe) {
         }
         let has_dimmer = f.channels.contains(&Channel::Dimmer);
         for (i, c) in fixture_channels(f) {
-            if is_light(c, has_dimmer) || c == Channel::Strobe {
+            if is_light(c, has_dimmer) {
                 out[i] = (u32::from(out[i]) * s / 255) as u8;
+            } else if c == Channel::Strobe && s == 0 {
+                // A strobe value is a rate. Only the level 0 changes it.
+                out[i] = 0;
             }
         }
     }
@@ -373,5 +388,76 @@ mod tests {
         out[..6].copy_from_slice(&[200; 6]);
         apply_room(&s, 255, 128, &mut out);
         assert_eq!(out[..6], [100; 6]);
+    }
+
+    #[test]
+    fn strobe_rate_survives_dip_and_zero_clears_it() {
+        let s = show_with(vec![fx(1, &[Dimmer, Strobe], true)]);
+        let mut out = [0; UNIVERSE];
+        out[..2].copy_from_slice(&[200, 200]);
+        apply_room(&s, 128, 255, &mut out);
+        assert_eq!(out[..2], [100, 200]);
+        apply_room(&s, 255, 0, &mut out);
+        assert_eq!(out[..2], [0, 0]);
+    }
+
+    #[test]
+    fn dimmer_and_white_fixture_shows_white() {
+        let s = show_with(vec![fx(1, &[Dimmer, White], false)]);
+        let st = AutoLook {
+            tier: Tier::Groove,
+            spot: 50,
+            ..AutoLook::default()
+        };
+        let mut out = [0; UNIVERSE];
+        render_auto(&s, &st, None, 0, &mut out);
+        assert_eq!(out[..2], [175, 255]);
+        let s = show_with(vec![fx(1, &[White], false)]);
+        render_auto(&s, &st, None, 0, &mut out);
+        assert_eq!(out[0], 175);
+    }
+
+    #[test]
+    fn circle_on_pan_16_bit() {
+        use crate::auto::{Auto, Move};
+        let mut s = show_with(vec![fx(1, &[Pan, PanFine, Tilt, TiltFine], false)]);
+        s.auto = Auto {
+            moves: vec![Move {
+                shape: MoveShape::Circle,
+                target: Target::Group(0),
+                param: Param::PanTilt,
+                half_beats: 8,
+                size: 100,
+                spread: Spread::Together,
+                color: None,
+                faster: false,
+                spot: 0,
+            }],
+            ..Auto::default()
+        };
+        let st = AutoLook {
+            moves: 1,
+            ..AutoLook::default()
+        };
+        let b = Beat {
+            phase: 0.0,
+            beat_in_bar: 1,
+            count: 0,
+            ms_per_beat: 500.0,
+        };
+        let mut out = [0; UNIVERSE];
+        render_auto(&s, &st, Some(&b), 0, &mut out);
+        // Phase 0: x = cos 0 = 1, y = sin 0 = 0. The amplitude is 16384.
+        // Pan = 32768 + 16384 = 49152 = 0xC000. Tilt = 32768 = 0x8000.
+        assert_eq!(out[..4], [0xC0, 0x00, 0x80, 0x00]);
+    }
+
+    #[test]
+    fn dimmer_fixture_keeps_rgb_under_room() {
+        let s = show_with(vec![fx(1, &[Dimmer, Red, Green, Blue], false)]);
+        let mut out = [0; UNIVERSE];
+        out[..4].copy_from_slice(&[200, 10, 20, 30]);
+        apply_room(&s, 255, 128, &mut out);
+        assert_eq!(out[..4], [100, 10, 20, 30]);
     }
 }
