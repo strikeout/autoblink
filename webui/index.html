@@ -383,6 +383,9 @@ body.lv>*:not(#lvs):not(#takeover){display:none!important}
 body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:560px;margin:0 auto;min-height:100vh}
 #lvs .lvh{display:flex;align-items:baseline;gap:14px;font-size:20px}
 #lvs .lvh b{font-size:26px}
+#lvs #lvc{font-size:12px;color:var(--danger);margin-left:auto}
+#lvs #lvc:not(.off){display:none}
+#lvs #lvc::before{content:'';display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--danger);margin-right:6px}
 #lvs .lvh a{margin-left:auto;font-size:12px;color:var(--muted)}
 #lvs button{font-size:20px;font-weight:700;padding:22px 8px;touch-action:none;user-select:none;-webkit-user-select:none}
 #lvs .lvt{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -413,7 +416,7 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
   <div id="ltlayers" class="now" title="The looks that play now."></div>
 </div>
 <div id="lvs">
-  <div class="lvh"><b id="lvtier">-</b><span><span id="lvbpm" class="mono">-</span> BPM</span><a href="#">Exit</a></div>
+  <div class="lvh"><b id="lvtier">-</b><span><span id="lvbpm" class="mono">-</span> BPM</span><span id="lvc" class="off">offline</span><a href="#">Exit</a></div>
   <div class="lvt" id="lvt"></div>
   <button id="lvb">BLACKOUT</button>
   <button id="lvf">FOG</button>
@@ -471,9 +474,8 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
   </section>
 
   <details id="p-auto" class="panel wide" data-cap="auto" hidden open>
-    <summary><h2>Autopilot <span id="aphd" class="aphd"><span id="apdrv" class="seg"></span><span id="apviews" class="seg"></span></span></h2></summary>
+    <summary><h2>Autopilot <span id="aphd" class="aphd"><span id="apdrv" class="seg"></span><span id="apviews" class="seg"></span><button id="lvlink" title="Big buttons for the tier, the blackout and the fog.">Live screen</button></span></h2></summary>
     <div id="aplive" class="aplive"></div>
-    <a href="#live" class="hint">Live screen</a>
     <div id="apview"></div>
     <div id="apform"></div>
     <div id="apdrop"></div>
@@ -2693,6 +2695,7 @@ function connect() {
   ws = new WebSocket(BOX ? 'ws://' + BOX + '/ws' : proto + location.host + '/ws');
   ws.onopen = () => {
     backoff = 500;
+    lvConn(true);
     $('dot').classList.add('on');
     set('conn', 'live');
     // The server sends all retained log lines to a new socket.
@@ -2711,6 +2714,7 @@ function connect() {
     if (f) f(m);
   };
   ws.onclose = () => {
+    lvConn(false);
     $('dot').classList.remove('on');
     set('conn', 'reconnecting…');
     setTimeout(connect, backoff);
@@ -2888,6 +2892,12 @@ $('lvt').replaceChildren(...lvTiers.map((t) => {
   b.addEventListener('click', () => send({ type: 'auto_pin', tier: t }));
   return b;
 }));
+// The old socket closed, so the server released the blackout. A held button sets it again.
+function lvConn(on) {
+  $('lvc').classList.toggle('off', !on);
+  set('lvc', on ? '' : 'offline');
+  if (on && lvDown) lvBlack(true);
+}
 function renderLive(s) {
   if (!document.body.classList.contains('lv')) return;
   const a = s.auto || {};
@@ -2900,8 +2910,11 @@ const lvBlack = (on) => send({ type: 'dmx_blackout', on });
 $('lvb').addEventListener('pointerdown', (e) => { lvDown = true; $('lvb').setPointerCapture(e.pointerId); lvBlack(true); });
 for (const t of ['pointerup', 'pointercancel', 'pointerleave']) $('lvb').addEventListener(t, () => { if (lvDown) { lvDown = false; lvBlack(false); } });
 $('lvb').addEventListener('contextmenu', (e) => e.preventDefault());
-addEventListener('pagehide', () => { lvDown = false; lvBlack(false); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { lvDown = false; lvBlack(false); } });
+// Only the page that holds the blackout releases it. The flag is global on the host.
+const lvRelease = () => { if (lvDown) { lvDown = false; lvBlack(false); } };
+addEventListener('pagehide', lvRelease);
+document.addEventListener('visibilitychange', () => { if (document.hidden) lvRelease(); });
+$('lvlink').addEventListener('click', (e) => { e.preventDefault(); location.hash = '#live'; });
 $('lvf').addEventListener('click', () => send({ type: 'dmx_fog' }));
 
 connect();
