@@ -116,6 +116,9 @@ pub struct DmxStatus {
     pub in_fps: u16,
     /// `true` while a good DMX IN frame arrived in the last second.
     pub signal: bool,
+    /// The channel (1 to 512) and the value of the last change in the output. When one frame
+    /// changes more than one channel, this is the lowest channel. `None` before the first change.
+    pub last_change: Option<(u16, u8)>,
 }
 
 /// Starts the `dmx` thread. Returns the queue for the messages to the thread.
@@ -173,6 +176,9 @@ fn run(
     // thread. The receive buffer has space for a frame, two break bytes and one byte that shows a
     // frame that is too long.
     let mut out: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
+    // The channels of the last sent frame, to find the last change for the display.
+    let mut prev: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
+    let mut last_change: Option<(u16, u8)> = None;
     let mut input: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut art: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut rx: Box<[u8; FRAME_LEN + 3]> = Box::new([0; FRAME_LEN + 3]);
@@ -372,6 +378,13 @@ fn run(
                 )
             }
         };
+        if send {
+            // The lowest channel that changed since the last sent frame.
+            if let Some(i) = (1..FRAME_LEN).find(|&i| out[i] != prev[i]) {
+                last_change = Some((i as u16, out[i]));
+            }
+            prev.copy_from_slice(&out[..]);
+        }
         // The page and the display read the status. The thread does not wait for the lock, and
         // it writes the layers only after a change. The next frame tries again.
         if let Ok(mut s) = state.dmx_status.try_lock() {
@@ -385,6 +398,7 @@ fn run(
             s.mode = mode.key();
             s.in_fps = in_fps;
             s.signal = signal;
+            s.last_change = last_change;
         }
         // The UART sends the frame, then the break. The break before the next frame and the idle
         // time after it make the reset sequence of DMX512.

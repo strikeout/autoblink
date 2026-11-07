@@ -340,6 +340,7 @@ impl Ui<'_> {
                     mode: cfg.dmx_mode.label(),
                     beat_channel: cfg.beat_channel,
                     input: snap.dmx,
+                    last_change: dmx_last_change(self.state),
                 })
             }
             Page::Scenes => {
@@ -416,6 +417,17 @@ fn stick<'a>(
         AdcChannelDriver::new(adc, y, &cfg)?,
         PinDriver::input(sw, Pull::Up)?,
     ))
+}
+
+/// The last change in the DMX output: channel and value.
+fn dmx_last_change(state: &State) -> Option<(u16, u8)> {
+    #[cfg(feature = "dmx")]
+    return state.dmx_status.lock().ok().and_then(|d| d.last_change);
+    #[cfg(not(feature = "dmx"))]
+    {
+        let _ = state;
+        None
+    }
 }
 
 /// Copies the values of the screen from the state. Each lock is taken alone.

@@ -206,6 +206,8 @@ pub struct DmxInfo {
     /// The DMX IN signal, the DMX IN frames each second and the Art-Net state. `None` in a
     /// build without DMX.
     pub input: Option<(bool, u16, bool)>,
+    /// The channel and the value of the last change in the DMX output.
+    pub last_change: Option<(u16, u8)>,
 }
 
 /// The DMX page.
@@ -231,6 +233,10 @@ pub fn dmx_lines(d: &DmxInfo) -> Vec<String> {
         pair("Beat channel", &d.beat_channel.to_string(), COLS),
         pair("DMX IN", &input, COLS),
         pair("Art-Net", artnet, COLS),
+        match d.last_change {
+            Some((ch, v)) => pair("Out", &format!("ch {ch} = {v}"), COLS),
+            None => pair("Out", "no change", COLS),
+        },
     ]);
     out
 }
@@ -423,17 +429,21 @@ mod tests {
             mode: "Merge",
             beat_channel: 1,
             input: Some((true, 41, true)),
+            last_change: Some((12, 255)),
         });
         assert_eq!(l[1], "Mode            Merge");
         assert_eq!(l[3], "DMX IN         41 fps");
         assert_eq!(l[4], "Art-Net       ignored");
+        assert_eq!(l[5], "Out       ch 12 = 255");
         let l = dmx_lines(&DmxInfo {
             mode: "Merge",
             beat_channel: 1,
             input: Some((false, 0, true)),
+            last_change: None,
         });
         assert_eq!(l[3], "DMX IN      no signal");
         assert_eq!(l[4], "Art-Net          live");
+        assert_eq!(l[5], "Out         no change");
     }
 
     fn scenes() -> ScenesConfig {
