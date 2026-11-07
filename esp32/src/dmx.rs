@@ -2,8 +2,9 @@
 //!
 //! Two RS-485 modules (MAX3485 or SP3485) turn the UART signals into DMX. The `dmx` thread runs
 //! the `Lights` engine of `autoblink-core-dmx` and sends one frame after the other. The `midi`
-//! thread queues the scene notes, the fired events and the preset tests. The receive thread
-//! queues the master beats. The show in the `show` partition sets the looks.
+//! thread queues the scene notes, the fired events, the preset tests and the actions of the
+//! autopilot. The receive thread queues the master beats. The show in the `show` partition sets
+//! the looks.
 //!
 //! A show without lights keeps the effect of the older firmware: the channel of the setting "DMX
 //! Beat Channel" goes to full on each master beat and fades out in `FLASH_MS`.
@@ -20,7 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use autoblink_core_dmx::{
-    BeatClock, Lights, Live, Merge, Show, Universe, ARTNET_TIMEOUT_MS, UNIVERSE,
+    apply_room, Action, BeatClock, Lights, Live, Merge, PilotStatus, Show, Tier, Universe,
+    ARTNET_TIMEOUT_MS, UNIVERSE,
 };
 use autoblink_core_midi::scenes::Event;
 use autoblink_core_ui::{frame_channels, merge, BoxConfig, DmxMode};
@@ -83,6 +85,10 @@ pub enum DmxMsg {
         bpm: f64,
         at_ms: u64,
     },
+    /// An action of the autopilot. The `midi` thread sends it only while `show.auto.on` is true.
+    Auto(Action),
+    /// The page tries the move with this index for 8 bars.
+    TryMove(u8),
 }
 
 /// The live controls of the page. The `dmx` thread reads them for each frame.
@@ -90,6 +96,8 @@ pub struct DmxLive {
     /// 255 is full.
     pub master: AtomicU8,
     pub strobe_hold: AtomicBool,
+    /// True while the page holds the whole room dark.
+    pub blackout: AtomicBool,
 }
 
 impl Default for DmxLive {
@@ -97,6 +105,37 @@ impl Default for DmxLive {
         Self {
             master: AtomicU8::new(255),
             strobe_hold: AtomicBool::new(false),
+            blackout: AtomicBool::new(false),
+        }
+    }
+}
+
+/// The autopilot part of the status. The `midi` thread writes it.
+#[derive(Clone, Copy, Serialize)]
+pub struct AutoStatus {
+    /// True while the autopilot of the show is on.
+    pub on: bool,
+    pub tier: Tier,
+    /// The energy spot of the music in the night, 0 to 100.
+    pub spot: u8,
+    pub pinned: Option<Tier>,
+    /// The index into `show.auto.programs` of the last pick.
+    pub program: Option<u8>,
+    /// Bit i is 1 while `show.auto.moves[i]` runs.
+    pub moves: u32,
+    pub drop_in_beats: Option<u16>,
+}
+
+impl AutoStatus {
+    pub fn new(on: bool, s: PilotStatus) -> Self {
+        Self {
+            on,
+            tier: s.tier,
+            spot: s.spot,
+            pinned: s.pinned,
+            program: s.program,
+            moves: s.moves,
+            drop_in_beats: s.drop_in_beats,
         }
     }
 }
@@ -302,7 +341,7 @@ fn run(
         let live = Live {
             master: state.dmx_live.master.load(Ordering::Relaxed),
             strobe_hold: state.dmx_live.strobe_hold.load(Ordering::Relaxed),
-            blackout: false,
+            blackout: state.dmx_live.blackout.load(Ordering::Relaxed),
         };
         // The thread does not wait for the `artnet` thread. It copies the frame and releases the
         // lock before the merge.
@@ -336,6 +375,8 @@ fn run(
                         clock.beat(at_ms, beat_in_bar, bpm);
                         last_beat_ms = Some(at_ms);
                     }
+                    DmxMsg::Auto(a) => lights.auto(a, now_ms),
+                    DmxMsg::TryMove(i) => lights.try_move(i, now_ms),
                 }
             }
             // Byte 0 is the start code (0 for dimmer data). Bytes 1 to 512 are the channels.
@@ -359,7 +400,7 @@ fn run(
             } else {
                 None
             };
-            if mode == DmxMode::Merge && lit {
+            let send = if mode == DmxMode::Merge && lit {
                 lts.apply(&show, outside.map(|o| (o, now_ms)), now_ms, &mut effect);
                 channels.copy_from_slice(&effect);
                 true
@@ -371,7 +412,14 @@ fn run(
                     &effect,
                     channels,
                 )
+            };
+            // The room level comes after the merge. Thus the dip and the blackout also apply
+            // to the light of the outside source.
+            if show.auto.on || live.blackout {
+                let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
+                apply_room(&show, console, all, channels);
             }
+            send
         };
         // The page and the display read the status. The thread does not wait for the lock, and
         // it writes the layers only after a change. The next frame tries again.

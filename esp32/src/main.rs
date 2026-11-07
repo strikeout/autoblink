@@ -30,6 +30,8 @@ mod webui;
 
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
+#[cfg(feature = "dmx")]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -89,8 +91,27 @@ pub struct State {
     /// The last Art-Net frame. The `artnet` thread writes it, and the `dmx` thread reads it.
     #[cfg(feature = "dmx")]
     pub artnet: Mutex<artnet::ArtIn>,
+    /// The tier that the page pins for the autopilot: 0 is Auto, 1 is Calm, 2 is Groove and 3
+    /// is Peak. `AUTO_PIN_NONE` is no request. The `midi` thread takes the value.
+    #[cfg(feature = "dmx")]
+    pub auto_pin: AtomicU8,
+    /// The autopilot part of the status. The `midi` thread writes it.
+    #[cfg(feature = "dmx")]
+    pub auto_status: Mutex<Option<dmx::AutoStatus>>,
+    /// The number of saved shows since the start. `POST /show` increments it after it replaces
+    /// the show. The `midi` thread then copies the autopilot settings again.
+    #[cfg(feature = "dmx")]
+    pub show_rev: AtomicU32,
+    /// The night memory of the autopilot. The `midi` thread puts the bytes, and the main loop
+    /// writes them to NVS.
+    #[cfg(feature = "dmx")]
+    pub night: Mutex<Option<[u8; autoblink_core_dmx::NIGHT_BYTES]>>,
     start: Instant,
 }
+
+/// The value of `State::auto_pin` when the page asks for no change.
+#[cfg(feature = "dmx")]
+pub const AUTO_PIN_NONE: u8 = u8::MAX;
 
 impl State {
     pub fn now_ms(&self) -> u64 {
@@ -172,6 +193,14 @@ fn run() -> anyhow::Result<()> {
         show_store: Mutex::new(show_store),
         #[cfg(feature = "dmx")]
         artnet: Mutex::new(artnet::ArtIn::default()),
+        #[cfg(feature = "dmx")]
+        auto_pin: AtomicU8::new(AUTO_PIN_NONE),
+        #[cfg(feature = "dmx")]
+        auto_status: Mutex::new(None),
+        #[cfg(feature = "dmx")]
+        show_rev: AtomicU32::new(0),
+        #[cfg(feature = "dmx")]
+        night: Mutex::new(None),
         start: Instant::now(),
     });
     // The maintenance start of a firmware update also sends the idle look.
@@ -248,6 +277,8 @@ fn run() -> anyhow::Result<()> {
         settings.scenes.clone(),
         #[cfg(feature = "dmx")]
         dmx_q.clone(),
+        #[cfg(feature = "dmx")]
+        settings.night(),
     )?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
@@ -346,6 +377,15 @@ fn run() -> anyhow::Result<()> {
             .unwrap()
             .retain(|n, _| decks.contains(n));
         settings.lock().unwrap().save();
+        // The `midi` thread must not wait for a flash write. Thus this loop writes the night
+        // memory of the autopilot to NVS.
+        #[cfg(feature = "dmx")]
+        {
+            let night = state.night.lock().unwrap().take();
+            if let Some(bytes) = night {
+                settings.lock().unwrap().save_night(&bytes);
+            }
+        }
         // SAFETY: the heap calls only read counters.
         let (free, min, block) = unsafe {
             (

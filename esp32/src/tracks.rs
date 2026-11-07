@@ -41,7 +41,8 @@ pub struct TrackData {
     /// `None` while the fetch runs. `Err` holds the reason that no song structure is available.
     pub structure: Option<Result<SongStructure, String>>,
     pub overview: Option<Arc<TrackOverview>>,
-    /// The drop guess from the preview. Only a track without phrases has one.
+    /// The drop guess from the preview. Each track with a preview has one. The scenes use its
+    /// buckets only for a track without phrases. The autopilot reads its energy for each track.
     pub guess: Option<DropGuess>,
 }
 
@@ -166,11 +167,6 @@ fn fetch_one(state: &State, track: TrackRef) -> bool {
     let guess = result
         .as_ref()
         .ok()
-        .filter(|f| {
-            !f.song_structure
-                .as_ref()
-                .is_ok_and(|ss| !ss.phrases.is_empty())
-        })
         .and_then(|f| DropGuess::from_preview(&f.overview.as_ref()?.preview));
     let mut tracks = state.tracks.0.lock().unwrap();
     // A newer track on the deck makes this result stale.

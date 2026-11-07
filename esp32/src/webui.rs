@@ -8,7 +8,10 @@
 //!
 //! With the `dmx` feature, the firmware also sends the capability `dmx` and the status field
 //! `dmx`. `GET /show` gives the DMX show as JSON, and `POST /show` replaces it. The commands
-//! `dmx_live`, `dmx_fog` and `dmx_aim` set the live controls. They get no reply.
+//! `dmx_live`, `dmx_fog`, `dmx_aim` and `dmx_blackout` set the live controls. They get no reply.
+//!
+//! The `dmx` feature also gives the light autopilot: the capability `auto` and the status field
+//! `auto`. The command `auto_pin` pins a tier, and `auto_try` tries one move. They get no reply.
 //!
 //! `GET /ofl/search?q=<text>` and `GET /ofl/fixture?key=<manufacturer>/<model>` pass the JSON of
 //! the Open Fixture Library through to the page (see `ofl.rs`).
@@ -35,7 +38,7 @@ use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 
 #[cfg(feature = "dmx")]
-use crate::dmx::{DmxMsg, DmxStatus};
+use crate::dmx::{AutoStatus, DmxMsg, DmxStatus};
 use crate::ofl;
 use crate::ota::{self, OtaCmd, OtaStatus};
 use crate::settings::Settings;
@@ -67,6 +70,8 @@ const CAPS: &[&str] = &[
     "scenes",
     #[cfg(feature = "dmx")]
     "dmx",
+    #[cfg(feature = "dmx")]
+    "auto",
 ];
 
 /// `POST /show` refuses a longer body.
@@ -384,14 +389,15 @@ pub fn start(
     Ok((server, beat_tx))
 }
 
-/// Releases the strobe hold. The active page can leave the network while it holds the strobe,
-/// and it cannot send the release.
+/// Releases the strobe hold and the blackout. The active page can leave the network while it
+/// holds them, and it cannot send the release.
 fn release_strobe(_state: &State) {
     #[cfg(feature = "dmx")]
-    _state
-        .dmx_live
-        .strobe_hold
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        _state.dmx_live.strobe_hold.store(false, Relaxed);
+        _state.dmx_live.blackout.store(false, Relaxed);
+    }
 }
 
 /// Adds `GET /ofl/search?q=<text>` and `GET /ofl/fixture?key=<manufacturer>/<model>`.
@@ -556,6 +562,8 @@ fn post_show(req: &mut Request<&mut EspHttpConnection>, state: &State) -> (u16, 
         return (500, format!("The firmware cannot save the show: {e:#}"));
     }
     *state.show.lock().unwrap() = show;
+    // The `midi` thread sees the new number and copies the autopilot settings again.
+    state.show_rev.fetch_add(1, Ordering::Relaxed);
     log::info!("The page saved a new DMX show");
     (204, String::new())
 }
@@ -774,6 +782,48 @@ fn command(
             }
             None => error("The command needs a fixture below 32"),
         },
+        // The `dmx` thread reads the blackout for each frame.
+        #[cfg(feature = "dmx")]
+        Some("dmx_blackout") => match cmd["on"].as_bool() {
+            Some(on) => {
+                state
+                    .dmx_live
+                    .blackout
+                    .store(on, std::sync::atomic::Ordering::Relaxed);
+                String::new()
+            }
+            None => error("The command needs on"),
+        },
+        // The `midi` thread takes the pin at its next pass.
+        #[cfg(feature = "dmx")]
+        Some("auto_pin") => {
+            let pin = match cmd["tier"].as_str() {
+                Some("auto") => 0,
+                Some("calm") => 1,
+                Some("groove") => 2,
+                Some("peak") => 3,
+                _ => return error("The command needs a tier: auto, calm, groove or peak"),
+            };
+            state
+                .auto_pin
+                .store(pin, std::sync::atomic::Ordering::Relaxed);
+            String::new()
+        }
+        // A full queue drops the trial. The page can send it again.
+        #[cfg(feature = "dmx")]
+        Some("auto_try") => match cmd["move"]
+            .as_u64()
+            .filter(|&m| m < autoblink_core_dmx::MAX_MOVES as u64)
+        {
+            Some(m) => {
+                let _ = dmx_q.send_back(DmxMsg::TryMove(m as u8), 0);
+                String::new()
+            }
+            None => error(&format!(
+                "The command needs a move below {}",
+                autoblink_core_dmx::MAX_MOVES
+            )),
+        },
         Some(other) => error(&format!("This device does not support the command {other}")),
         None => error("The command has no type"),
     }
@@ -889,6 +939,10 @@ struct Status<'a> {
     #[cfg(feature = "dmx")]
     #[serde(skip_serializing_if = "Option::is_none")]
     dmx: Option<DmxStatus>,
+    /// `None` before the first pass of the `midi` thread.
+    #[cfg(feature = "dmx")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto: Option<AutoStatus>,
 }
 
 #[derive(Serialize)]
@@ -1064,6 +1118,8 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
     // The `dmx` thread does not wait for this lock, so the status does not wait either.
     #[cfg(feature = "dmx")]
     let dmx = state.dmx_status.try_lock().ok().map(|s| s.clone());
+    #[cfg(feature = "dmx")]
+    let auto = *state.auto_status.lock().unwrap();
     let status = Status {
         kind: "status",
         source: master.map(|_| "ProLink (network)"),
@@ -1096,6 +1152,8 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
         },
         #[cfg(feature = "dmx")]
         dmx,
+        #[cfg(feature = "dmx")]
+        auto,
     };
     out.clear();
     // Serialization to a Vec fails only when the heap is full.

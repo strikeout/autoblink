@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "dmx")]
+use autoblink_core_dmx::{Night, NIGHT_BYTES};
 use autoblink_core_midi::scenes::ScenesConfig;
 use autoblink_core_midi::{settings as midi_settings, MidiConfig, SettingItem};
 use autoblink_core_ui::{config as box_settings, BoxConfig};
@@ -296,6 +298,29 @@ impl Settings {
             self.box_changed = None;
             let json = serde_json::to_string(&*self.box_cfg.lock().unwrap());
             self.save_json("box", json, "box settings");
+        }
+    }
+
+    /// The night memory of the autopilot from NVS key `night`. A missing or bad blob gives the
+    /// default night.
+    #[cfg(feature = "dmx")]
+    pub fn night(&self) -> Night {
+        let mut buf = [0u8; NIGHT_BYTES];
+        match self.nvs.get_blob("night", &mut buf) {
+            Ok(Some(b)) => Night::from_bytes(b),
+            Ok(None) => Night::default(),
+            Err(e) => {
+                log::warn!("The night memory is not valid. The autopilot starts a new one: {e}");
+                Night::default()
+            }
+        }
+    }
+
+    /// Writes the night memory of the autopilot to NVS key `night`.
+    #[cfg(feature = "dmx")]
+    pub fn save_night(&self, bytes: &[u8; NIGHT_BYTES]) {
+        if let Err(e) = self.nvs.set_blob("night", bytes) {
+            log::warn!("Cannot save the night memory: {e}");
         }
     }
 
