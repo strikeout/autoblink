@@ -302,6 +302,7 @@ fn run(
         let live = Live {
             master: state.dmx_live.master.load(Ordering::Relaxed),
             strobe_hold: state.dmx_live.strobe_hold.load(Ordering::Relaxed),
+            blackout: false,
         };
         // The thread does not wait for the `artnet` thread. It copies the frame and releases the
         // lock before the merge.

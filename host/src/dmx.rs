@@ -209,6 +209,7 @@ async fn run(task: Task) {
         let live = Live {
             master: page.master.load(Ordering::Relaxed),
             strobe_hold: page.strobe_hold.load(Ordering::Relaxed),
+            blackout: false,
         };
         let is_playing = dj_state.read().master.is_playing;
         // `set_playing` keeps the time of the stop. Thus the task calls it only on a change.
