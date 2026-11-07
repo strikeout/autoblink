@@ -18,8 +18,6 @@ pub const BUILD_BEATS: f64 = 64.0;
 pub const REPICK_BEATS: f64 = 64.0;
 /// The spot must cross a tier border by more than this value to change the tier.
 const HYSTERESIS: u8 = 4;
-/// Two drop times that differ by less than this value are the same drop.
-const SAME_DROP_MS: u64 = 1000;
 /// A build that is this long past its drop time ends without a drop.
 const LATE_DROP_MS: u64 = 2000;
 /// The BPM for the timers when the BPM is not valid.
@@ -59,7 +57,7 @@ impl EventSet {
     fn has_phrase_event(self) -> bool {
         Event::ALL
             .iter()
-            .any(|&e| e.is_phrase_event() && self.contains(e))
+            .any(|&e| e.is_phrase_event() && !e.is_overlay() && self.contains(e))
     }
 }
 
@@ -282,7 +280,7 @@ impl Pilot {
         // does not come.
         if self.build_open {
             let gone = self.build_drop_ms.is_some_and(|d| {
-                (input.drop_at_ms.is_none() && now + SAME_DROP_MS < d)
+                (input.drop_at_ms.is_none() && now + 1000 < d)
                     || now > d.saturating_add(LATE_DROP_MS)
             });
             if !input.playing
@@ -351,10 +349,13 @@ impl Pilot {
         let future = input.drop_at_ms.filter(|&d| d > now);
         if let Some(d) = future {
             let in_window = (d - now) as f64 <= BUILD_BEATS * beat_ms(input.bpm);
-            let same = self
-                .build_drop_ms
-                .is_some_and(|b| b.abs_diff(d) < SAME_DROP_MS);
-            if in_window && !same {
+            // A drift of the estimate within one bar is the same drop.
+            let bar_ms = (4.0 * beat_ms(input.bpm)) as u64;
+            let same =
+                self.build_open && self.build_drop_ms.is_some_and(|b| b.abs_diff(d) < bar_ms);
+            if same {
+                self.build_drop_ms = Some(d);
+            } else if in_window {
                 self.build_open = true;
                 self.build_drop_ms = Some(d);
                 out(Action::Build {
@@ -697,6 +698,34 @@ mod tests {
         j.bpm = 128.0;
         j.drop_at_ms = Some(32_000);
         assert!(builds(&run(&mut q, &a, &j)).is_empty());
+    }
+
+    #[test]
+    fn drifting_drop_time_is_the_same_drop() {
+        let a = tiered();
+        let mut p = Pilot::default();
+        let mut i = input(1000, &[]);
+        i.bpm = 128.0;
+        i.drop_at_ms = Some(31_000);
+        assert_eq!(builds(&run(&mut p, &a, &i)).len(), 1);
+        i.now_ms = 1010;
+        i.drop_at_ms = Some(31_900);
+        assert!(builds(&run(&mut p, &a, &i)).is_empty());
+        assert_eq!(p.build_drop_ms, Some(31_900));
+        i.now_ms = 5000;
+        i.drop_at_ms = Some(33_800);
+        assert_eq!(builds(&run(&mut p, &a, &i)).len(), 1);
+    }
+
+    #[test]
+    fn overlay_events_are_no_phrase_change() {
+        let a = tiered();
+        let mut p = Pilot::default();
+        run(&mut p, &a, &input(1000, &[]));
+        for e in [Event::PhraseChange, Event::Fill] {
+            let v = run(&mut p, &a, &input(1010, &[e]));
+            assert!(programs_of(&v).is_empty(), "{e:?}");
+        }
     }
 
     #[test]
