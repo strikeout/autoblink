@@ -632,6 +632,7 @@ mod tests {
                 address: 10,
                 channels: vec![autoblink_core_dmx::Channel::Dimmer],
                 ofl: None,
+                console: false,
             }],
             ..Show::default()
         };

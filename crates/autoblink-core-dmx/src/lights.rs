@@ -340,6 +340,7 @@ mod tests {
             address,
             channels: channels.to_vec(),
             ofl: None,
+            console: false,
         }
     }
 
@@ -382,6 +383,7 @@ mod tests {
             ],
             idle: Some(3),
             positions: Vec::new(),
+            auto: crate::auto::Auto::default(),
         }
     }
 

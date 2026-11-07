@@ -9,6 +9,8 @@ use std::marker::PhantomData;
 use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::auto::Auto;
+
 /// The number of channels in one DMX universe.
 pub const UNIVERSE: usize = 512;
 pub const MAX_FIXTURES: usize = 32;
@@ -56,6 +58,9 @@ pub struct Fixture {
     /// The Open Fixture Library source: `<manufacturer>/<model>#<mode name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ofl: Option<String>,
+    /// True when this fixture is a lighting console. The autopilot sends it program changes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub console: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -195,12 +200,15 @@ pub struct Show {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[serde(deserialize_with = "bounded::<_, _, MAX_POSITIONS>")]
     pub positions: Vec<Position>,
+    /// The settings of the light autopilot.
+    #[serde(skip_serializing_if = "Auto::is_default")]
+    pub auto: Auto,
 }
 
 /// Reads a JSON list and keeps only its first `N` entries. It reads the other entries as
 /// `IgnoredAny`, so they use no memory. Without this limit, a long list can use all of the heap
 /// of the firmware before `Show::sanitize` runs.
-fn bounded<'de, D, T, const N: usize>(d: D) -> Result<Vec<T>, D::Error>
+pub(crate) fn bounded<'de, D, T, const N: usize>(d: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -230,7 +238,7 @@ where
     d.deserialize_seq(Bounded::<T, N>(PhantomData))
 }
 
-fn clean_to(name: &mut String, max: usize) {
+pub(crate) fn clean_to(name: &mut String, max: usize) {
     *name = name.chars().filter(|c| !c.is_control()).take(max).collect();
 }
 
@@ -267,6 +275,7 @@ impl Show {
             p.aims
                 .retain(|a| !std::mem::replace(&mut seen[usize::from(a.fixture)], true));
         }
+        self.auto.sanitize(self.fixtures.len(), self.groups.len());
         let positions = self.positions.len();
         self.looks.truncate(MAX_LOOKS);
         let groups = self.groups.len();
@@ -321,6 +330,7 @@ mod tests {
             address: 1,
             channels: vec![Channel::Dimmer],
             ofl: None,
+            console: false,
         }
     }
 
@@ -464,6 +474,7 @@ mod tests {
                 Channel::Fixed(5),
             ],
             ofl: None,
+            console: false,
         }];
         s.groups = vec![Group {
             name: "all".into(),
@@ -584,6 +595,7 @@ mod position_tests {
             address: 1,
             channels: vec![Channel::Pan],
             ofl: None,
+            console: false,
         }];
         s.groups = vec![Group {
             name: "g".into(),

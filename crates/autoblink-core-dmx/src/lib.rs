@@ -4,6 +4,8 @@
 //! and no I/O, like `autoblink-core-midi`. Thus the host can test it, and the
 //! firmware can use it.
 
+pub mod auto;
+pub use auto::*;
 pub mod show;
 pub use show::*;
 pub mod render;

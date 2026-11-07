@@ -88,6 +88,7 @@ mod tests {
                 address: 1,
                 channels: channels.to_vec(),
                 ofl: None,
+                console: false,
             }],
             ..Show::default()
         }
