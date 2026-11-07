@@ -873,7 +873,9 @@ impl Scenes {
         }
     }
 
-    fn release_all(&mut self, out: &mut impl FnMut(Out)) {
+    /// Sends the note off of each held note and each open flash, and drops the pending triggers.
+    /// The light autopilot calls it before it mutes the engine. Thus no preset stays on.
+    pub fn release_all(&mut self, out: &mut impl FnMut(Out)) {
         for (_, ch, note) in self.flashes.drain(..) {
             out(Out::NoteOff { ch, note });
         }
@@ -1670,6 +1672,21 @@ mod tests {
         let mut out = Vec::new();
         s.update(&cfg, 10, &input(0, 0, 31), &mut |o| out.push(o));
         assert_eq!(out, [Out::NoteOff { ch: 9, note: 0 }]);
+    }
+
+    #[test]
+    fn release_all_sends_the_note_off_of_a_held_note_once() {
+        let mut held = row(Event::Intro, &[0]);
+        held.gate = Gate::Hold;
+        let cfg = cfg(vec![held]);
+        let mut s = Scenes::default();
+        s.update(&cfg, 0, &input(0, 0, 32), &mut |_| {});
+        let mut out = Vec::new();
+        s.release_all(&mut |o| out.push(o));
+        assert_eq!(out, [Out::NoteOff { ch: 9, note: 0 }]);
+        out.clear();
+        s.release_all(&mut |o| out.push(o));
+        assert!(out.is_empty());
     }
 
     #[test]

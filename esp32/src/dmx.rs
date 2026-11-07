@@ -147,6 +147,8 @@ pub struct DmxStatus {
     pub layers: Vec<u8>,
     pub master: u8,
     pub strobe_hold: bool,
+    /// `true` while the page holds the whole room dark.
+    pub blackout: bool,
     /// `true` while Art-Net is live: the last frame is not older than `ARTNET_TIMEOUT_MS`.
     pub artnet: bool,
     /// The key of the setting "DMX Mode", for example "merge".
@@ -430,6 +432,7 @@ fn run(
             }
             s.master = live.master;
             s.strobe_hold = live.strobe_hold;
+            s.blackout = live.blackout;
             s.artnet = art_live;
             s.mode = mode.key();
             s.in_fps = in_fps;

@@ -151,9 +151,10 @@ pub fn start(
             let cfg = cfg.lock().unwrap().clone();
             // While the autopilot drives, the scene engine sends nothing.
             #[cfg(feature = "dmx")]
-            let quiet = {
+            let (quiet, take_over) = {
+                let was_on = ap.auto.on;
                 ap.refresh(&state);
-                ap.auto.on
+                (ap.auto.on, ap.auto.on && !was_on)
             };
             #[cfg(not(feature = "dmx"))]
             let quiet = false;
@@ -177,6 +178,18 @@ pub fn start(
                     _ => {}
                 }
             };
+
+            // When the autopilot turns on, the engine releases its held notes and its open
+            // flashes. Without this release, the console and the `dmx` thread keep the held
+            // preset on under the autopilot.
+            #[cfg(feature = "dmx")]
+            if take_over {
+                let scenes_cfg = scenes_cfg.lock().unwrap();
+                scenes.release_all(&mut |o| {
+                    to_dmx(&dmx, &scenes_cfg, o);
+                    send(o);
+                });
+            }
 
             if let Some(b) = beat {
                 if b.device != last_master {
