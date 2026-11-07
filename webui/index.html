@@ -201,6 +201,67 @@ input.num.text{width:150px;text-align:left}
 #p-setup .posrow b{color:var(--text);font-weight:600}
 #p-setup .hint{color:var(--dim);font-size:11px}
 #p-setup .section button,#p-setup .section select{margin-left:6px}
+/* autopilot */
+#p-auto{--tc0:#ffaa44;--tc1:#00e0ff;--tc2:#ff3d7f}
+#p-auto .aphd{margin-left:auto;display:flex;gap:8px;text-transform:none;letter-spacing:0}
+#p-auto .lbl{font-size:10px;text-transform:uppercase;letter-spacing:1.3px;color:var(--muted);margin:10px 0 6px}
+#p-auto b{font-weight:500;color:var(--text)}
+.aplive{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;background:#151524;border:1px solid var(--border);border-radius:10px;padding:10px 14px 18px;margin-bottom:12px;color:var(--muted)}
+.aplive:empty,#apform:empty{display:none}
+.aplive .on{color:var(--play);font-weight:700;letter-spacing:1px}
+.aplive .tier{padding:3px 10px;border-radius:20px;font-weight:700;font-size:12px;color:var(--tc);background:color-mix(in srgb,var(--tc) 18%,transparent)}
+.aplive .next{margin-left:auto;color:var(--flash)}
+.apmeter{position:relative;width:170px;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--tc0),var(--tc1) 55%,var(--tc2))}
+.apmeter i{position:absolute;top:-4px;width:3px;height:18px;background:#fff;border-radius:2px;transform:translateX(-50%)}
+.apmeter small{position:absolute;top:13px;left:0;font-size:9px;color:var(--dim);white-space:nowrap}
+.apmeter small+small{left:auto;right:0}
+.apcols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+@media(max-width:700px){.apcols{grid-template-columns:1fr}}
+.apcol{background:#0d0d16;border:1px solid var(--border);border-top:3px solid var(--tc);border-radius:10px;padding:12px;min-width:0}
+.apcol.cur{box-shadow:0 0 0 1px var(--tc)}
+.apcol h3{font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:var(--tc);display:flex;justify-content:space-between}
+.apcol h3 em{font-style:normal;color:var(--play);font-size:10px}
+.apcol .hint{color:var(--dim);font-size:11px}
+.aptabs{display:flex;gap:6px;margin-bottom:10px}
+.aptabs button{padding:7px 16px;border-radius:8px;color:var(--muted)}
+.aptabs button.on{border-color:var(--tc);color:var(--tc);background:color-mix(in srgb,var(--tc) 10%,transparent)}
+.aprow{display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start}
+.ac{display:inline-flex;align-items:center;gap:6px;background:#1a1a2a;border:1px solid #2a2a44;border-radius:8px;padding:6px 10px 6px 14px;position:relative;overflow:hidden;font-size:12px;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none}
+.ac::before{content:'';position:absolute;left:0;top:0;border:solid;border-width:10px 10px 0 0;border-color:var(--c,#888) transparent transparent transparent}
+.ac small{color:var(--dim);font-size:10px}
+.ac.now,.mv.now{border-color:var(--play)}
+.apadd{background:none;border:1px dashed #2a2a44;border-radius:8px;padding:6px 10px;color:var(--dim)}
+.mv{display:flex;align-items:center;gap:10px;background:#161626;border:1px solid #26263e;border-radius:9px;padding:8px 10px;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;width:100%}
+.mv .ic{font-size:18px;width:24px;text-align:center}
+.mv .nm{flex:1;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mv .knobs{display:flex;gap:8px;align-items:center;font-size:10px;color:var(--dim)}
+.mv.big{flex-wrap:wrap;width:170px;padding:10px}
+.mv.big .ic{font-size:22px}
+.mv.big .nm{flex-basis:calc(100% - 40px)}
+.mv.big .knobs{flex-direction:column;align-items:stretch;width:100%;gap:5px}
+.mv.big .knobs span{display:flex;justify-content:space-between;align-items:center}
+.apbar{display:inline-block;width:34px;height:5px;border-radius:3px;background:linear-gradient(90deg,var(--muted) var(--v),#2a2a44 0)}
+.mv.big .apbar{width:80px}
+.apsw{width:12px;height:12px;border-radius:50%}
+.apcurve{position:relative;height:230px;border-radius:10px;overflow:hidden;background:linear-gradient(90deg,color-mix(in srgb,var(--tc0) 22%,transparent),color-mix(in srgb,var(--tc1) 18%,transparent) 50%,color-mix(in srgb,var(--tc2) 25%,transparent))}
+.aptrack{position:absolute;inset:0 60px}
+.aptrack .pin{position:absolute;transform:translateX(-50%)}
+.aptrack .pin .mv{width:auto;padding:5px 8px}
+.apnow{position:absolute;top:0;bottom:0;width:2px;background:#fff;pointer-events:none}
+.apnow span{position:absolute;top:4px;left:6px;font-size:10px}
+.apax{display:flex;justify-content:space-between;color:var(--dim);font-size:11px;margin:4px 0 8px}
+.apdrop{display:flex;flex-wrap:wrap;margin-top:12px}
+.apdrop>div{flex:1 1 200px;padding:10px 12px;background:#161626;border:1px solid #26263e;color:var(--muted);font-size:11px}
+.apdrop>div:first-child{border-radius:9px 0 0 9px}.apdrop>div:last-child{border-radius:0 9px 9px 0}
+.apdrop .bar{height:22px;border-radius:2px;margin:4px 0;background:linear-gradient(90deg,#1a1a2a,var(--flash));clip-path:polygon(0 100%,100% 0,100% 100%)}
+.apdrop .bar.black{background:#000;border:1px solid #333;clip-path:none}
+.apdrop .bar.hit{background:repeating-linear-gradient(90deg,var(--tc2) 0 6px,#fff 6px 9px);clip-path:none}
+.apdrop input[type=range]{width:110px;vertical-align:middle}
+.apsafety,.apset{margin-top:10px;color:var(--muted);font-size:12px}
+.apset{display:flex;flex-wrap:wrap;gap:8px 24px;align-items:center}
+.apset input[type=color]{width:26px;height:20px;padding:0;border:0;background:none;vertical-align:middle}
+.apf{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:10px 12px;margin-top:12px;background:#10101a;border:1px solid var(--border);border-radius:8px;color:var(--muted)}
+#p-setup.locked>:not(summary):not(#ltlock){display:none}
 .palette{display:flex;flex-wrap:wrap;gap:6px;padding:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
 .chip{display:inline-flex;flex-direction:column;align-items:flex-start;min-width:64px;padding:4px 8px 5px;border-radius:6px;background:#10303a;border:1px solid #0f5866;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;position:relative}
 .chip b{font-size:15px;color:var(--accent);line-height:1.1}
@@ -341,8 +402,18 @@ input.num.text{width:150px;text-align:left}
     <div id="decks" class="decks"></div>
   </section>
 
+  <details id="p-auto" class="panel wide" data-cap="auto" hidden open>
+    <summary><h2>Autopilot <span id="aphd" class="aphd"><span id="apdrv" class="seg"></span><span id="apviews" class="seg"></span></span></h2></summary>
+    <div id="aplive" class="aplive"></div>
+    <div id="apview"></div>
+    <div id="apform"></div>
+    <div id="apdrop"></div>
+    <div id="apset" class="apset"></div>
+  </details>
+
   <details id="p-scenes" class="panel wide" data-cap="scenes" open>
     <summary><h2 id="sctitle">DMX Scenes</h2></summary>
+    <div id="apnote" class="hint" hidden>The autopilot drives the lights. Manual rules are paused.</div>
     <div class="scfg">
       <label>Scenes <button id="scon" class="sw"></button></label>
       <label title="The MIDI channel of the DMX controller.">Channel <input id="scch" class="num" inputmode="numeric"></label>
@@ -366,6 +437,7 @@ input.num.text{width:150px;text-align:left}
 
   <details id="p-setup" class="panel wide" data-cap="dmx" hidden>
     <summary><h2>Lights setup <span id="stsum" class="sum"></span></h2></summary>
+    <div id="ltlock"></div>
     <div id="ltsrc" class="hint"></div>
     <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button></div>
     <div id="ltofl" class="oflbox" hidden>
@@ -478,6 +550,7 @@ function syncDmx() {
   const box = boxIp(), own = caps.has('dmx');
   const avail = own || !!box;
   $('p-setup').hidden = !avail;
+  $('p-auto').hidden = !(caps.has('auto') || !!box);
   $('live').hidden = !own || !!box || !$('takeover').hidden;
   $('boxbar').hidden = !box;
   if (box) $('boxlink').href = 'http://' + box + '/';
@@ -537,6 +610,11 @@ function onStatus(s) {
   const ms = $('ltmaster');
   if (dmxLast && document.activeElement !== ms && !ms.matches(':active')) { ms.value = dmxLast.master; masterPct(); }
   renderLayers();
+  if (show) {
+    const a = s.auto, k = a ? [a.on, a.tier, a.program, a.moves].join() : '';
+    if (k !== apKey && !apDragging) { apKey = k; renderAutoView(); }
+    renderAutoLive();
+  }
   if (s.decks) renderDecks(s);
   if (s.ota) renderOta(s.ota);
   const up = s.system && s.system.uptime_s;
@@ -1610,15 +1688,21 @@ async function loadShow() {
     // The host keeps the last show that it read from the box. A failure of this copy is not an error.
     if (base !== BASE) fetch(BASE + '/show', { method: 'POST', body: JSON.stringify(j) }).catch(() => {});
     if (!show.positions) show.positions = [];
+    apFix(show);
+    apFormState = null;
     renderLights();
     renderScenes();
+    renderAuto();
   } catch (e) {
     if (base !== showBase()) return;
     // Do not keep the show of another endpoint: the next edit would overwrite the wrong show.
     show = null;
     lookOpen = null;
     $('lookedit').hidden = true;
-    for (const id of ['ltpatch', 'ltgroups', 'ltpos', 'ltidle']) $(id).replaceChildren();
+    for (const id of ['ltpatch', 'ltgroups', 'ltpos', 'ltidle', 'apview', 'apform', 'apdrop', 'apset', 'aplive']) $(id).replaceChildren();
+    $('apnote').hidden = true;
+    $('p-setup').classList.remove('locked');
+    $('ltlock').replaceChildren();
     renderScenes();
     toast('The show did not load: ' + e.message);
   }
@@ -1647,7 +1731,7 @@ async function showPost(retry, base) {
 function showEdit(f, redraw = true) {
   f();
   showSave();
-  if (redraw) { renderLights(); renderScenes(); }
+  if (redraw) { renderLights(); renderScenes(); renderAuto(); }
 }
 
 function pick(options, value, onPick) {
@@ -1681,6 +1765,14 @@ function textIn(value, title, onSet) {
 
 const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
 
+/** Marks a light as a lighting console. The autopilot sends it program changes and scales its light channels. */
+function consoleToggle(f) {
+  const b = h('button', f.console ? 'on' : null, 'console');
+  b.title = 'This light is a lighting console, not a light of the box.';
+  b.addEventListener('click', () => showEdit(() => { if (f.console) delete f.console; else f.console = true; }));
+  return h('span', 'seg', b);
+}
+
 function renderLights() {
   if (!show || !scenes) return;
   const patch = show.fixtures.map((f, i) => {
@@ -1701,7 +1793,7 @@ function renderLights() {
     return h('div', 'fxc' + (bad ? ' bad' : ''),
       h('div', 'line', textIn(f.name, 'The name of the light.', (v) => { f.name = v; }), del),
       h('div', 'line', pick(types, t, (v) => showEdit(() => { if (v !== 'custom') { f.channels = [...FIXTURE_TYPES[v]]; delete f.ofl; } })), adr),
-      h('div', 'line', range, h('span', null, chanLen(f) + ' ch'), bad && h('span', 'rng bad', 'overlap')),
+      h('div', 'line', range, h('span', null, chanLen(f) + ' ch'), bad && h('span', 'rng bad', 'overlap'), consoleToggle(f)),
       f.ofl && h('div', 'line', h('span', null, 'OFL ' + f.ofl.replace('#', ' · '))));
   });
   $('ltpatch').replaceChildren(...patch);
@@ -1739,6 +1831,312 @@ function renderLights() {
     + ' · idle look: ' + (idle === null ? 'none' : (idle + 1) + (scenes.labels[idle] ? ' ' + scenes.labels[idle] : '')));
   layerKey = '';
   renderLayers();
+}
+
+// ---- Autopilot: the console programs and the box moves per energy tier ----
+const TIERS = [['Calm', 'bottom third of tonight', 17], ['Groove', 'middle of tonight', 57], ['Peak', 'top fifth of tonight', 90]];
+const MOVES = { pulse: ['◐', 'Pulse'], ramp: ['◢', 'Ramp'], sweep: ['↔', 'Sweep'], circle: ['○', 'Circle'], figure8: ['∞', 'Figure 8'], chase: ['⚡', 'Chase'], wave: ['∿', 'Wave'], strobe_burst: ['✸', 'Strobe burst'], blackout: ['●', 'Blackout'], hold: ['▬', 'Hold'] };
+const HALF_BEATS = [1, 2, 4, 8, 16, 32, 64];
+const AP_DROP = { blackout: 'half_bar', strobe_beats: 2, strobe_cooldown_s: 120, dip: 128 };
+let autoView = localStorage.getItem('autoView');
+if (!['cols', 'tabs', 'curve'].includes(autoView)) autoView = 'cols';
+let apTab = null, apKey = '', apDragging = false, apFormState = null;
+
+const apTier = (v) => (v < 34 ? 0 : v >= 80 ? 2 : 1); // the borders of auto.rs: Calm below 34, Peak from 80
+const apPin = () => (show && show.auto && show.auto.pin) || '';
+const apLocked = () => !!apPin() && sessionStorage.getItem('apPin') !== apPin();
+const apMove = (m) => MOVES[m.shape] || ['?', m.shape];
+const hexRgb = (s) => {
+  if (s.length === 4) s = '#' + [1, 2, 3].map((i) => s[i] + s[i]).join('');
+  return [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16));
+};
+const dur = (s) => (s >= 60 ? s / 60 + ' min' : s + ' s');
+
+/** Fills the fields that an old show lacks. */
+function apFix(s) {
+  const a = s.auto || {};
+  s.auto = { on: false, channel: 0, programs: [], moves: [], colors: [[255, 140, 40], [0, 224, 255], [255, 40, 140]], pin: '', ...a, drop: { ...AP_DROP, ...a.drop } };
+}
+
+function pinField() {
+  const i = h('input', 'num');
+  i.type = 'password';
+  i.inputMode = 'numeric';
+  i.maxLength = 8;
+  i.placeholder = 'PIN';
+  i.addEventListener('input', () => {
+    if (i.value !== apPin()) return;
+    sessionStorage.setItem('apPin', i.value);
+    renderAuto();
+  });
+  return h('div', 'apf', 'PIN ', i, h('span', null, 'The PIN is an accident guard, not security.'));
+}
+
+function apSeg(id, opts, cur, onPick) {
+  $(id).replaceChildren(...opts.map(([v, t, tip]) => {
+    const b = h('button', v === cur ? 'on' : null, t);
+    b.title = tip || '';
+    b.addEventListener('click', () => onPick(v));
+    return b;
+  }));
+}
+
+function renderAuto() {
+  if (!show) return;
+  const a = show.auto, locked = apLocked();
+  $('apnote').hidden = !a.on;
+  $('p-setup').classList.toggle('locked', locked);
+  $('ltlock').replaceChildren(...(locked ? [pinField()] : []));
+  $('aphd').hidden = locked;
+  if (locked) {
+    $('apview').replaceChildren(pinField());
+    for (const id of ['apform', 'apdrop', 'apset']) $(id).replaceChildren();
+    return renderAutoLive();
+  }
+  apSeg('apdrv', [[true, 'Autopilot'], [false, 'Manual rules']], a.on, (v) => showEdit(() => { a.on = v; }));
+  apSeg('apviews', [['cols', 'A', 'Three tier columns'], ['tabs', 'B', 'Tier tabs'], ['curve', 'C', 'Energy curve']], autoView,
+    (v) => { autoView = v; localStorage.setItem('autoView', v); renderAuto(); });
+  renderAutoView();
+  renderAutoForm();
+  renderAutoDrop();
+  renderAutoSet();
+  renderAutoLive();
+}
+
+/** The live line: one status message, no show edit. */
+function renderAutoLive() {
+  const a = show && show.auto, el = $('aplive');
+  if (!a || apLocked() || $('p-auto').hidden) return el.replaceChildren();
+  const s = status && status.auto;
+  if (!s) return el.replaceChildren(h('span', 'on', a.on ? '● AUTOPILOT' : '○ MANUAL RULES'));
+  const ti = ['calm', 'groove', 'peak'].indexOf(s.tier), p = a.programs[s.program], bpm = status.master.bpm;
+  const names = a.moves.filter((_, i) => (s.moves >> i) & 1).map((m) => apMove(m)[1]);
+  const meter = h('span', 'apmeter', h('i'), h('small', null, 'quietest tonight'), h('small', null, 'hardest tonight'));
+  meter.firstChild.style.left = s.spot + '%';
+  const tier = h('span', 'tier', TIERS[ti] ? TIERS[ti][0].toUpperCase() : '');
+  tier.style.setProperty('--tc', 'var(--tc' + ti + ')');
+  const next = [s.pinned && 'pinned: ' + s.pinned, s.drop_in_beats != null && 'drop in ~' + Math.max(1, Math.round(s.drop_in_beats / 4)) + ' bars'].filter(Boolean).join(' · ');
+  el.replaceChildren(...[
+    h('span', 'on', s.on ? '● AUTOPILOT' : '○ MANUAL RULES'), ti >= 0 && tier,
+    bpm > 0 && h('span', null, h('b', 'mono', bpm.toFixed(0)), ' BPM'), meter,
+    p && h('span', null, 'Console ', h('b', null, 'P' + (p.pc + 1) + ' · ' + p.name)),
+    names.length > 0 && h('span', null, 'Box ', h('b', null, names.join(' + '))),
+    next && h('span', 'next', next)].filter(Boolean));
+  const nl = $('apnow');
+  if (nl) nl.style.left = s.spot + '%';
+}
+
+/** Drags a program or a move to a tier (A, B) or along the axis (C). A tap calls onTap. */
+function apDrag(el, item, onTap) {
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button) return;
+    const x0 = e.clientX, y0 = e.clientY, pin = el.closest('.pin');
+    let ghost = null;
+    el.setPointerCapture(e.pointerId);
+    const axis = (ev) => {
+      const r = pin.parentNode.getBoundingClientRect();
+      return Math.min(100, Math.max(0, Math.round((ev.clientX - r.left) / r.width * 100)));
+    };
+    const move = (ev) => {
+      if (!apDragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+      apDragging = true;
+      if (pin) { pin.style.left = axis(ev) + '%'; return; }
+      if (!ghost) { ghost = el.cloneNode(true); ghost.classList.add('ghost'); document.body.append(ghost); }
+      ghost.style.left = ev.clientX + 8 + 'px';
+      ghost.style.top = ev.clientY + 8 + 'px';
+    };
+    const up = (ev) => {
+      for (const t of ['pointermove', 'pointerup', 'pointercancel']) el.removeEventListener(t, t === 'pointermove' ? move : up);
+      if (ghost) ghost.remove();
+      if (!apDragging) return ev.type === 'pointerup' && onTap();
+      apDragging = false;
+      const z = pin ? null : document.elementFromPoint(ev.clientX, ev.clientY);
+      const t = z && z.closest('[data-spot]');
+      const v = pin ? axis(ev) : t ? +t.dataset.spot : undefined;
+      if (v === undefined || ev.type === 'pointercancel') return renderAutoView();
+      showEdit(() => { item.spot = v; });
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+}
+
+function apChip(p, i, now) {
+  const c = h('span', 'ac' + (now ? ' now' : ''), p.name || 'Program', h('small', null, 'P' + (p.pc + 1)));
+  c.style.setProperty('--c', rgbHex(p.color));
+  apDrag(c, p, () => { apFormState = { obj: p, idx: i }; renderAutoForm(); });
+  return c;
+}
+
+function apCard(m, i, big, now) {
+  const [ic, nm] = apMove(m), tg = m.target;
+  const to = tg === 'room' ? 'Room' : tg.group !== undefined ? (show.groups[tg.group] || {}).name : (show.fixtures[tg.fixture] || {}).name;
+  const bar = (v) => { const b = h('span', 'apbar'); b.style.setProperty('--v', v + '%'); return b; };
+  const sw = h('span', 'apsw');
+  sw.style.background = rgbHex(m.color || show.auto.colors[apTier(m.spot)]);
+  const speed = (7 - HALF_BEATS.indexOf(m.half_beats)) / 7 * 100;
+  const c = h('div', 'mv' + (big ? ' big' : '') + (now ? ' now' : ''), h('span', 'ic', ic), h('span', 'nm', nm + (to ? ' · ' + to : '')),
+    h('span', 'knobs', big && h('span', null, 'speed', bar(speed)), big ? h('span', null, 'size', bar(m.size)) : bar(m.size), big ? h('span', null, 'colour', sw) : sw));
+  apDrag(c, m, () => openMove(i));
+  return c;
+}
+
+const apAdd = (text, f) => { const b = h('button', 'apadd', text); b.addEventListener('click', f); return b; };
+
+function apNewProgram(spot) {
+  const a = show.auto;
+  if (a.programs.length >= 32) return toast('The autopilot has at most 32 programs.');
+  let pc = 0;
+  while (a.programs.some((p) => p.pc === pc)) pc++;
+  apFormState = { obj: { pc, name: 'Program ' + (pc + 1), color: a.colors[apTier(spot)].slice(), spot }, isNew: true };
+  renderAutoForm();
+}
+
+function apNewMove(spot) {
+  const a = show.auto;
+  if (a.moves.length >= 24) return toast('The autopilot has at most 24 moves.');
+  showEdit(() => a.moves.push({ shape: 'pulse', target: show.groups.length ? { group: 0 } : 'room', param: 'dimmer', half_beats: 8, size: 60, spread: 'fan', faster: true, spot }));
+  openMove(a.moves.length - 1);
+}
+
+/** The editor of a move. It shows only Delete and Done until the full editor replaces it. */
+function openMove(i) {
+  apFormState = { move: i };
+  renderAutoForm();
+}
+
+/** The programs and the moves of one tier. */
+function apLists(t, big) {
+  const a = show.auto, s = (status && status.auto) || {}, mid = TIERS[t][2];
+  const pr = h('div', 'aprow'), mv = h('div', 'aprow');
+  a.programs.forEach((p, i) => { if (apTier(p.spot) === t) pr.append(apChip(p, i, s.program === i)); });
+  a.moves.forEach((m, i) => { if (apTier(m.spot) === t) mv.append(apCard(m, i, big, (s.moves >> i) & 1)); });
+  pr.append(apAdd('+ program', () => apNewProgram(mid)));
+  mv.append(apAdd('+ move', () => apNewMove(mid)));
+  return [h('div', 'lbl', 'Console programs'), pr, h('div', 'lbl', 'Box moves'), mv];
+}
+
+function apCurve(s) {
+  const a = show.auto;
+  const items = [...a.programs.map((p, i) => [p, () => apChip(p, i, s.program === i)]), ...a.moves.map((m, i) => [m, () => apCard(m, i, false, (s.moves >> i) & 1)])]
+    .sort((x, y) => x[0].spot - y[0].spot);
+  const now = h('div', 'apnow', h('span', null, 'NOW'));
+  now.id = 'apnow';
+  now.style.left = (s.spot || 0) + '%';
+  now.hidden = s.spot == null;
+  const pins = items.map(([o, mk], k) => {
+    const w = h('div', 'pin', mk());
+    w.style.left = o.spot + '%';
+    w.style.top = 10 + (k % 5) * 42 + 'px';
+    return w;
+  });
+  return h('div', null, h('div', 'apcurve', h('div', 'aptrack', ...pins, now)),
+    h('div', 'apax', h('span', null, 'quietest tonight'), h('span', null, 'hardest tonight')),
+    h('div', 'aprow', apAdd('+ program', () => apNewProgram(50)), apAdd('+ move', () => apNewMove(50))));
+}
+
+function renderAutoView() {
+  if (!show || apLocked()) return;
+  const a = show.auto, s = (status && status.auto) || {}, cur = ['calm', 'groove', 'peak'].indexOf(s.tier), v = $('apview');
+  a.colors.forEach((c, i) => $('p-auto').style.setProperty('--tc' + i, rgbHex(c)));
+  const tc = (e, i) => { e.style.setProperty('--tc', 'var(--tc' + i + ')'); e.dataset.spot = TIERS[i][2]; return e; };
+  if (autoView === 'curve') return v.replaceChildren(apCurve(s));
+  if (autoView === 'tabs') {
+    const t = apTab === null ? (cur < 0 ? 1 : cur) : apTab;
+    return v.replaceChildren(h('div', 'aptabs', ...TIERS.map(([n], i) => {
+      const b = tc(h('button', i === t ? 'on' : null, n + (i === cur ? ' ●' : '')), i);
+      b.addEventListener('click', () => { apTab = i; renderAutoView(); });
+      return b;
+    })), tc(h('div', 'apbox', ...apLists(t, true)), t));
+  }
+  v.replaceChildren(h('div', 'apcols', ...TIERS.map(([n, hint], i) =>
+    tc(h('div', 'apcol' + (i === cur ? ' cur' : ''), h('h3', null, n, i === cur && h('em', null, '● NOW')), h('div', 'hint', hint), ...apLists(i, false)), i))));
+}
+
+function renderAutoForm() {
+  const st = apFormState, box = $('apform'), a = show.auto;
+  if (!st) return box.replaceChildren();
+  const close = () => { apFormState = null; renderAuto(); };
+  const done = h('button', null, st.isNew ? 'Cancel' : 'Done');
+  done.addEventListener('click', close);
+  const del = h('button', null, 'Delete');
+  if (st.move !== undefined) {
+    const m = a.moves[st.move];
+    del.addEventListener('click', () => { showEdit(() => a.moves.splice(st.move, 1)); close(); });
+    return box.replaceChildren(h('div', 'apf', h('b', null, apMove(m)[1]), del, done));
+  }
+  const p = st.obj;
+  const col = h('input');
+  col.type = 'color';
+  col.value = rgbHex(p.color);
+  col.title = 'The colour of the program chip.';
+  col.addEventListener('input', () => { st.touched = true; showEdit(() => { p.color = hexRgb(col.value); }, false); });
+  // The colour follows a colour word in the name until the owner picks a colour.
+  const name = textIn(p.name, 'The name of the program, up to 16 characters.', (v) => {
+    p.name = v;
+    const c = !st.touched && nameColour(v);
+    if (c && c !== 'rainbow') { p.color = hexRgb(c); col.value = rgbHex(p.color); }
+  });
+  const num = numIn(1, 128, p.pc + 1, 'The program number of the console, 1 to 128.', (v) => { p.pc = v - 1; });
+  const parts = [name, h('span', null, 'Program ', num), col, done];
+  if (st.isNew) {
+    const add = h('button', null, 'Add');
+    add.addEventListener('click', () => { showEdit(() => a.programs.push(p)); close(); });
+    parts.unshift(add);
+  } else {
+    del.addEventListener('click', () => { showEdit(() => a.programs.splice(st.idx, 1)); close(); });
+    parts.push(del);
+  }
+  box.replaceChildren(h('div', 'apf', ...parts));
+}
+
+/** The drop strip (build, blackout, hit) and the safety line. */
+function renderAutoDrop() {
+  const d = show.auto.drop;
+  const dip = h('input'), pct = h('span', null, Math.round(d.dip / 2.55) + ' %');
+  dip.type = 'range';
+  dip.max = 100;
+  dip.value = Math.round(d.dip / 2.55);
+  dip.addEventListener('input', () => { pct.textContent = dip.value + ' %'; showEdit(() => { d.dip = Math.round(dip.value * 2.55); }, false); });
+  const cools = [30, 60, 120, 300, 600];
+  if (!cools.includes(d.strobe_cooldown_s)) cools.push(d.strobe_cooldown_s);
+  const fog = Math.max(0, ...show.looks.filter(Boolean).flatMap((l) => l.rows).filter((r) => effKind(r) === 'fog').map((r) => r.cooldown_s));
+  const stage = (t, bar, ...rest) => h('div', null, h('div', 'lbl', t), h('div', 'bar' + bar), ...rest);
+  $('apdrop').replaceChildren(
+    h('div', 'apdrop',
+      stage('1 · Build (last 16 bars)', '', h('div', null, 'speed and brightness climb · console dims to ', dip, pct)),
+      stage('2 · Blackout', ' black', pick([['off', 'Off'], ['beat', '1 beat'], ['half_bar', '½ bar'], ['bar', '1 bar']], d.blackout, (v) => showEdit(() => { d.blackout = v; }, false))),
+      stage('3 · Hit (together)', ' hit', h('div', null, 'console → a Peak program · box → a Peak move · strobe ',
+        numIn(0, 8, d.strobe_beats, 'The strobe after the drop, 0 to 8 beats.', (v) => { d.strobe_beats = v; }), ' beats'))),
+    h('div', 'apsafety', 'Safety: strobe at most once / ',
+      pick(cools.map((c) => [c, dur(c)]), d.strobe_cooldown_s, (v) => showEdit(() => { d.strobe_cooldown_s = +v; }, false)),
+      ' · fog ' + (fog ? 'at most once / ' + dur(fog) : 'is in no look') + ' · never the same program twice in a row'));
+}
+
+function renderAutoSet() {
+  const a = show.auto;
+  const pin = h('input', 'num');
+  pin.inputMode = 'numeric';
+  pin.maxLength = 8;
+  pin.value = a.pin;
+  pin.title = 'Zero to eight digits. With a PIN, this panel and the Lights setup ask for it.';
+  pin.addEventListener('input', () => {
+    pin.value = pin.value.replace(/\D/g, '');
+    showEdit(() => { a.pin = pin.value; }, false);
+    if (pin.value) sessionStorage.setItem('apPin', pin.value); else sessionStorage.removeItem('apPin');
+  });
+  const colours = TIERS.map(([n], i) => {
+    const c = h('input');
+    c.type = 'color';
+    c.value = rgbHex(a.colors[i]);
+    c.addEventListener('input', () => showEdit(() => { a.colors[i] = hexRgb(c.value); }, false));
+    c.addEventListener('change', renderAutoView);
+    return h('label', null, n + ' ', c);
+  });
+  $('apset').replaceChildren(
+    h('label', null, 'MIDI channel ', numIn(1, 16, a.channel + 1, 'The MIDI channel of the program changes, 1 to 16.', (v) => { a.channel = v - 1; })),
+    h('span', null, 'Tier colours ', ...colours), h('label', null, 'PIN ', pin));
 }
 
 const CENTER = 32768;
