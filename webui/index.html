@@ -1787,6 +1787,7 @@ function renderLights() {
     del.title = 'Remove this light.';
     del.addEventListener('click', () => showEdit(() => {
       show.fixtures.splice(i, 1);
+      apRetarget('fixture', i);
       for (const p of show.positions) p.aims = p.aims.filter((a) => a.fixture !== i).map((a) => (a.fixture > i ? { ...a, fixture: a.fixture - 1 } : a));
       for (const g of show.groups) g.fixtures = g.fixtures.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));
     }));
@@ -1803,6 +1804,7 @@ function renderLights() {
     del.title = 'Remove this group.';
     del.addEventListener('click', () => showEdit(() => {
       show.groups.splice(gi, 1);
+      apRetarget('group', gi);
       for (const l of show.looks) {
         if (!l) continue;
         l.rows = l.rows.filter((r) => r.group !== gi);
@@ -2036,7 +2038,15 @@ function apCurve(s) {
     h('div', 'aprow', apAdd('+ program', () => apNewProgram(50)), apAdd('+ move', () => apNewMove(50))));
 }
 
+/** After a light or a group goes, drops the moves on it and shifts the higher indices of that kind down. */
+function apRetarget(kind, gone) {
+  const a = show.auto;
+  a.moves = a.moves.filter((m) => m.target[kind] !== gone);
+  for (const m of a.moves) if (m.target[kind] > gone) m.target[kind]--;
+}
+
 function renderAutoView() {
+  apDragging = false;
   if (!show || apLocked()) return;
   const a = show.auto, s = (status && status.auto) || {}, cur = ['calm', 'groove', 'peak'].indexOf(s.tier), v = $('apview');
   a.colors.forEach((c, i) => $('p-auto').style.setProperty('--tc' + i, rgbHex(c)));
