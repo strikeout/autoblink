@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod autopilot;
 pub mod clock;
 pub mod input;
 pub mod mapper;

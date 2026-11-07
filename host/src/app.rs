@@ -114,6 +114,8 @@ pub struct AppContext {
     pub track_change_rx: mpsc::Receiver<TrackChange>,
     /// The DMX show of the host, from `show.json` next to the config file.
     pub show: crate::dmx::SharedShow,
+    /// The state of the light autopilot, shared by the mapper and the web UI.
+    pub auto: Arc<crate::dmx::AutoCtl>,
 }
 
 /// Initialize logging, load config, detect interface, open MIDI, build state.
@@ -217,6 +219,12 @@ pub fn init() -> anyhow::Result<AppContext> {
     let show_path = config::show_path(&cli.config);
     let show = Arc::new(parking_lot::RwLock::new(config::load_show(&show_path)));
     initial_cfg.show_path = Some(show_path);
+    let night_path = config::night_path(&cli.config);
+    let auto = Arc::new(crate::dmx::AutoCtl::new(
+        Arc::clone(&show),
+        Some(night_path.clone()),
+        config::load_night(&night_path),
+    ));
     if let Some(iface) = &cli.interface {
         initial_cfg.interface = iface.clone();
     }
@@ -297,6 +305,7 @@ pub fn init() -> anyhow::Result<AppContext> {
         track_change_tx,
         track_change_rx,
         show,
+        auto,
     })
 }
 

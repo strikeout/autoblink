@@ -12,11 +12,15 @@
 //! the Pro DJ Link network, the box drives the lights, and the task sends nothing.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use autoblink_core_dmx::{build_artdmx, BeatClock, Lights, Live, Show, Universe, UNIVERSE};
+use autoblink_core_dmx::{
+    apply_room, build_artdmx, Action, BeatClock, Lights, Live, PilotStatus, Show, Tier, Universe,
+    NIGHT_BYTES, UNIVERSE,
+};
 use autoblink_core_midi::scenes::Event;
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
@@ -63,6 +67,10 @@ pub enum DmxMsg {
         bpm: f64,
         at: Instant,
     },
+    /// An action of the light autopilot.
+    Auto(Action),
+    /// The page tries one move of the autopilot.
+    TryMove(u8),
 }
 
 /// The live controls of the page. The task reads them for each frame.
@@ -70,6 +78,8 @@ pub struct DmxLive {
     /// 255 is full.
     pub master: AtomicU8,
     pub strobe_hold: AtomicBool,
+    /// True while the page holds the whole room dark.
+    pub blackout: AtomicBool,
 }
 
 impl Default for DmxLive {
@@ -77,6 +87,7 @@ impl Default for DmxLive {
         Self {
             master: AtomicU8::new(255),
             strobe_hold: AtomicBool::new(false),
+            blackout: AtomicBool::new(false),
         }
     }
 }
@@ -88,6 +99,85 @@ pub struct DmxStatus {
     pub layers: Vec<u8>,
     pub master: u8,
     pub strobe_hold: bool,
+    /// True while the page holds the whole room dark.
+    pub blackout: bool,
+}
+
+/// The value of [`AutoCtl::pin`] when no pin request waits.
+pub const PIN_NONE: u8 = u8::MAX;
+
+/// The autopilot part of the status. The box sends the same fields.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct AutoStatus {
+    /// True while the autopilot of the show is on.
+    pub on: bool,
+    pub tier: Tier,
+    /// The energy spot of the music in the night, 0 to 100.
+    pub spot: u8,
+    pub pinned: Option<Tier>,
+    /// The index into `show.auto.programs` of the last pick.
+    pub program: Option<u8>,
+    /// Bit i is 1 while `show.auto.moves[i]` runs.
+    pub moves: u32,
+    pub drop_in_beats: Option<u16>,
+}
+
+impl AutoStatus {
+    pub fn new(on: bool, s: PilotStatus) -> Self {
+        Self {
+            on,
+            tier: s.tier,
+            spot: s.spot,
+            pinned: s.pinned,
+            program: s.program,
+            moves: s.moves,
+            drop_in_beats: s.drop_in_beats,
+        }
+    }
+}
+
+/// The state that the mapper (which runs the pilot), the page and the DMX engine share for the
+/// light autopilot. The mapper never waits on it: it uses atomics and `try_lock`.
+pub struct AutoCtl {
+    /// The show of the host. The mapper reads `show.auto` from it.
+    pub show: SharedShow,
+    /// `POST /show` adds 1. The mapper then copies `show.auto` again.
+    pub show_rev: AtomicU32,
+    /// The pin request of the page: 0 is auto, 1 to 3 are the tiers, [`PIN_NONE`] is no request.
+    pub pin: AtomicU8,
+    /// The status of the pilot. The mapper writes it.
+    pub status: Mutex<Option<AutoStatus>>,
+    /// The night memory at the last write. A restarted mapper continues from it.
+    pub night: Mutex<[u8; NIGHT_BYTES]>,
+    /// The file of the night memory, or `None` when the host stores nothing.
+    pub night_path: Option<PathBuf>,
+}
+
+impl AutoCtl {
+    pub fn new(show: SharedShow, night_path: Option<PathBuf>, night: [u8; NIGHT_BYTES]) -> Self {
+        Self {
+            show,
+            show_rev: AtomicU32::new(0),
+            pin: AtomicU8::new(PIN_NONE),
+            status: Mutex::new(None),
+            night: Mutex::new(night),
+            night_path,
+        }
+    }
+
+    /// Stores the pin request of the page. A tier other than `auto`, `calm`, `groove` and `peak`
+    /// changes nothing and gives `false`.
+    pub fn request_pin(&self, tier: &str) -> bool {
+        let pin = match tier {
+            "auto" => 0,
+            "calm" => 1,
+            "groove" => 2,
+            "peak" => 3,
+            _ => return false,
+        };
+        self.pin.store(pin, Ordering::Relaxed);
+        true
+    }
 }
 
 /// The handles of a running engine.
@@ -209,7 +299,7 @@ async fn run(task: Task) {
         let live = Live {
             master: page.master.load(Ordering::Relaxed),
             strobe_hold: page.strobe_hold.load(Ordering::Relaxed),
-            blackout: false,
+            blackout: page.blackout.load(Ordering::Relaxed),
         };
         let is_playing = dj_state.read().master.is_playing;
         // `set_playing` keeps the time of the stop. Thus the task calls it only on a change.
@@ -246,10 +336,17 @@ async fn run(task: Task) {
                         bpm,
                         at,
                     } => clock.beat(ms(at), beat_in_bar, bpm),
+                    DmxMsg::Auto(a) => lights.auto(a, now_ms),
+                    DmxMsg::TryMove(i) => lights.try_move(i, now_ms),
                 }
             }
             let beat = clock.now(now_ms);
             lights.frame(&show, beat.as_ref(), &live, now_ms, &mut frame);
+            // The host has no DMX IN. The room level acts on the own frame of the engine.
+            if show.auto.on || live.blackout {
+                let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
+                apply_room(&show, console, all, &mut frame);
+            }
         }
         // The task does not wait for the status lock, and it writes only a change. Thus a frame
         // without a change allocates nothing. The next frame tries again.
@@ -260,6 +357,7 @@ async fn run(task: Task) {
             }
             s.master = live.master;
             s.strobe_hold = live.strobe_hold;
+            s.blackout = live.blackout;
         }
         if box_ip.is_some() {
             continue;
@@ -447,6 +545,20 @@ mod tests {
         dmx.live.strobe_hold.store(true, Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(dmx.status.lock().strobe_hold);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_blackout_darkens_the_frame() {
+        let (node, dmx) = engine(par_show()).await;
+        dmx.tx.try_send(DmxMsg::On(0)).unwrap();
+        wait_frame(&node, "the look shows", |d| d[0] == 255).await;
+
+        dmx.live.blackout.store(true, Ordering::Relaxed);
+        wait_frame(&node, "the room is dark", |d| d[0] == 0).await;
+        assert!(dmx.status.lock().blackout);
+
+        dmx.live.blackout.store(false, Ordering::Relaxed);
+        wait_frame(&node, "the look returns", |d| d[0] == 255).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

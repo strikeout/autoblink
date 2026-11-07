@@ -5,8 +5,9 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
 use crate::config::{CcConfig, NoteConfig, SharedConfig};
-use crate::dmx::{DmxMsg, DmxTx};
+use crate::dmx::{AutoCtl, DmxMsg, DmxTx};
 use crate::midi::activity::{remember, MidiActivity};
+use crate::midi::autopilot::{self, HostPilot};
 use crate::midi::MidiTransport;
 use crate::osc::{Arg, OscOut};
 use crate::prolink::beat_listener::BeatEvent;
@@ -38,7 +39,7 @@ fn cc(ch: u8, num: u8, val: u8) -> [u8; 3] {
     [0xB0 | (ch & 0x0f), num & 0x7f, val & 0x7f]
 }
 
-fn program_change(ch: u8, prog: u8) -> [u8; 2] {
+pub(super) fn program_change(ch: u8, prog: u8) -> [u8; 2] {
     [0xC0 | (ch & 0x0f), prog & 0x7f]
 }
 
@@ -144,6 +145,7 @@ mod tests {
             cfg,
             activity,
             None,
+            None,
         ));
         let wake = || {
             let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
@@ -229,6 +231,7 @@ mod tests {
             status_rx,
             cfg,
             Arc::new(Mutex::new(MidiActivity::default())),
+            None,
             None,
         ));
         let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
@@ -330,6 +333,7 @@ mod tests {
             cfg,
             Arc::new(Mutex::new(MidiActivity::default())),
             None,
+            None,
         ));
         let _ = beat_tx.send(BeatEvent::LinkBeat {
             bpm: 120.0,
@@ -381,6 +385,7 @@ mod tests {
             cfg,
             Arc::new(Mutex::new(MidiActivity::default())),
             Some(dmx_tx),
+            None,
         ));
         let _ = beat_tx.send(BeatEvent::LinkBeat {
             bpm: 120.0,
@@ -401,6 +406,78 @@ mod tests {
         assert!(got.contains(&DmxMsg::On(5)), "{got:?}");
         assert!(got.contains(&DmxMsg::Fired(Event::Beat, 5)), "{got:?}");
         assert!(got.contains(&DmxMsg::Off(5)), "{got:?}");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn autopilot_mutes_the_scene_output_and_sends_its_own_actions() {
+        use crate::dmx::{AutoCtl, DmxMsg};
+        use autoblink_core_dmx::Action;
+        use autoblink_core_midi::scenes::{Decay, Event, Gate, Order, Row};
+
+        let midi = Arc::new(MockMidiTransport::new());
+        let cfg = new_shared(Config::default());
+        {
+            let mut c = cfg.write();
+            c.scenes.enabled = true;
+            c.scenes.rows = vec![Row {
+                event: Event::Beat,
+                presets: vec![5],
+                advance: 0,
+                order: Order::Up,
+                gate: Gate::Flash,
+                decay: Decay::Ms(80),
+                holds: Vec::new(),
+            }];
+        }
+        let show = crate::dmx::SharedShow::default();
+        show.write().auto.on = true;
+        let ctl = Arc::new(AutoCtl::new(
+            show,
+            None,
+            autoblink_core_dmx::Night::default().to_bytes(),
+        ));
+        let state = new_shared_state(30);
+        state.write().master.source = Some(BeatSource::AbletonLink);
+        let (_status_tx, status_rx) = broadcast::channel(8);
+        let (beat_tx, beat_rx) = broadcast::channel(8);
+        let (dmx_tx, mut dmx_rx) = tokio::sync::mpsc::channel(64);
+        let handle = tokio::spawn(run_with_midi(
+            midi.clone(),
+            state,
+            beat_rx,
+            status_rx,
+            cfg,
+            Arc::new(Mutex::new(MidiActivity::default())),
+            Some(dmx_tx),
+            Some(Arc::clone(&ctl)),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = beat_tx.send(BeatEvent::LinkBeat {
+            bpm: 120.0,
+            beat_in_bar: 2,
+            bar_phase: 0.25,
+            beat_phase: 0.0,
+            received_at: Instant::now(),
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut got = Vec::new();
+        while let Ok(m) = dmx_rx.try_recv() {
+            got.push(m);
+        }
+        // The pilot turned on: it sends the picks, and the scene engine is mute.
+        assert!(
+            got.iter()
+                .any(|m| matches!(m, DmxMsg::Auto(Action::Energy { .. }))),
+            "{got:?}"
+        );
+        assert!(
+            !got.iter()
+                .any(|m| matches!(m, DmxMsg::On(_) | DmxMsg::Fired(..))),
+            "{got:?}"
+        );
+        assert!(!midi.get_messages().contains(&note_on(0, 5, 127).to_vec()));
+        assert!(ctl.status.lock().is_some_and(|s| s.on));
         handle.abort();
     }
 
@@ -522,6 +599,7 @@ mod tests {
             new_shared(Config::default()),
             activity,
             None,
+            None,
         ));
         let wake = || {
             let _ = status_tx.send(StatusEvent::Mixer(crate::prolink::packets::MixerStatus {
@@ -566,6 +644,7 @@ mod tests {
             status_rx,
             cfg.clone(),
             activity,
+            None,
             None,
         ));
 
@@ -622,6 +701,7 @@ mod tests {
             cfg,
             Arc::new(Mutex::new(MidiActivity::default())),
             None,
+            None,
         ));
 
         let _ = beat_tx.send(BeatEvent::LinkBeat {
@@ -672,6 +752,7 @@ mod tests {
             status_rx,
             cfg.clone(),
             activity,
+            None,
             None,
         ));
 
@@ -728,6 +809,7 @@ mod tests {
             cfg.clone(),
             activity,
             None,
+            None,
         ));
         let downbeat = || {
             let _ = beat_tx.send(BeatEvent::LinkBeat {
@@ -778,6 +860,7 @@ mod tests {
             status_rx,
             cfg.clone(),
             activity,
+            None,
             None,
         ));
         let wake = || {
@@ -1017,6 +1100,8 @@ struct PrevCc {
 
 // ── Main mapper task ──────────────────────────────────────────────────────────
 
+// ponytail: 8 arguments. A struct of the DMX handles replaces `dmx` and `auto` when one more is due.
+#[allow(clippy::too_many_arguments)]
 async fn run_with_midi(
     midi: Arc<dyn MidiTransport>,
     state: SharedState,
@@ -1025,6 +1110,7 @@ async fn run_with_midi(
     cfg: SharedConfig,
     activity: Arc<Mutex<MidiActivity>>,
     dmx: Option<DmxTx>,
+    auto: Option<Arc<AutoCtl>>,
 ) {
     let dmx = dmx.as_ref();
     let mut prev = PrevCc::default();
@@ -1048,6 +1134,10 @@ async fn run_with_midi(
     let mut prev_guess: (u8, u32, Option<Event>) = (0, 0, None);
     let start = Instant::now();
     let now_ms = || start.elapsed().as_millis() as u64;
+    // The pilot ticks at each pass, also when the MIDI sources are quiet.
+    let mut pilot = auto.map(|ctl| HostPilot::new(ctl, now_ms()));
+    let mut pilot_tick = tokio::time::interval(Duration::from_millis(250));
+    pilot_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tracing::info!("MIDI mapper task started");
 
     loop {
@@ -1057,6 +1147,7 @@ async fn run_with_midi(
             .map(|ms| tokio::time::Instant::from_std(start + Duration::from_millis(ms)));
         tokio::select! {
             _ = async { tokio::time::sleep_until(flash_off.unwrap()).await }, if flash_off.is_some() => {}
+            _ = pilot_tick.tick(), if pilot.is_some() => {}
 
             evt = beat_rx.recv() => {
                 match evt {
@@ -1081,11 +1172,15 @@ async fn run_with_midi(
                             bpm: bp.effective_bpm,
                             at: received_at,
                         });
+                        // While the autopilot drives, the scene engine sends nothing.
+                        let quiet = pilot.as_ref().is_some_and(HostPilot::on);
                         scenes.beat(&scene_cfg, now_ms(), bp.beat_in_bar, &mut |o| {
-                            send_scene(midi.as_ref(), o, &activity, vel0);
-                            scene_to_dmx(dmx, &scene_cfg, o);
+                            if !quiet {
+                                send_scene(midi.as_ref(), o, &activity, vel0);
+                                scene_to_dmx(dmx, &scene_cfg, o);
+                            }
                         });
-                        fired_to_dmx(&mut scenes, dmx);
+                        fired_to_dmx(&mut scenes, dmx.filter(|_| !quiet));
                         send_osc_beat(&osc, &cfg, bp.beat_in_bar);
                         tracing::debug!(
                             device = bp.device_number,
@@ -1108,11 +1203,14 @@ async fn run_with_midi(
                             (c.scenes.clone(), c.midi.notes.off_vel0)
                         };
                         dmx_send(dmx, DmxMsg::Beat { beat_in_bar, bpm, at: received_at });
+                        let quiet = pilot.as_ref().is_some_and(HostPilot::on);
                         scenes.beat(&scene_cfg, now_ms(), beat_in_bar, &mut |o| {
-                            send_scene(midi.as_ref(), o, &activity, vel0);
-                            scene_to_dmx(dmx, &scene_cfg, o);
+                            if !quiet {
+                                send_scene(midi.as_ref(), o, &activity, vel0);
+                                scene_to_dmx(dmx, &scene_cfg, o);
+                            }
                         });
-                        fired_to_dmx(&mut scenes, dmx);
+                        fired_to_dmx(&mut scenes, dmx.filter(|_| !quiet));
                         send_osc_beat(&osc, &cfg, beat_in_bar);
                         tracing::debug!(
                             beat = beat_in_bar,
@@ -1408,18 +1506,42 @@ async fn run_with_midi(
         };
         let input = scene_input(&state, prev_guess);
         prev_guess = (input.device, input.track, input.guess);
+        let take_over = pilot.as_mut().is_some_and(HostPilot::refresh);
+        let quiet = pilot.as_ref().is_some_and(HostPilot::on);
+        // When the autopilot turns on, the engine releases its held notes and its open flashes.
+        // Without this release, the console and the DMX engine keep the held preset on.
+        if take_over {
+            scenes.release_all(&mut |o| {
+                send_scene(midi.as_ref(), o, &activity, vel0);
+                scene_to_dmx(dmx, &scene_cfg, o);
+            });
+        }
         scenes.update(&scene_cfg, now_ms(), &input, &mut |o| {
-            send_scene(midi.as_ref(), o, &activity, vel0);
-            scene_to_dmx(dmx, &scene_cfg, o);
+            if !quiet {
+                send_scene(midi.as_ref(), o, &activity, vel0);
+                scene_to_dmx(dmx, &scene_cfg, o);
+            }
         });
-        fired_to_dmx(&mut scenes, dmx);
+        fired_to_dmx(&mut scenes, dmx.filter(|_| !quiet));
+        let scene = scenes.status(&scene_cfg);
+        if let Some(p) = pilot.as_mut() {
+            let t = now_ms();
+            p.tick(
+                t,
+                autopilot::facts(&state, t),
+                &scene.events,
+                midi.as_ref(),
+                dmx,
+            );
+        }
         // The UI counters are optional. Do not wait for the lock.
         if let Some(mut act) = activity.try_lock() {
-            act.scene = scenes.status(&scene_cfg);
+            act.scene = scene;
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     midi: Arc<dyn MidiTransport>,
     state: SharedState,
@@ -1428,6 +1550,7 @@ pub async fn run(
     cfg: SharedConfig,
     activity: Arc<Mutex<MidiActivity>>,
     dmx: Option<DmxTx>,
+    auto: Option<Arc<AutoCtl>>,
 ) {
-    run_with_midi(midi, state, beat_rx, status_rx, cfg, activity, dmx).await;
+    run_with_midi(midi, state, beat_rx, status_rx, cfg, activity, dmx, auto).await;
 }

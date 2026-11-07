@@ -30,6 +30,11 @@
 //!   aims a head (fixture 0 to 31). These commands get no reply. Without a DMX engine, they give
 //!   an `error`. `scene_test` also shows the look of the preset on the engine. When a page that
 //!   set the strobe hold closes its socket, the server releases the hold.
+//! - `{type: "dmx_blackout", on}` holds the whole room dark. The server releases it, like the
+//!   strobe hold, when the page that set it closes its socket. `{type: "auto_pin", tier}` pins
+//!   the tier of the light autopilot (`auto`, `calm`, `groove` or `peak`). `{type: "auto_try",
+//!   move}` runs one move of the autopilot alone for 8 bars. A bad tier or a move of 24 and up
+//!   gives an `error`. The status field `auto` and the capability `auto` come with the DMX engine.
 //! - `{type: "take_over"}`, only to the ESP32: this page gets the status. The ESP32 closes the
 //!   connection of the page that had it, and replies with `settings`.
 //!
@@ -104,6 +109,8 @@ pub struct WebCtx {
     pub cfg_change_tx: watch::Sender<()>,
     /// The DMX show of the host. The DMX engine reads it.
     pub show: crate::dmx::SharedShow,
+    /// The state of the light autopilot. The mapper runs the pilot.
+    pub auto: Arc<crate::dmx::AutoCtl>,
     /// The DMX engine, or `None` when it does not run.
     pub dmx: Option<crate::dmx::DmxHandle>,
 }
@@ -277,7 +284,7 @@ fn produce_once(shared: &Shared) {
     let ctx = &shared.ctx;
     let interfaces = shared.interfaces.read().clone();
 
-    let st = status::snapshot(
+    let mut st = status::snapshot(
         &ctx.cfg,
         &ctx.dj_state,
         &ctx.device_table,
@@ -289,6 +296,10 @@ fn produce_once(shared: &Shared) {
         },
         ctx.dmx.as_ref().map(|d| &*d.status),
     );
+    // The pilot status is for a page with the DMX engine only.
+    if ctx.dmx.is_some() {
+        st.auto = *ctx.auto.status.lock();
+    }
     shared.status_tx.send_replace(tagged("status", &st));
 
     let cfg = ctx.cfg.read().clone();
@@ -510,6 +521,12 @@ async fn show_post(
         }
     }
     *shared.ctx.show.write() = show;
+    // The mapper copies `show.auto` again.
+    shared
+        .ctx
+        .auto
+        .show_rev
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     tracing::info!("The page saved a new DMX show");
     reply(StatusCode::NO_CONTENT, String::new())
 }
@@ -618,6 +635,19 @@ enum Command {
         #[serde(default)]
         tilt: u64,
     },
+    #[serde(rename = "dmx_blackout")]
+    DmxBlackout {
+        on: bool,
+    },
+    #[serde(rename = "auto_pin")]
+    AutoPin {
+        tier: String,
+    },
+    #[serde(rename = "auto_try")]
+    AutoTry {
+        #[serde(rename = "move")]
+        index: u64,
+    },
 }
 
 async fn send(socket: &mut WebSocket, msg: &str) -> bool {
@@ -627,22 +657,32 @@ async fn send(socket: &mut WebSocket, msg: &str) -> bool {
     )
 }
 
-/// Releases the strobe hold of the DMX engine when the page that set it goes away.
+/// Releases the strobe hold and the blackout of the DMX engine when the page that set them goes
+/// away.
 ///
 /// A phone that locks during a hold sends no release. Without this guard, the whole rig strobes
-/// until another page releases the hold.
+/// (or stays dark) until another page releases the hold.
 struct StrobeGuard {
     live: Option<Arc<crate::dmx::DmxLive>>,
     /// True while the last `dmx_live` of this page set the strobe hold.
     held: bool,
+    /// True while the last `dmx_blackout` of this page set the blackout.
+    blackout: bool,
 }
 
 impl Drop for StrobeGuard {
     fn drop(&mut self) {
-        if let (true, Some(live)) = (self.held, &self.live) {
-            live.strobe_hold
-                .store(false, std::sync::atomic::Ordering::Relaxed);
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(live) = &self.live else {
+            return;
+        };
+        if self.held {
+            live.strobe_hold.store(false, Relaxed);
             tracing::info!("A page with a strobe hold closed. The host releases the hold.");
+        }
+        if self.blackout {
+            live.blackout.store(false, Relaxed);
+            tracing::info!("A page with a blackout closed. The host releases the blackout.");
         }
     }
 }
@@ -652,6 +692,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
     let mut strobe = StrobeGuard {
         live: shared.ctx.dmx.as_ref().map(|d| Arc::clone(&d.live)),
         held: false,
+        blackout: false,
     };
     let mut caps = vec![
         "beat", "decks", "mixer", "output", "settings", "ports", "logs", "waveform", "scenes",
@@ -659,6 +700,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
     // The page shows the DMX show editor only when the host has a DMX engine.
     if shared.ctx.dmx.is_some() {
         caps.push("dmx");
+        caps.push("auto");
     }
     let hello = json!({
         "type": "hello",
@@ -733,7 +775,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
             incoming = socket.recv() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(err) = handle_command(&shared, text.as_str(), &mut strobe.held).await {
+                        if let Some(err) = handle_command(&shared, text.as_str(), &mut strobe).await {
                             json!({ "type": "error", "text": err }).to_string().into()
                         } else {
                             continue;
@@ -751,8 +793,8 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>) {
 }
 
 /// Runs one client command. Returns an error text for the page, or `None` on success.
-/// `strobe_held` records whether this page holds the strobe of the DMX engine.
-async fn handle_command(shared: &Shared, text: &str, strobe_held: &mut bool) -> Option<String> {
+/// `guard` records whether this page holds the strobe or the blackout of the DMX engine.
+async fn handle_command(shared: &Shared, text: &str, guard: &mut StrobeGuard) -> Option<String> {
     let ctx = &shared.ctx;
     let cmd = match serde_json::from_str::<Command>(text) {
         Ok(cmd) => cmd,
@@ -825,7 +867,7 @@ async fn handle_command(shared: &Shared, text: &str, strobe_held: &mut bool) -> 
                 .master
                 .store(master.clamp(0.0, 255.0) as u8, Relaxed);
             dmx.live.strobe_hold.store(strobe, Relaxed);
-            *strobe_held = strobe;
+            guard.held = strobe;
             None
         }
         // A full channel drops the fog. The page can send it again.
@@ -851,8 +893,43 @@ async fn handle_command(shared: &Shared, text: &str, strobe_held: &mut bool) -> 
             });
             None
         }
+        // The engine reads the blackout for each frame.
+        Command::DmxBlackout { on } => {
+            let Some(dmx) = &ctx.dmx else {
+                return Some(NO_DMX.into());
+            };
+            dmx.live
+                .blackout
+                .store(on, std::sync::atomic::Ordering::Relaxed);
+            guard.blackout = on;
+            None
+        }
+        // The mapper takes the pin at its next pass.
+        Command::AutoPin { tier } => {
+            if ctx.dmx.is_none() {
+                return Some(NO_DMX.into());
+            }
+            (!ctx.auto.request_pin(&tier)).then(|| BAD_TIER.into())
+        }
+        // A full channel drops the trial. The page can send it again.
+        Command::AutoTry { index } => {
+            let Some(dmx) = &ctx.dmx else {
+                return Some(NO_DMX.into());
+            };
+            if index >= autoblink_core_dmx::MAX_MOVES as u64 {
+                return Some(BAD_MOVE.into());
+            }
+            let _ = dmx.tx.try_send(crate::dmx::DmxMsg::TryMove(index as u8));
+            None
+        }
     }
 }
+
+/// The error of `auto_try` for a move that does not exist.
+const BAD_MOVE: &str = "The command needs a move below 24";
+
+/// The error of `auto_pin` for a tier that does not exist.
+const BAD_TIER: &str = "The command needs a tier: auto, calm, groove or peak";
 
 /// The error of a DMX command when the host has no DMX engine.
 const NO_DMX: &str = "The host has no DMX engine. Set [dmx] artnet_target in the config.";
@@ -900,6 +977,7 @@ mod tests {
     use crate::config::{new_shared, Config};
 
     fn ctx() -> WebCtx {
+        let show = crate::dmx::SharedShow::default();
         WebCtx {
             dj_state: crate::state::new_shared(0),
             cfg: new_shared(Config::default()),
@@ -909,7 +987,12 @@ mod tests {
             beat_tx: broadcast::channel(16).0,
             midi_out: MidiOutHandle::start(16, None),
             cfg_change_tx: watch::channel(()).0,
-            show: crate::dmx::SharedShow::default(),
+            show: Arc::clone(&show),
+            auto: Arc::new(crate::dmx::AutoCtl::new(
+                show,
+                None,
+                autoblink_core_dmx::Night::default().to_bytes(),
+            )),
             dmx: None,
         }
     }
@@ -1329,6 +1412,123 @@ mod tests {
         strobe_becomes(&live, true).await;
         drop(a);
         strobe_becomes(&live, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blackout_released_on_close() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut ctx = ctx();
+        let _node = with_engine(&mut ctx).await;
+        let live = Arc::clone(&ctx.dmx.as_ref().unwrap().live);
+        let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let open = || async {
+            let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+                .await
+                .unwrap();
+            next_of_type(&mut ws, "hello").await;
+            ws
+        };
+        let wait = |want: bool| {
+            let live = Arc::clone(&live);
+            async move {
+                for _ in 0..100 {
+                    if live.blackout.load(Relaxed) == want {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                panic!("the blackout did not become {want}");
+            }
+        };
+        let dark = r#"{"type":"dmx_blackout","on":true}"#;
+
+        // The page that holds the blackout goes away without a release.
+        let mut a = open().await;
+        a.send(WsMessage::Text(dark.into())).await.unwrap();
+        wait(true).await;
+        drop(a);
+        wait(false).await;
+
+        // A page that never set the blackout does not release the blackout of another page.
+        let mut a = open().await;
+        a.send(WsMessage::Text(dark.into())).await.unwrap();
+        wait(true).await;
+        drop(open().await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        wait(true).await;
+        a.send(WsMessage::Text(
+            r#"{"type":"dmx_blackout","on":false}"#.into(),
+        ))
+        .await
+        .unwrap();
+        wait(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auto_commands_parse() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut ctx = ctx();
+        let _node = with_engine(&mut ctx).await;
+        let auto = Arc::clone(&ctx.auto);
+        let addr = spawn(ctx, SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+            .await
+            .unwrap();
+        let hello = next_of_type(&mut ws, "hello").await;
+        assert!(hello["caps"].as_array().unwrap().contains(&"auto".into()));
+
+        ws.send(WsMessage::Text(
+            r#"{"type":"auto_pin","tier":"peak"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        for _ in 0..100 {
+            if auto.pin.load(Relaxed) == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(auto.pin.load(Relaxed), 3);
+
+        // A bad tier and a bad move change nothing and give an error.
+        auto.pin.store(crate::dmx::PIN_NONE, Relaxed);
+        ws.send(WsMessage::Text(
+            r#"{"type":"auto_pin","tier":"wild"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        wait_for(&mut ws, "error", |v| {
+            v["text"].as_str().unwrap().contains("tier")
+        })
+        .await;
+        assert_eq!(auto.pin.load(Relaxed), crate::dmx::PIN_NONE);
+        ws.send(WsMessage::Text(r#"{"type":"auto_try","move":99}"#.into()))
+            .await
+            .unwrap();
+        wait_for(&mut ws, "error", |v| {
+            v["text"].as_str().unwrap().contains("move")
+        })
+        .await;
+        // A move in range gives no error.
+        ws.send(WsMessage::Text(r#"{"type":"auto_try","move":3}"#.into()))
+            .await
+            .unwrap();
+        ws.send(WsMessage::Text(
+            r#"{"type":"auto_pin","tier":"auto"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        for _ in 0..100 {
+            if auto.pin.load(Relaxed) == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the pin request did not arrive");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -39,6 +39,8 @@ pub struct Status {
     pub box_ip: Option<String>,
     /// The layers and the live controls of the DMX engine, or `None` when the engine does not run.
     pub dmx: Option<crate::dmx::DmxStatus>,
+    /// The light autopilot. The web UI sets it when the DMX engine runs.
+    pub auto: Option<crate::dmx::AutoStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -333,6 +335,7 @@ pub fn snapshot(
         scene: act.scene,
         box_ip: box_ip.map(|ip| ip.to_string()),
         dmx,
+        auto: None,
         output: Output {
             port: cfg.midi.output.clone(),
             connected: out_link.connected,

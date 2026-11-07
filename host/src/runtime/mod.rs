@@ -33,6 +33,8 @@ pub struct TaskContext {
     pub midi_activity: Arc<Mutex<MidiActivity>>,
     /// The channel to the DMX engine, or `None` when the engine does not run.
     pub dmx_tx: Option<crate::dmx::DmxTx>,
+    /// The light autopilot state, or `None` in a test without a pilot.
+    pub auto: Option<Arc<crate::dmx::AutoCtl>>,
 }
 
 /// Runs the task that `factory` makes, and starts it again when it panics or
@@ -126,6 +128,7 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         track_change_tx,
         track_change_rx,
         show,
+        auto,
     } = ctx;
 
     let midi_activity: Arc<Mutex<MidiActivity>> = Arc::new(Mutex::new(MidiActivity::default()));
@@ -165,6 +168,7 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         midi_out: midi_out.clone(),
         midi_activity: Arc::clone(&midi_activity),
         dmx_tx: dmx.as_ref().map(|d| d.tx.clone()),
+        auto: Some(Arc::clone(&auto)),
     };
 
     dj_state.write().set_source_mode(startup_cfg.source.clone());
@@ -238,6 +242,7 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
             midi_out: midi_out.clone(),
             cfg_change_tx: cfg_change_tx.clone(),
             show,
+            auto,
             dmx,
         },
         web_addr,

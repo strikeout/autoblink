@@ -505,6 +505,25 @@ pub fn show_path(config_path: &Path) -> PathBuf {
     config_path.with_file_name("show.json")
 }
 
+/// Returns the path of the night file: `night.bin` in the folder of the config file.
+pub fn night_path(config_path: &Path) -> PathBuf {
+    config_path.with_file_name("night.bin")
+}
+
+/// Reads the night file. A missing file or a bad file gives the default night.
+pub fn load_night(path: &Path) -> [u8; autoblink_core_dmx::NIGHT_BYTES] {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    autoblink_core_dmx::Night::from_bytes(&bytes).to_bytes()
+}
+
+/// Writes the night file. This is a blocking call.
+pub fn save_night(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let tmp = path.with_extension("bin.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 /// Reads the show file. A missing or bad file gives the empty show.
 pub fn load_show(path: &Path) -> Show {
     match std::fs::read(path) {
@@ -641,6 +660,32 @@ mod tests {
 
         std::fs::write(&path, b"not json").unwrap();
         assert_eq!(load_show(&path), Show::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn night_file_round_trip() {
+        let dir = std::env::temp_dir().join(format!("xdj-night-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = night_path(&dir.join("config.toml"));
+        assert_eq!(path, dir.join("night.bin"));
+        let default = autoblink_core_dmx::Night::default().to_bytes();
+        assert_eq!(
+            load_night(&path),
+            default,
+            "a missing file gives the default"
+        );
+
+        let mut night = autoblink_core_dmx::Night::default();
+        night.sample(200, true, 0);
+        night.sample(200, true, 1000);
+        let bytes = night.to_bytes();
+        assert_ne!(bytes, default);
+        save_night(&path, &bytes).unwrap();
+        assert_eq!(load_night(&path), bytes);
+
+        std::fs::write(&path, [1u8, 2, 3]).unwrap();
+        assert_eq!(load_night(&path), default, "a short file gives the default");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -19,6 +19,7 @@ pub fn spawn(ctx: TaskContext, cfg_change_rx: watch::Receiver<()>, rt: &Handle) 
             Arc::clone(&c.cfg),
             Arc::clone(&c.midi_activity),
             c.dmx_tx.clone(),
+            c.auto.clone(),
         )
     }));
 
@@ -203,6 +204,7 @@ mod tests {
             midi_out,
             midi_activity: Arc::clone(&midi_activity),
             dmx_tx: None,
+            auto: None,
         };
 
         spawn(ctx, cfg_change_rx, &Handle::current());
