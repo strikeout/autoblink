@@ -425,7 +425,11 @@ fn snapshot(state: &State) -> Snapshot {
     let blinks = crate::led::blinks(state);
     let ip = state.link.lock().unwrap().map(|l| l.ip.to_string());
     #[cfg(feature = "dmx")]
-    let dmx = state.dmx_status.lock().ok().map(|d| (d.signal, d.in_fps));
+    let dmx = state
+        .dmx_status
+        .lock()
+        .ok()
+        .map(|d| (d.signal, d.in_fps, d.artnet));
     #[cfg(not(feature = "dmx"))]
     let dmx = None;
     let now = state.now_ms();

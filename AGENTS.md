@@ -195,6 +195,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The settings 110 to 121 are firmware settings in `autoblink_core_ui::config`. NVS keeps them as JSON under the key `box`. The firmware writes them 2 s after the last change.
 - "DMX Mode" (110) is Off, Box only, Merge (the default) or Pass. The outside source is DMX IN. Without a DMX IN signal, the outside source is a live Art-Net frame. Without an outside source, Merge and Pass send the output of the box.
 - In Merge, a show with lights uses the HTP and LTP rules of `autoblink_core_dmx::Merge` (see "Art-Net in on the box"). A show without lights uses HTP for each channel.
+- The OLED DMX page shows the DMX IN frames each second and the Art-Net state: "live", "no signal", or "ignored" while DMX IN has a signal. The Main page shows "Art-Net live" when DMX IN has no signal and Art-Net is live.
 - The status field `dmx` has `mode`, `in_fps` and `signal`, and the fields of the show engine (`layers`, `master`, `strobe_hold`, `artnet`). The firmware without the feature `dmx` sends no field `dmx`.
 - The `ui` thread always starts. It has priority 3 on core 0. It looks for the OLED at address 0x3C and 0x3D every 5 s. The first failure logs the I2C addresses that answer. When the OLED answers, the thread draws 5 frames each second. After a write error, it initializes the OLED again before each frame, so that a display that lost its power comes back.
 - The joystick is optional. Without it, the OLED shows the Main page.
