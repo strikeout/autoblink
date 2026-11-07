@@ -89,6 +89,10 @@ pub struct State {
     /// The last Art-Net frame. The `artnet` thread writes it, and the `dmx` thread reads it.
     #[cfg(feature = "dmx")]
     pub artnet: Mutex<artnet::ArtIn>,
+    /// The Ethernet port, the joined WiFi network and the own WiFi network, in this order. The
+    /// `artnet` thread replies to an ArtPoll on the interface in the subnet of the desk.
+    #[cfg(feature = "dmx")]
+    pub artnet_ifaces: Mutex<[Option<artnet::Iface>; 3]>,
     start: Instant,
 }
 
@@ -172,6 +176,8 @@ fn run() -> anyhow::Result<()> {
         show_store: Mutex::new(show_store),
         #[cfg(feature = "dmx")]
         artnet: Mutex::new(artnet::ArtIn::default()),
+        #[cfg(feature = "dmx")]
+        artnet_ifaces: Mutex::new([None; 3]),
         start: Instant::now(),
     });
     // The maintenance start of a firmware update also sends the idle look.
@@ -319,6 +325,13 @@ fn run() -> anyhow::Result<()> {
     // happen once.
     let eth_name: &'static str = String::leak(eth.netif().get_name().to_string());
     let sta_name: &'static str = String::leak(wifi.sta_netif().get_name().to_string());
+    #[cfg(feature = "dmx")]
+    let ap_iface = artnet::Iface {
+        netif: String::leak(wifi.ap_netif().get_name().to_string()),
+        ip: AP_IP,
+        prefix: 24,
+        mac: wifi.ap_netif().get_mac()?,
+    };
     let mut last = (None, None);
     let mut next_heap_log = Instant::now();
     let mut heap_low = u32::MAX;
@@ -444,6 +457,20 @@ fn run() -> anyhow::Result<()> {
             broadcast: broadcast(i.ip, i.subnet.mask.0),
             mac,
         });
+        #[cfg(feature = "dmx")]
+        {
+            let iface = |netif, i: esp_idf_svc::ipv4::IpInfo, mac| artnet::Iface {
+                netif,
+                ip: i.ip,
+                prefix: i.subnet.mask.0,
+                mac,
+            };
+            *state.artnet_ifaces.lock().unwrap() = [
+                info.map(|i| iface(eth_name, i, eth_mac)),
+                sta_info.map(|i| iface(sta_name, i, sta_mac)),
+                Some(ap_iface),
+            ];
+        }
         state
             .wifi_join_down
             .store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);

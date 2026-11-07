@@ -272,10 +272,13 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 ### Art-Net in on the box
 
-- The `artnet` thread (`esp32/src/artnet.rs`) receives Art-Net on UDP port 6454 on all interfaces. It keeps universe 0 only and ignores a frame of another universe. Its stack is 4 KB and its priority is 5 (`crate::spawn`). This size is an estimate. Measure it with `/mem` on a box.
+- The `artnet` thread (`esp32/src/artnet.rs`) receives Art-Net on UDP port 6454 on all interfaces. It keeps universe 0 only and ignores a frame of another universe. Its stack is 5 KB since 1.30.1 (4 KB before) and its priority is 5 (`crate::spawn`). Measure it with `/mem` on a box.
 - `main` starts the thread after the network and the Pro DJ Link threads. The OTA maintenance start does not reach that line, so it has no Art-Net.
 - The permanent heap for Art-Net is about 8 KB.
-- The box answers no ArtPoll. A desk must send to the IP address of the box (unicast) or to the subnet broadcast address.
+- The box answers an ArtPoll with one ArtPollReply (since 1.30.3). The reply gives the address of the interface in the subnet of the desk: the Ethernet port first, then the joined WiFi network, then the own WiFi network. Without such an interface, the box does not reply.
+- The reply goes from port 6454 to port 6454 of the desk. For the send, the receive socket is bound to the interface. A desk or a firewall can drop a reply from another source port.
+- When the joined WiFi network uses 192.168.1.x, a desk on the own WiFi network gets the address of the joined network. Such a desk must send to 192.168.1.1 by hand.
+- The log shows the first ArtPoll and the address of the reply.
 - Art-Net counts as live for 3 s after its last frame (`ARTNET_TIMEOUT_MS`). Without a live frame, the output is the engine alone.
 - DMX IN wins over Art-Net. While DMX IN has a signal, the box ignores Art-Net. "DMX Mode" sets the merge (see "DMX IN, OLED and joystick").
 - The merge rule is in `autoblink_core_dmx::merge`. The channels of kind Dimmer, Red, Green, Blue, White, Amber, Uv and Strobe use HTP (the higher value wins). All other channels use LTP (the source that changed the channel last wins). The channels that no light patches and the Fog channel are LTP too. After a timeout, the first live frame claims every non-zero channel.
@@ -298,7 +301,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
-- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Version 1.24.0 adds `ui` with 8 KB. Version 1.29.0 gives `dmx` 7 KB and adds `artnet` with 4 KB. Measure these threads, and measure `main` again, because the `Box` builds in `dmx::start` can use its stack.
+- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Version 1.24.0 adds `ui` with 8 KB. Version 1.29.0 gives `dmx` 7 KB and adds `artnet` with 4 KB. Version 1.30.1 gives `artnet` 5 KB. Measure these threads, and measure `main` again, because the `Box` builds in `dmx::start` can use its stack.
 - Put a large struct on the heap (`Box`), not on the stack of a thread. The OLED display struct holds its 1 KB frame buffer. On the 5 KB stack of `ui`, it overflowed the stack, and the box restarted in `malloc` with the address 0xffffffff.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
 - The firmware keeps 600 columns of the waveform preview (`autoblink_core_dbserver::PREVIEW_COLUMNS`). The players send 1200.
