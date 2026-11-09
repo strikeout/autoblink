@@ -14,7 +14,7 @@
 -->
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0a0f;--panel:#12121c;--border:#1e1e32;--text:#e0e0e0;--muted:#7a7a8c;--dim:#4a4a5c;--accent:#00e0ff;--play:#00ff88;--flash:#ffd000;--danger:#ff4d4d;--warn:#ffaa00}
+:root{--bg:#0a0a0f;--panel:#12121c;--border:#1e1e32;--text:#e0e0e0;--muted:#9a9ab0;--dim:#6e6e84;--accent:#00e0ff;--play:#00ff88;--flash:#ffd000;--danger:#ff4d4d;--warn:#ffaa00}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:13px}
 .mono,.log,.num{font-family:'SF Mono',Menlo,Monaco,'Cascadia Mono',monospace}
 header{background:#151524;padding:10px 16px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
@@ -25,7 +25,14 @@ footer{padding:4px 16px 12px;text-align:center;font-size:11px;color:var(--dim)}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:6px}
 .dot.on{background:var(--play)}
 #state.play{color:var(--play)}#state.stop{color:var(--danger)}
-#toast{margin-left:auto;color:var(--danger);font-weight:600}
+#toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:20;display:flex;gap:12px;align-items:center;max-width:92vw;padding:10px 14px;border:1px solid var(--danger);border-radius:8px;background:#2a1418;color:#fff;font-weight:600}
+#toast:empty{display:none}
+#toast.info{border-color:var(--accent);background:#14202a}
+#toast button{padding:6px 14px}
+#offbar{display:none;position:fixed;top:0;left:0;right:0;z-index:21;padding:6px 16px;background:var(--danger);color:#000;font-weight:700;text-align:center}
+body.offline #offbar{display:block}
+body.offline main,body.offline .live{filter:grayscale(1) brightness(.5)}
+body.busy #lvs{display:none!important}
 main{padding:12px;display:grid;gap:12px;grid-template-columns:2fr 1fr;max-width:1600px;margin:0 auto}
 @media(max-width:900px){main{grid-template-columns:1fr}}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}
@@ -152,7 +159,7 @@ input.num.text{width:150px;text-align:left}
 .live .fader b{font-size:11px;letter-spacing:1.4px;color:var(--muted);font-weight:700}
 .live input[type=range]{flex:1;height:28px;min-width:0}
 .live .fader .num{min-width:3.2em;text-align:right}
-.live .big{min-width:96px;height:44px;border-radius:8px;border:1px solid var(--border);background:#1b1b2e;color:var(--text);font-weight:700;letter-spacing:1px;font-size:14px;touch-action:none}
+.live .big{min-width:96px;height:44px;border-radius:8px;border:1px solid var(--border);background:#1b1b2e;color:var(--text);font-weight:700;letter-spacing:1px;font-size:14px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .live .big.on{background:var(--danger);border-color:var(--danger);color:#fff}
 .live .now{display:flex;flex-wrap:wrap;gap:6px;align-items:center;color:var(--muted);font-size:11px}
 .live .now .chip{cursor:default}
@@ -204,6 +211,8 @@ input.num.text{width:150px;text-align:left}
 /* autopilot */
 #p-auto{--tc0:#ffaa44;--tc1:#00e0ff;--tc2:#ff3d7f}
 #p-auto .aphd{margin-left:auto;display:flex;gap:8px;text-transform:none;letter-spacing:0}
+#apdrv{margin-bottom:10px}
+#apdrv button{min-height:44px;padding:0 18px;font-size:14px;font-weight:600}
 #p-auto .lbl{font-size:10px;text-transform:uppercase;letter-spacing:1.3px;color:var(--muted);margin:10px 0 6px}
 #p-auto b{font-weight:500;color:var(--text)}
 .aplive{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;background:#151524;border:1px solid var(--border);border-radius:10px;padding:10px 14px 18px;margin-bottom:12px;color:var(--muted)}
@@ -379,15 +388,15 @@ input.num.text{width:150px;text-align:left}
 .mfoot .note{color:var(--muted);font-size:12px;margin-right:auto}
 .mfoot .go{border-color:var(--play);color:var(--play)}
 #lvs{display:none}
-body.lv>*:not(#lvs):not(#takeover){display:none!important}
-body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:560px;margin:0 auto;min-height:100vh}
+body.lv>*:not(#lvs):not(#takeover):not(#toast):not(#boxbar){display:none!important}
+body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:560px;margin:0 auto;min-height:100vh;min-height:100dvh}
 #lvs .lvh{display:flex;align-items:baseline;gap:14px;font-size:20px}
 #lvs .lvh b{font-size:26px}
 #lvs #lvc{font-size:12px;color:var(--danger);margin-left:auto}
 #lvs #lvc:not(.off){display:none}
 #lvs #lvc::before{content:'';display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--danger);margin-right:6px}
 #lvs .lvh a{margin-left:auto;font-size:12px;color:var(--muted)}
-#lvs button{font-size:20px;font-weight:700;padding:22px 8px;touch-action:none;user-select:none;-webkit-user-select:none}
+#lvs button{font-size:20px;font-weight:700;padding:22px 8px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #lvs .lvt{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 #lvs button.on{border-color:var(--accent);color:var(--accent);background:rgba(0,224,255,.14)}
 #lvs #lvb{flex:1;min-height:150px;font-size:30px;border-color:var(--danger);color:var(--danger)}
@@ -406,8 +415,9 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
   <span class="kv">iface <b id="iface">—</b></span>
   <span class="kv" id="uptimekv" hidden>uptime <b id="uptime" class="num">—</b></span>
   <b id="state" class="stop">■ STOP</b>
-  <span id="toast"></span>
 </header>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="offbar">Offline · reconnecting…</div>
 <div id="boxbar" class="live" hidden><span>The live controls are on the page of the box.</span> <a id="boxlink" target="_blank" rel="noopener">Open the box page</a></div>
 <div id="live" class="live" data-cap="dmx" hidden>
   <div class="fader" title="The master level of all lights."><b>MASTER</b><input id="ltmaster" type="range" min="0" max="255" value="255"><span id="ltpct" class="num">100%</span></div>
@@ -474,7 +484,8 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
   </section>
 
   <details id="p-auto" class="panel wide" data-cap="auto" hidden open>
-    <summary><h2>Autopilot <span id="aphd" class="aphd"><span id="apdrv" class="seg"></span><span id="apviews" class="seg"></span><button id="lvlink" title="Big buttons for the tier, the blackout and the fog.">Live screen</button></span></h2></summary>
+    <summary><h2>Autopilot <span class="aphd"><span id="aphd"><span id="apviews" class="seg"></span></span><button id="lvlink" title="Big buttons for the tier, the blackout and the fog.">Live screen</button></span></h2></summary>
+    <div id="apdrv" class="seg"></div>
     <div id="aplive" class="aplive"></div>
     <div id="apview"></div>
     <div id="apform"></div>
@@ -582,10 +593,18 @@ let ws = null, backoff = 500, caps = null, status = null, beatCap = false, lastB
 
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
-function toast(text) {
-  set('toast', text);
+/** Shows a message for 4 s. With `undo`, the message has an Undo button and stays for 6 s. */
+function toast(text, undo) {
+  const t = $('toast');
+  t.replaceChildren(text);
+  t.classList.toggle('info', !!undo);
+  if (undo) {
+    const b = h('button', null, 'Undo');
+    b.addEventListener('click', () => { t.replaceChildren(); undo(); });
+    t.append(b);
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => set('toast', ''), 4000);
+  toastTimer = setTimeout(() => t.replaceChildren(), undo ? 6000 : 4000);
 }
 
 // The tab icon blinks on each master beat: the light cone turns yellow for 100 ms.
@@ -624,6 +643,9 @@ function syncDmx() {
   $('p-auto').hidden = !(caps.has('auto') || !!box);
   $('live').hidden = !own || !!box || !$('takeover').hidden;
   $('boxbar').hidden = !box;
+  // The live screen sends to this server. Without the capability, its buttons do nothing.
+  $('lvt').hidden = !caps.has('auto') || !!box;
+  $('lvb').hidden = $('lvf').hidden = !own || !!box;
   if (box) $('boxlink').href = 'http://' + box + '/';
   set('sctitle', avail ? 'DMX Scenes & Looks' : 'DMX Scenes');
   const lan = !['127.0.0.1', 'localhost'].includes(location.hostname) && !BOX;
@@ -639,7 +661,7 @@ function syncDmx() {
   const had = was !== undefined && was !== null;
   showFrom = from;
   // An edit that waits for its save goes to the old endpoint first.
-  if (showTimer && had) { clearTimeout(showTimer); showPost(true, was); }
+  if (showTimer && had) { clearTimeout(showTimer); showPosting = showPost(true, was); }
   if (from !== null) {
     if (had) toast('Now editing the show of ' + (box ? 'the box' : 'this computer'));
     loadShow();
@@ -1143,7 +1165,7 @@ function buildSetting(it) {
         // A hidden value (a password) has no raw value. Its mask goes in the input as a placeholder.
         input.placeholder = it.raw == null ? it.value : '';
         shown.textContent = it.value === it.raw || it.raw == null ? '' : it.value;
-        if (document.activeElement !== input) { input.value = it.raw ?? ''; input.classList.remove('bad'); }
+        if (document.activeElement !== input) input.value = it.raw ?? '';
       },
     };
   }
@@ -1199,6 +1221,9 @@ function onBusy() {
   document.querySelector('main').hidden = true;
   $('live').hidden = true;
   $('takeover').hidden = false;
+  // The box ignores the commands of this page, so the live screen must not show its buttons.
+  document.body.classList.add('busy');
+  $('dot').classList.remove('on');
   set('conn', 'waiting');
 }
 
@@ -1239,7 +1264,8 @@ let lookOpen = null; // the preset whose look the editor shows
 
 // Colour words in English and German. The first word that matches wins.
 // A letter must not touch the word, but a German ending (e, en, er, es) may follow it.
-const colourRe = (words) => new RegExp('(?<![\\p{L}])(?:' + words + ')(?:e|en|er|es)?(?![\\p{L}])', 'u');
+// No lookbehind: Safari before 16.4 cannot parse it, and the error stops the whole script.
+const colourRe = (words) => new RegExp('(?:^|[^\\p{L}])(?:' + words + ')(?:e|en|er|es)?(?![\\p{L}])', 'u');
 const NAME_COLOURS = [
   [colourRe('rainbow|regenbogen|rgb|multi|disco'), 'rainbow'],
   [colourRe('uv|black ?light|schwarzlicht|violet|violett|purple|lila'), '#a3f'],
@@ -1545,7 +1571,7 @@ function sceneDecay(ev, r) {
   v.inputMode = 'numeric';
   v.value = r.decay.ms;
   v.addEventListener('change', () => {
-    const ms = parseInt(v.value, 10);
+    const ms = Math.min(60000, parseInt(v.value, 10));
     if (ms > 0) sceneEdit(ev, (r) => { r.decay = { ms }; });
   });
   return [v, unit];
@@ -1708,16 +1734,17 @@ document.addEventListener('keydown', (e) => {
 
 $('scon').addEventListener('click', () => { if (scenes) { scenes.enabled = !scenes.enabled; sceneSave(); } });
 $('scone').addEventListener('click', () => { if (scenes) { scenes.one_at_a_time = !scenes.one_at_a_time; sceneSave(); } });
-for (const [id, apply] of [
-  ['scch', (v) => { scenes.channel = v - 1; }],
-  ['scfirst', (v) => { scenes.first_note = v; }],
-  ['sccount', (v) => { scenes.count = v; }],
+// The page draws one chip for each preset, so a large count must not reach renderScenes.
+for (const [id, min, max, apply] of [
+  ['scch', 1, 16, (v) => { scenes.channel = v - 1; }],
+  ['scfirst', 0, 127, (v) => { scenes.first_note = v; }],
+  ['sccount', 1, 32, (v) => { scenes.count = v; }],
 ]) {
   const input = $(id);
   const commit = () => {
     const v = parseInt(input.value, 10);
     if (!scenes || Number.isNaN(v)) return;
-    apply(v);
+    apply(Math.min(max, Math.max(min, v)));
     sceneSave();
   };
   input.addEventListener('change', commit);
@@ -1730,6 +1757,7 @@ const FIXTURE_TYPES = { dimmer: ['dimmer'], rgb: ['red', 'green', 'blue'], rgb_d
 const SWATCHES = [[255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255], [255, 255, 255]];
 const EVERY = [['beat', 'beat'], ['half', '½ beat'], ['bar', 'bar']];
 const EFFECTS = ['none', 'flash', 'pulse', 'chase', 'random', 'strobe', 'fog'];
+let showPosting = null;
 let show = null, strobeHeld = false, strobeDown = false, releaseLost = false, showTimer = 0, dmxLast = null, layerKey = '';
 
 const chanLen = (f) => f.channels.length;
@@ -1749,6 +1777,8 @@ function addressBad(i) {
 }
 
 async function loadShow() {
+  // A save that runs now must land first, or the load gets the show before the edit.
+  await showPosting;
   const base = showBase();
   try {
     const r = await fetch(base + '/show');
@@ -1783,7 +1813,7 @@ async function loadShow() {
 /** Saves the show 1 s after the last change. A plain POST is a simple CORS request. */
 function showSave() {
   clearTimeout(showTimer);
-  showTimer = setTimeout(() => showPost(true, showBase()), 1000);
+  showTimer = setTimeout(() => { showPosting = showPost(true, showBase()); }, 1000);
 }
 
 async function showPost(retry, base) {
@@ -1804,6 +1834,19 @@ function showEdit(f, redraw = true) {
   f();
   showSave();
   if (redraw) { renderLights(); renderScenes(); renderAuto(); }
+}
+
+/** Runs a removal like showEdit. The toast offers to undo it until the show changes its source. */
+function showDrop(what, f) {
+  const before = JSON.stringify(show), was = show;
+  showEdit(f);
+  toast(what + ' removed', () => {
+    if (show !== was) return;
+    show = JSON.parse(before);
+    apFix(show);
+    apFormState = null;
+    showEdit(() => {});
+  });
 }
 
 function pick(options, value, onPick) {
@@ -1857,7 +1900,7 @@ function renderLights() {
     adr.classList.toggle('bad', bad);
     const del = h('button', null, '×');
     del.title = 'Remove this light.';
-    del.addEventListener('click', () => showEdit(() => {
+    del.addEventListener('click', () => showDrop(f.name || 'Light', () => {
       show.fixtures.splice(i, 1);
       apRetarget('fixture', i);
       for (const p of show.positions) p.aims = p.aims.filter((a) => a.fixture !== i).map((a) => (a.fixture > i ? { ...a, fixture: a.fixture - 1 } : a));
@@ -1874,7 +1917,7 @@ function renderLights() {
   $('ltgroups').replaceChildren(...show.groups.map((g, gi) => {
     const del = h('button', null, '×');
     del.title = 'Remove this group.';
-    del.addEventListener('click', () => showEdit(() => {
+    del.addEventListener('click', () => showDrop(g.name || 'Group', () => {
       show.groups.splice(gi, 1);
       apRetarget('group', gi);
       for (const l of show.looks) {
@@ -1962,12 +2005,16 @@ function renderAuto() {
   $('p-setup').classList.toggle('locked', locked);
   $('ltlock').replaceChildren(...(locked ? [pinField()] : []));
   $('aphd').hidden = locked;
+  $('apdrv').hidden = locked;
   if (locked) {
     $('apview').replaceChildren(pinField());
     for (const id of ['apform', 'apdrop', 'apset']) $(id).replaceChildren();
     return renderAutoLive();
   }
-  apSeg('apdrv', [[true, 'Autopilot'], [false, 'Manual rules']], a.on, (v) => showEdit(() => { a.on = v; }));
+  apSeg('apdrv', [[true, 'Autopilot'], [false, 'Manual rules']], a.on, (v) => {
+    if (v === a.on || (status && status.master.playing && !confirm(v ? 'A deck plays. Let the autopilot drive the lights now?' : 'A deck plays. Give the lights back to the manual rules now?'))) return;
+    showEdit(() => { a.on = v; });
+  });
   apSeg('apviews', [['cols', 'A', 'Three tier columns'], ['tabs', 'B', 'Tier tabs'], ['curve', 'C', 'Energy curve']], autoView,
     (v) => { autoView = v; localStorage.setItem('autoView', v); renderAuto(); });
   renderAutoView();
@@ -2146,7 +2193,7 @@ function renderAutoForm() {
   if (st.move !== undefined) {
     const m = a.moves[st.move];
     if (!m) return close();
-    del.addEventListener('click', () => { showEdit(() => a.moves.splice(st.move, 1)); close(); });
+    del.addEventListener('click', () => { showDrop('Move', () => a.moves.splice(st.move, 1)); close(); });
     return box.replaceChildren(moveEditor(m, st.move, del, done));
   }
   const p = st.obj;
@@ -2168,7 +2215,7 @@ function renderAutoForm() {
     add.addEventListener('click', () => { showEdit(() => a.programs.push(p)); close(); });
     parts.unshift(add);
   } else {
-    del.addEventListener('click', () => { showEdit(() => a.programs.splice(st.idx, 1)); close(); });
+    del.addEventListener('click', () => { showDrop(p.name || 'Program', () => a.programs.splice(st.idx, 1)); close(); });
     parts.push(del);
   }
   box.replaceChildren(h('div', 'apf', ...parts));
@@ -2245,7 +2292,7 @@ function renderPositions() {
     ...(heads.length ? show.positions.map((p, pi) => {
       const del = h('button', null, '×');
       del.title = 'Remove this position.';
-      del.addEventListener('click', () => showEdit(() => {
+      del.addEventListener('click', () => showDrop(p.name || 'Position', () => {
         show.positions.splice(pi, 1);
         for (const l of show.looks) {
           if (!l) continue;
@@ -2310,7 +2357,7 @@ function renderLook() {
   test.addEventListener('click', () => send({ type: 'scene_test', preset: i }));
   const clear = h('button', null, 'Clear');
   clear.title = 'Remove the look of this preset.';
-  clear.addEventListener('click', () => showEdit(() => {
+  clear.addEventListener('click', () => showDrop('Look', () => {
     show.looks[i] = null;
     if (show.idle === i) show.idle = null;
   }));
@@ -2696,6 +2743,7 @@ function connect() {
   ws.onopen = () => {
     backoff = 500;
     lvConn(true);
+    document.body.classList.remove('offline');
     $('dot').classList.add('on');
     set('conn', 'live');
     // The server sends all retained log lines to a new socket.
@@ -2706,6 +2754,8 @@ function connect() {
     try { m = JSON.parse(e.data); } catch { return; }
     if ((m.type === 'status' || m.type === 'settings') && !$('takeover').hidden) {
       $('takeover').hidden = true;
+      document.body.classList.remove('busy');
+      $('dot').classList.add('on');
       document.querySelector('main').hidden = false;
       syncDmx();
       set('conn', 'live');
@@ -2715,6 +2765,7 @@ function connect() {
   };
   ws.onclose = () => {
     lvConn(false);
+    document.body.classList.add('offline');
     $('dot').classList.remove('on');
     set('conn', 'reconnecting…');
     setTimeout(connect, backoff);
