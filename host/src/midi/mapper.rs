@@ -711,16 +711,24 @@ mod tests {
             beat_phase: 0.0,
             received_at: Instant::now(),
         });
-        tokio::time::sleep(Duration::from_millis(30)).await;
-
+        // Wait for the two messages, not for a fixed time. The start of the mapper can take
+        // longer than 30 ms on a slow or busy computer.
+        let want = [
+            encode("/xdj/beat", &[Arg::I(1)]),
+            encode("/xdj/downbeat", &[]),
+        ];
         let mut got = Vec::new();
         let mut buf = [0u8; 256];
         rx.set_nonblocking(true).unwrap();
-        while let Ok(n) = rx.recv(&mut buf) {
-            got.push(buf[..n].to_vec());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !want.iter().all(|w| got.contains(w)) && Instant::now() < deadline {
+            while let Ok(n) = rx.recv(&mut buf) {
+                got.push(buf[..n].to_vec());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(got.contains(&encode("/xdj/beat", &[Arg::I(1)])));
-        assert!(got.contains(&encode("/xdj/downbeat", &[])));
+        assert!(got.contains(&want[0]));
+        assert!(got.contains(&want[1]));
 
         handle.abort();
     }
