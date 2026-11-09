@@ -19,10 +19,18 @@ const BASE_URL: &str = "https://open-fixture-library.org";
 
 /// The firmware cuts off a longer OFL reply, and the route answers 502.
 pub const MAX_BODY: usize = 24 * 1024;
-/// A fetch does not start below this free heap.
-pub const MIN_FREE: u32 = 80 * 1024;
-/// A fetch does not start below this largest free block. The TLS record buffer has 16 KB.
-pub const MIN_BLOCK: u32 = 32 * 1024;
+/// A fetch does not start below this free heap. On 1.32.1, a fetch with a small reply needed
+/// 50 KB, and a reply of 10 KB needed 57 KB. Thus about 18 KB stays for the other tasks. The log
+/// of each fetch gives the heap that it needed.
+pub const MIN_FREE: u32 = 68 * 1024;
+/// A fetch does not start below this largest free block. The TLS record buffer needs about 17 KB.
+pub const MIN_BLOCK: u32 = 20 * 1024;
+/// The reply buffer does not grow below this free heap. A large reply then gives 503, and the
+/// other tasks keep their heap.
+// ponytail: the buffer holds the full reply (up to MAX_BODY). To pass the reply through in
+// chunks to the HTTP handler saves up to 20 KB, but the route then cannot send 502 for a reply
+// that is too large.
+const MIN_FREE_GROW: u32 = 12 * 1024;
 
 /// The longest wait for the connection and for each read.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -107,10 +115,29 @@ fn spawn_and_join(method: Method, url: String, body: Vec<u8>) -> Result<Vec<u8>,
             503,
             format!(
                 "Not enough memory for the library request: {free} bytes free, largest block \
-                 {block} bytes. Close other pages of the box, then try again."
+                 {block} bytes. Try again in a moment."
             ),
         ));
     }
+    // The low point of the heap during the fetch gives the heap that the fetch needs.
+    // SAFETY: the two calls only reset and read the counters of the heap.
+    unsafe { sys::heap_caps_monitor_local_minimum_free_size_start() };
+    let result = spawn_and_join_inner(method, url, body);
+    // SAFETY: as above.
+    let low = unsafe { sys::esp_get_minimum_free_heap_size() };
+    unsafe { sys::heap_caps_monitor_local_minimum_free_size_stop() };
+    log::info!(
+        "OFL request: {free} bytes free before, {low} bytes at the low point. The fetch needed {} bytes.",
+        free.saturating_sub(low)
+    );
+    result
+}
+
+fn spawn_and_join_inner(
+    method: Method,
+    url: String,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, (u16, String)> {
     // The TLS handshake of mbedTLS needs a large stack.
     let thread =
         crate::spawn(c"ofl", 12 * 1024, move || request(method, &url, &body)).map_err(|e| {
@@ -153,11 +180,14 @@ fn request(method: Method, url: &str, body: &[u8]) -> Result<Vec<u8>, (u16, Stri
     let mut out = Vec::new();
     loop {
         let len = out.len();
+        // SAFETY: the call only reads a counter of the heap.
+        let free = unsafe { sys::esp_get_free_heap_size() };
         // A failed allocation must not stop the firmware, so the reserve can fail.
         if len == out.capacity()
-            && out
-                .try_reserve_exact(CHUNK.min(MAX_BODY + 1 - len))
-                .is_err()
+            && (free < MIN_FREE_GROW + CHUNK as u32
+                || out
+                    .try_reserve_exact(CHUNK.min(MAX_BODY + 1 - len))
+                    .is_err())
         {
             log::warn!("OFL request: no memory for the reply of {url} after {len} bytes");
             return Err((503, "Not enough memory for the library reply.".into()));

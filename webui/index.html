@@ -2707,7 +2707,7 @@ async function oflGet(path, onOk) {
     if (!r.ok) {
       fail = r.status === 502 && path.startsWith('/ofl/search')
         ? "Too many results or no internet. Type more, or check the box's internet."
-        : 'The library failed: ' + r.status + ' ' + body.trim().slice(0, 120);
+        : 'The library failed: ' + r.status + ' ' + body.trim().slice(0, 300);
     } else {
       try { data = JSON.parse(body); } catch { /* data stays undefined */ }
       if (data === null || typeof data !== 'object') fail = 'The library sent no JSON.';
