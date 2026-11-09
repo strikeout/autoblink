@@ -1,4 +1,4 @@
-//! The Art-Net ArtDmx packet: the reader and the writer.
+//! The Art-Net packets: ArtDmx (the reader and the writer), ArtPoll and ArtPollReply.
 
 use crate::render::Universe;
 use crate::show::UNIVERSE;
@@ -8,7 +8,58 @@ pub const ARTNET_PORT: u16 = 6454;
 
 const ID: &[u8; 8] = b"Art-Net\0";
 const OP_DMX: u16 = 0x5000;
+const OP_POLL: u16 = 0x2000;
+const OP_POLL_REPLY: u16 = 0x2100;
 const HEADER: usize = 18;
+
+/// The length of an Art-Net 4 ArtPollReply.
+pub const POLL_REPLY_LEN: usize = 239;
+
+/// Returns true when `packet` is an ArtPoll. A desk sends it to find the nodes.
+pub fn is_artpoll(packet: &[u8]) -> bool {
+    packet.len() >= 12 && &packet[..8] == ID && packet[8..10] == OP_POLL.to_le_bytes()
+}
+
+/// Writes an ArtPollReply for a node with one DMX output on universe 0.
+///
+/// `version` is the major and the minor version of the firmware. `report` goes into the node
+/// report field and is cut at 63 bytes.
+pub fn build_artpoll_reply(
+    ip: [u8; 4],
+    mac: [u8; 6],
+    version: (u8, u8),
+    report: &str,
+) -> [u8; POLL_REPLY_LEN] {
+    let mut out = [0u8; POLL_REPLY_LEN];
+    out[..8].copy_from_slice(ID);
+    out[8..10].copy_from_slice(&OP_POLL_REPLY.to_le_bytes());
+    out[10..14].copy_from_slice(&ip);
+    out[14..16].copy_from_slice(&ARTNET_PORT.to_le_bytes());
+    out[16] = version.0;
+    out[17] = version.1;
+    // Oem: unknown.
+    out[21] = 0xff;
+    // ESTA manufacturer code 0x7FF0 is for prototypes. The field is low byte first.
+    out[24..26].copy_from_slice(&0x7ff0u16.to_le_bytes());
+    copy_text(&mut out[26..44], "AUTOBLINK");
+    copy_text(&mut out[44..108], "AUTOBLINK beat-driven DMX box");
+    copy_text(&mut out[108..172], report);
+    // One port. It receives Art-Net and sends DMX512 (PortTypes bit 7).
+    out[173] = 1;
+    out[174] = 0x80;
+    out[201..207].copy_from_slice(&mac);
+    out[207..211].copy_from_slice(&ip);
+    out[211] = 1;
+    // Status2: the node knows 15-bit port addresses.
+    out[212] = 0x08;
+    out
+}
+
+/// Copies `text` into `field` and keeps the last byte 0.
+fn copy_text(field: &mut [u8], text: &str) {
+    let n = text.len().min(field.len() - 1);
+    field[..n].copy_from_slice(&text.as_bytes()[..n]);
+}
 
 /// Returns the universe (Net << 8 | SubUni) and the data of an ArtDmx packet, or None.
 pub fn parse_artdmx(packet: &[u8]) -> Option<(u16, &[u8])> {
@@ -84,6 +135,39 @@ mod tests {
         assert!(parse_artdmx(&packet(0, &[])).is_none());
         assert!(parse_artdmx(&packet(0, &[0; 512])).is_some());
         assert!(parse_artdmx(&packet(0, &[1])).is_some());
+    }
+
+    #[test]
+    fn artpoll_detect() {
+        let mut p = b"Art-Net\0\x00\x20\x00\x0e\x00\x00".to_vec();
+        assert!(is_artpoll(&p));
+        p[9] = 0x50;
+        assert!(!is_artpoll(&p));
+        assert!(!is_artpoll(&b"Art-Net\0\x00\x20"[..]));
+    }
+
+    #[test]
+    fn artpoll_reply_fields() {
+        let r = build_artpoll_reply(
+            [192, 168, 1, 104],
+            [1, 2, 3, 4, 5, 6],
+            (1, 30),
+            "#0001 [0] OK",
+        );
+        assert_eq!(&r[..8], b"Art-Net\0");
+        assert_eq!(r[8..10], [0x00, 0x21]);
+        assert_eq!(r[10..14], [192, 168, 1, 104]);
+        assert_eq!(r[14..16], [0x36, 0x19]);
+        assert_eq!(r[16..18], [1, 30]);
+        assert_eq!(&r[26..36], b"AUTOBLINK\0");
+        assert_eq!(&r[108..120], b"#0001 [0] OK");
+        assert_eq!(r[172..175], [0, 1, 0x80]);
+        assert_eq!(r[190], 0);
+        assert_eq!(r[201..207], [1, 2, 3, 4, 5, 6]);
+        assert_eq!(r[207..211], [192, 168, 1, 104]);
+        let long = "x".repeat(100);
+        let r = build_artpoll_reply([0; 4], [0; 6], (0, 0), &long);
+        assert_eq!(r[171], 0);
     }
 
     #[test]
