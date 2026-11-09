@@ -340,6 +340,7 @@ impl Ui<'_> {
                     mode: cfg.dmx_mode.label(),
                     beat_channel: cfg.beat_channel,
                     input: snap.dmx,
+                    last_change: dmx_last_change(self.state),
                 })
             }
             Page::Scenes => {
@@ -418,13 +419,31 @@ fn stick<'a>(
     ))
 }
 
+/// The last change in the DMX output: channel and value.
+fn dmx_last_change(state: &State) -> Option<(u16, u8)> {
+    #[cfg(feature = "dmx")]
+    return state.dmx_status.lock().ok().and_then(|d| d.last_change);
+    #[cfg(not(feature = "dmx"))]
+    {
+        let _ = state;
+        None
+    }
+}
+
 /// Copies the values of the screen from the state. Each lock is taken alone.
 fn snapshot(state: &State) -> Snapshot {
     let master = state.tracker.lock().unwrap().master().cloned();
     let phrase = master.as_ref().and_then(|d| phrase(state, d)).map(|p| p.0);
     let blinks = crate::led::blinks(state);
     let ip = state.link.lock().unwrap().map(|l| l.ip.to_string());
-    let dmx = state.dmx.lock().unwrap().map(|d| (d.signal, d.in_fps));
+    #[cfg(feature = "dmx")]
+    let dmx = state
+        .dmx_status
+        .lock()
+        .ok()
+        .map(|d| (d.signal, d.in_fps, d.artnet));
+    #[cfg(not(feature = "dmx"))]
+    let dmx = None;
     let now = state.now_ms();
     Snapshot {
         master: master.as_ref().map(|d| d.num),

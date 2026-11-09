@@ -34,6 +34,13 @@ pub struct Status {
     pub output: Output,
     /// The current DMX scene.
     pub scene: autoblink_core_midi::scenes::SceneStatus,
+    /// The IP address of an AUTOBLINK box on the Pro DJ Link network, or `None`.
+    #[serde(rename = "box")]
+    pub box_ip: Option<String>,
+    /// The layers and the live controls of the DMX engine, or `None` when the engine does not run.
+    pub dmx: Option<crate::dmx::DmxStatus>,
+    /// The light autopilot. The web UI sets it when the DMX engine runs.
+    pub auto: Option<crate::dmx::AutoStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -151,6 +158,7 @@ pub fn snapshot(
     activity: &Mutex<MidiActivity>,
     interfaces: &[NetworkIfaceInfo],
     out_link: OutputLink,
+    dmx: Option<&Mutex<crate::dmx::DmxStatus>>,
 ) -> Status {
     let cfg = cfg.read().clone();
     let (master, mixer, link_peers, mut dev_states) = {
@@ -163,12 +171,18 @@ pub fn snapshot(
         )
     };
     let act = activity.lock().clone();
-    let mut devices: Vec<_> = device_table
-        .lock()
-        .values()
-        .filter(|d| d.device_number != cfg.device_number)
-        .cloned()
-        .collect();
+    let dmx = dmx.map(|d| d.lock().clone());
+    let (mut devices, box_ip): (Vec<_>, _) = {
+        let table = device_table.lock();
+        (
+            table
+                .values()
+                .filter(|d| d.device_number != cfg.device_number)
+                .cloned()
+                .collect(),
+            crate::dmx::find_box(table.values(), cfg.device_number),
+        )
+    };
     devices.sort_by_key(|d| d.device_number);
 
     let link_active = master.source == Some(BeatSource::AbletonLink);
@@ -319,6 +333,9 @@ pub fn snapshot(
         link_active,
         mixer,
         scene: act.scene,
+        box_ip: box_ip.map(|ip| ip.to_string()),
+        dmx,
+        auto: None,
         output: Output {
             port: cfg.midi.output.clone(),
             connected: out_link.connected,
@@ -432,6 +449,7 @@ mod tests {
                 connected: false,
                 dropped: 0,
             },
+            None,
         );
 
         let nums: Vec<u8> = st.decks.iter().map(|d| d.num).collect();
@@ -465,6 +483,7 @@ mod tests {
                 connected: true,
                 dropped: 0,
             },
+            None,
         );
         assert!(st.no_devices);
         assert!(st.mixer.is_none());

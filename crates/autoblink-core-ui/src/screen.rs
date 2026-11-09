@@ -23,8 +23,8 @@ pub struct Snapshot {
     pub blinks: Option<u64>,
     /// The address of the Pro DJ Link interface.
     pub ip: Option<String>,
-    /// The DMX input: (signal, good frames each second). `None` without DMX.
-    pub dmx: Option<(bool, u16)>,
+    /// The DMX input: (signal, good frames each second, Art-Net live). `None` without DMX.
+    pub dmx: Option<(bool, u16, bool)>,
 }
 
 /// The lines of the status screen.
@@ -72,8 +72,9 @@ pub fn lines(s: &Snapshot) -> Lines {
         (None, None) => String::new(),
     };
     let dmx = match s.dmx {
-        Some((true, fps)) => format!("DMX IN {fps} fps"),
-        Some((false, _)) => "DMX IN: no signal".into(),
+        Some((true, fps, _)) => format!("DMX IN {fps} fps"),
+        Some((false, _, true)) => "Art-Net live".into(),
+        Some((false, _, false)) => "DMX IN: no signal".into(),
         None => String::new(),
     };
     let cut = |t: String| t.chars().take(COLS).collect::<String>();
@@ -202,13 +203,17 @@ pub fn track_lines(master: Option<u8>, t: Option<&TrackInfo>) -> Vec<String> {
 pub struct DmxInfo {
     pub mode: &'static str,
     pub beat_channel: u16,
-    pub input: Option<(bool, u16)>,
+    /// The DMX IN signal, the DMX IN frames each second and the Art-Net state. `None` in a
+    /// build without DMX.
+    pub input: Option<(bool, u16, bool)>,
+    /// The channel and the value of the last change in the DMX output.
+    pub last_change: Option<(u16, u8)>,
 }
 
 /// The DMX page.
 pub fn dmx_lines(d: &DmxInfo) -> Vec<String> {
     let mut out = vec![Page::Dmx.header()];
-    let Some((signal, fps)) = d.input else {
+    let Some((signal, fps, artnet)) = d.input else {
         out.push("No DMX in this build".into());
         return out;
     };
@@ -217,10 +222,21 @@ pub fn dmx_lines(d: &DmxInfo) -> Vec<String> {
     } else {
         "no signal".into()
     };
+    // DMX IN wins over Art-Net. The box then ignores the Art-Net frames.
+    let artnet = match (artnet, signal) {
+        (false, _) => "no signal",
+        (true, false) => "live",
+        (true, true) => "ignored",
+    };
     out.extend([
         pair("Mode", d.mode, COLS),
         pair("Beat channel", &d.beat_channel.to_string(), COLS),
         pair("DMX IN", &input, COLS),
+        pair("Art-Net", artnet, COLS),
+        match d.last_change {
+            Some((ch, v)) => pair("Out", &format!("ch {ch} = {v}"), COLS),
+            None => pair("Out", "no change", COLS),
+        },
     ]);
     out
 }
@@ -319,7 +335,7 @@ mod tests {
             beat: 3,
             phrase: Some("Chorus 3 bars left".into()),
             ip: Some("169.254.1.2".into()),
-            dmx: Some((true, 44)),
+            dmx: Some((true, 44, false)),
             ..Default::default()
         });
         assert_eq!(l.deck, "Deck 2  PLAY");
@@ -335,7 +351,7 @@ mod tests {
         let l = lines(&Snapshot {
             blinks: Some(3),
             ip: Some("10.0.0.2".into()),
-            dmx: Some((false, 0)),
+            dmx: Some((false, 0, false)),
             ..Default::default()
         });
         assert_eq!(l.deck, "No master");
@@ -412,10 +428,22 @@ mod tests {
         let l = dmx_lines(&DmxInfo {
             mode: "Merge",
             beat_channel: 1,
-            input: Some((true, 41)),
+            input: Some((true, 41, true)),
+            last_change: Some((12, 255)),
         });
         assert_eq!(l[1], "Mode            Merge");
         assert_eq!(l[3], "DMX IN         41 fps");
+        assert_eq!(l[4], "Art-Net       ignored");
+        assert_eq!(l[5], "Out       ch 12 = 255");
+        let l = dmx_lines(&DmxInfo {
+            mode: "Merge",
+            beat_channel: 1,
+            input: Some((false, 0, true)),
+            last_change: None,
+        });
+        assert_eq!(l[3], "DMX IN      no signal");
+        assert_eq!(l[4], "Art-Net          live");
+        assert_eq!(l[5], "Out         no change");
     }
 
     fn scenes() -> ScenesConfig {

@@ -7,6 +7,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod guess;
 pub mod mapper;
 pub mod scenes;
 pub mod settings;
@@ -36,6 +37,8 @@ pub enum Out {
     NoteOff { ch: u8, note: u8 },
     /// A control change. The channel is 0-based.
     Cc { ch: u8, num: u8, val: u8 },
+    /// A program change. The channel is 0-based, and the program is 0 to 127.
+    Program { ch: u8, prog: u8 },
 }
 
 impl Out {
@@ -69,6 +72,24 @@ impl Out {
                 *buf = [0xB0 | (ch & 0x0f), num & 0x7f, val & 0x7f, 0, 0, 0];
                 3
             }
+            Out::Program { ch, prog } => {
+                *buf = [0xC0 | (ch & 0x0f), prog & 0x7f, 0, 0, 0, 0];
+                2
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn program_encodes() {
+        let mut buf = [0u8; 6];
+        let n = Out::Program { ch: 2, prog: 11 }.encode(&mut buf, false);
+        assert_eq!(&buf[..n], &[0xC2, 11]);
+        let n = Out::Program { ch: 2, prog: 200 }.encode(&mut buf, true);
+        assert_eq!(&buf[..n], &[0xC2, 72]);
     }
 }

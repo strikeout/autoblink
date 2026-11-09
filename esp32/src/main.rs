@@ -9,21 +9,29 @@
 //! http://autoblink.local.
 
 #[cfg(feature = "dmx")]
+mod artnet;
+#[cfg(feature = "dmx")]
 mod dmx;
 mod led;
 mod logring;
 mod mem;
 mod midi;
 mod net;
+#[cfg_attr(not(feature = "dmx"), allow(dead_code))]
+mod ofl;
 mod ota;
 mod prolink;
 mod settings;
+#[cfg(feature = "dmx")]
+mod show;
 mod tracks;
 mod ui;
 mod webui;
 
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
+#[cfg(feature = "dmx")]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -68,21 +76,46 @@ pub struct State {
     pub ota: Mutex<OtaStatus>,
     /// A preset that the page asked to test. The MIDI thread sends its note. `u8::MAX` is none.
     pub scene_test: AtomicU8,
-    /// The state of the DMX input. `None` without the feature `dmx`.
-    pub dmx: Mutex<Option<DmxStatus>>,
+    /// The live controls of the DMX output.
+    #[cfg(feature = "dmx")]
+    pub dmx_live: dmx::DmxLive,
+    /// The DMX part of the status. The `dmx` thread writes it.
+    #[cfg(feature = "dmx")]
+    pub dmx_status: Mutex<dmx::DmxStatus>,
+    /// The DMX show. The `dmx` thread reads it for each frame.
+    #[cfg(feature = "dmx")]
+    pub show: Arc<Mutex<autoblink_core_dmx::Show>>,
+    /// The flash partition of the show. `None` when the partition table has no show partition.
+    #[cfg(feature = "dmx")]
+    pub show_store: Mutex<Option<show::ShowStore>>,
+    /// The last Art-Net frame. The `artnet` thread writes it, and the `dmx` thread reads it.
+    #[cfg(feature = "dmx")]
+    pub artnet: Mutex<artnet::ArtIn>,
+    /// The tier that the page pins for the autopilot: 0 is Auto, 1 is Calm, 2 is Groove and 3
+    /// is Peak. `AUTO_PIN_NONE` is no request. The `midi` thread takes the value.
+    #[cfg(feature = "dmx")]
+    pub auto_pin: AtomicU8,
+    /// The autopilot part of the status. The `midi` thread writes it.
+    #[cfg(feature = "dmx")]
+    pub auto_status: Mutex<Option<dmx::AutoStatus>>,
+    /// The number of saved shows since the start. `POST /show` increments it after it replaces
+    /// the show. The `midi` thread then copies the autopilot settings again.
+    #[cfg(feature = "dmx")]
+    pub show_rev: AtomicU32,
+    /// The night memory of the autopilot. The `midi` thread puts the bytes, and the main loop
+    /// writes them to NVS.
+    #[cfg(feature = "dmx")]
+    pub night: Mutex<Option<[u8; autoblink_core_dmx::NIGHT_BYTES]>>,
+    /// The Ethernet port, the joined WiFi network and the own WiFi network, in this order. The
+    /// `artnet` thread replies to an ArtPoll on the interface in the subnet of the desk.
+    #[cfg(feature = "dmx")]
+    pub artnet_ifaces: Mutex<[Option<artnet::Iface>; 3]>,
     start: Instant,
 }
 
-/// The state of the DMX input for the page and the display.
-#[derive(Clone, Copy, Default, serde::Serialize)]
-pub struct DmxStatus {
-    /// The key of the setting "DMX Mode", for example "merge".
-    pub mode: &'static str,
-    /// The good frames in the last second.
-    pub in_fps: u16,
-    /// `true` while a good frame arrived in the last second.
-    pub signal: bool,
-}
+/// The value of `State::auto_pin` when the page asks for no change.
+#[cfg(feature = "dmx")]
+pub const AUTO_PIN_NONE: u8 = u8::MAX;
 
 impl State {
     pub fn now_ms(&self) -> u64 {
@@ -130,6 +163,63 @@ fn run() -> anyhow::Result<()> {
     })?;
     let default_ssid = format!("autoblink-{:02X}{:02X}", mac[4], mac[5]);
     let settings = Settings::new(nvs, default_ssid)?;
+
+    // The state needs nothing from the network. Thus the DMX output can start before the network.
+    #[cfg(feature = "dmx")]
+    let mut show_store = show::ShowStore::open();
+    #[cfg(feature = "dmx")]
+    let show = Arc::new(Mutex::new(
+        show_store.as_mut().map(|s| s.load()).unwrap_or_default(),
+    ));
+    let state = Arc::new(State {
+        tracker: Mutex::new(Tracker::new()),
+        iface: Mutex::new("Ethernet: no address".into()),
+        midi: Mutex::new(MidiStatus::default()),
+        tracks: Tracks::default(),
+        link: Mutex::new(None),
+        conflict: AtomicU8::new(0),
+        own_device: AtomicU8::new(0),
+        wifi_join_down: AtomicBool::new(false),
+        reset_reason,
+        ota: Mutex::new(OtaStatus {
+            state: if ota_error.is_some() { "error" } else { "" },
+            error: ota_error,
+            ..Default::default()
+        }),
+        scene_test: AtomicU8::new(u8::MAX),
+        #[cfg(feature = "dmx")]
+        dmx_live: dmx::DmxLive::default(),
+        #[cfg(feature = "dmx")]
+        dmx_status: Mutex::new(dmx::DmxStatus::default()),
+        #[cfg(feature = "dmx")]
+        show: show.clone(),
+        #[cfg(feature = "dmx")]
+        show_store: Mutex::new(show_store),
+        #[cfg(feature = "dmx")]
+        artnet: Mutex::new(artnet::ArtIn::default()),
+        #[cfg(feature = "dmx")]
+        auto_pin: AtomicU8::new(AUTO_PIN_NONE),
+        #[cfg(feature = "dmx")]
+        auto_status: Mutex::new(None),
+        #[cfg(feature = "dmx")]
+        show_rev: AtomicU32::new(0),
+        #[cfg(feature = "dmx")]
+        night: Mutex::new(None),
+        #[cfg(feature = "dmx")]
+        artnet_ifaces: Mutex::new([None; 3]),
+        start: Instant::now(),
+    });
+    // The maintenance start of a firmware update also sends the idle look.
+    #[cfg(feature = "dmx")]
+    let dmx_q = dmx::start(
+        p.uart1,
+        p.pins.gpio4,
+        p.pins.gpio36,
+        state.clone(),
+        show,
+        settings.box_cfg.clone(),
+    )?;
+
     let ssid = settings.ssid();
     let join = settings.join();
     let join_ssid = join.as_ref().map(|(s, _)| s.clone());
@@ -184,25 +274,6 @@ fn run() -> anyhow::Result<()> {
         unsafe { sys::esp_restart() };
     }
 
-    let state = Arc::new(State {
-        tracker: Mutex::new(Tracker::new()),
-        iface: Mutex::new("Ethernet: no address".into()),
-        midi: Mutex::new(MidiStatus::default()),
-        tracks: Tracks::default(),
-        link: Mutex::new(None),
-        conflict: AtomicU8::new(0),
-        own_device: AtomicU8::new(0),
-        wifi_join_down: AtomicBool::new(false),
-        reset_reason,
-        ota: Mutex::new(OtaStatus {
-            state: if ota_error.is_some() { "error" } else { "" },
-            error: ota_error,
-            ..Default::default()
-        }),
-        scene_test: AtomicU8::new(u8::MAX),
-        dmx: Mutex::new(None),
-        start: Instant::now(),
-    });
     let midi_beats = midi::start(
         p.uart2,
         p.pins.gpio17,
@@ -210,22 +281,22 @@ fn run() -> anyhow::Result<()> {
         state.clone(),
         settings.midi.clone(),
         settings.scenes.clone(),
+        #[cfg(feature = "dmx")]
+        dmx_q.clone(),
+        #[cfg(feature = "dmx")]
+        settings.night(),
     )?;
     let device_number = settings.device_number.clone();
     let settings = Arc::new(Mutex::new(settings));
-    let (_server, web_beats) = webui::start(state.clone(), settings.clone())?;
+    let (_server, web_beats) = webui::start(
+        state.clone(),
+        settings.clone(),
+        #[cfg(feature = "dmx")]
+        dmx_q.clone(),
+    )?;
     let track_changes = tracks::start(state.clone())?;
 
     let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
-
-    #[cfg(feature = "dmx")]
-    let dmx = dmx::Dmx::start(
-        p.uart1,
-        p.pins.gpio4,
-        p.pins.gpio36,
-        state.clone(),
-        settings.lock().unwrap().box_cfg.clone(),
-    )?;
 
     ui::start(
         p.i2c0,
@@ -247,8 +318,16 @@ fn run() -> anyhow::Result<()> {
         move |beat| {
             // A full queue drops the LED pulse. The receive thread does not wait for the LEDs.
             let _ = beat_tx.try_send(beat.beat_in_bar);
+            // A full queue drops the beat. The receive thread does not wait for the DMX thread.
             #[cfg(feature = "dmx")]
-            dmx.beat();
+            let _ = dmx_q.send_back(
+                dmx::DmxMsg::Beat {
+                    beat_in_bar: beat.beat_in_bar,
+                    bpm: beat.bpm,
+                    at_ms: beat.at_us / 1000,
+                },
+                0,
+            );
             let page_beat = (beat.device, beat.beat_in_bar);
             // A full queue drops the beat. The receive thread does not wait for the MIDI thread.
             let _ = midi_beats.send_back(beat, 0);
@@ -259,6 +338,10 @@ fn run() -> anyhow::Result<()> {
             let _ = track_changes.send(track);
         },
     )?;
+
+    // Art-Net needs the network. The maintenance start does not get to this line.
+    #[cfg(feature = "dmx")]
+    artnet::start(state.clone());
 
     // The web server and the receive threads run. A restart before this line makes the
     // bootloader start the previous app.
@@ -273,6 +356,13 @@ fn run() -> anyhow::Result<()> {
     // happen once.
     let eth_name: &'static str = String::leak(eth.netif().get_name().to_string());
     let sta_name: &'static str = String::leak(wifi.sta_netif().get_name().to_string());
+    #[cfg(feature = "dmx")]
+    let ap_iface = artnet::Iface {
+        netif: String::leak(wifi.ap_netif().get_name().to_string()),
+        ip: AP_IP,
+        prefix: 24,
+        mac: wifi.ap_netif().get_mac()?,
+    };
     let mut last = (None, None);
     let mut next_heap_log = Instant::now();
     let mut heap_low = u32::MAX;
@@ -300,6 +390,15 @@ fn run() -> anyhow::Result<()> {
             .unwrap()
             .retain(|n, _| decks.contains(n));
         settings.lock().unwrap().save();
+        // The `midi` thread must not wait for a flash write. Thus this loop writes the night
+        // memory of the autopilot to NVS.
+        #[cfg(feature = "dmx")]
+        {
+            let night = state.night.lock().unwrap().take();
+            if let Some(bytes) = night {
+                settings.lock().unwrap().save_night(&bytes);
+            }
+        }
         // SAFETY: the heap calls only read counters.
         let (free, min, block) = unsafe {
             (
@@ -398,6 +497,20 @@ fn run() -> anyhow::Result<()> {
             broadcast: broadcast(i.ip, i.subnet.mask.0),
             mac,
         });
+        #[cfg(feature = "dmx")]
+        {
+            let iface = |netif, i: esp_idf_svc::ipv4::IpInfo, mac| artnet::Iface {
+                netif,
+                ip: i.ip,
+                prefix: i.subnet.mask.0,
+                mac,
+            };
+            *state.artnet_ifaces.lock().unwrap() = [
+                info.map(|i| iface(eth_name, i, eth_mac)),
+                sta_info.map(|i| iface(sta_name, i, sta_mac)),
+                Some(ap_iface),
+            ];
+        }
         state
             .wifi_join_down
             .store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);

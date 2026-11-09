@@ -31,6 +31,10 @@ pub struct TaskContext {
     pub vcdjready_tx: broadcast::Sender<VirtualCdjReady>,
     pub midi_out: crate::midi::MidiOutHandle,
     pub midi_activity: Arc<Mutex<MidiActivity>>,
+    /// The channel to the DMX engine, or `None` when the engine does not run.
+    pub dmx_tx: Option<crate::dmx::DmxTx>,
+    /// The light autopilot state, or `None` in a test without a pilot.
+    pub auto: Option<Arc<crate::dmx::AutoCtl>>,
 }
 
 /// Runs the task that `factory` makes, and starts it again when it panics or
@@ -57,6 +61,13 @@ where
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(10));
     }
+}
+
+/// The start of the clock in ms that the MIDI mapper and the DMX engine share. A time that one
+/// task calculates is thus the same time in the other task, also after a restart of a task.
+pub fn epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
 }
 
 /// Spawns `factory` under [`supervise`] on the current runtime.
@@ -123,6 +134,8 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         vcdjready_tx,
         track_change_tx,
         track_change_rx,
+        show,
+        auto,
     } = ctx;
 
     let midi_activity: Arc<Mutex<MidiActivity>> = Arc::new(Mutex::new(MidiActivity::default()));
@@ -142,6 +155,15 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         crate::midi::MidiOutHandle::start(2048, initial_conn)
     };
 
+    // The engine starts only with `[dmx] artnet_target`. It restarts after a panic.
+    let dmx = crate::dmx::start(
+        &startup_cfg.dmx,
+        Arc::clone(&show),
+        Arc::clone(&dj_state),
+        Arc::clone(&cfg),
+        device_table.clone(),
+    );
+
     let task_ctx = TaskContext {
         dj_state: Arc::clone(&dj_state),
         cfg: Arc::clone(&cfg),
@@ -152,6 +174,9 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
         vcdjready_tx: vcdjready_tx.clone(),
         midi_out: midi_out.clone(),
         midi_activity: Arc::clone(&midi_activity),
+        dmx_tx: dmx.as_ref().map(|d| d.tx.clone()),
+        // The pilot runs only with the DMX engine. Without it, the page hides the autopilot.
+        auto: dmx.as_ref().map(|_| Arc::clone(&auto)),
     };
 
     dj_state.write().set_source_mode(startup_cfg.source.clone());
@@ -224,6 +249,9 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
             beat_tx: beat_tx.clone(),
             midi_out: midi_out.clone(),
             cfg_change_tx: cfg_change_tx.clone(),
+            show,
+            auto,
+            dmx,
         },
         web_addr,
     )
@@ -234,11 +262,22 @@ pub async fn run(ctx: AppContext) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{source_flags, supervise};
+    use super::{epoch, source_flags, supervise};
     use crate::config::Source;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn epoch_is_the_same_in_each_task() {
+        let mapper = epoch();
+        let t = Instant::now();
+        // A restarted task on another thread gets the same epoch.
+        let engine = std::thread::spawn(epoch).join().unwrap();
+        assert_eq!(mapper, engine);
+        let ms = |start: Instant| t.saturating_duration_since(start).as_millis() as u64;
+        assert_eq!(ms(mapper), ms(engine));
+    }
 
     #[tokio::test]
     async fn supervise_restarts_a_task_that_panics_or_returns() {
