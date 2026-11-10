@@ -1,4 +1,4 @@
-//! The memory report of `GET /mem`: the heap and the free stack of each task.
+//! The memory report of `GET /mem`: the heap, the free stack of each task and the DMX output pin.
 //!
 //! Use the report to set the stack sizes. The free stack of a task is its low point since the
 //! start. A task with much free stack has a stack that is too large.
@@ -49,5 +49,29 @@ pub fn report() -> String {
         let name = unsafe { CStr::from_ptr(t.pcTaskName) }.to_string_lossy();
         let _ = writeln!(out, "{:>6}  {name}", t.usStackHighWaterMark);
     }
+    #[cfg(feature = "dmx")]
+    dmx_pin(&mut out);
     out
+}
+
+/// Writes the configuration of GPIO4, the DMX output. Signal 17 of the GPIO matrix is UART1 TX.
+#[cfg(feature = "dmx")]
+fn dmx_pin(out: &mut String) {
+    const PIN: sys::gpio_num_t = 4;
+    let mut buf = [0u8; 768];
+    // SAFETY: the stream writes only into `buf`. fclose ends the stream before the code reads
+    // `buf`.
+    unsafe {
+        let f = sys::fmemopen(buf.as_mut_ptr().cast(), buf.len(), c"w".as_ptr());
+        if !f.is_null() {
+            sys::gpio_dump_io_configuration(f, 1 << PIN);
+            sys::fclose(f);
+        }
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let _ = write!(
+        out,
+        "\nDMX output pin:\n{}",
+        String::from_utf8_lossy(&buf[..end])
+    );
 }

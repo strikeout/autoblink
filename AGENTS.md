@@ -191,13 +191,16 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - A frame ends at the data event with a receive timeout after a break event (`receive_timeout` of 1 character time). The thread reads exactly the bytes of each data event.
 - The thread accepts only start code 0. Without a good frame for 1 s, the input has no signal and is all 0.
 - The ESP32 UART stores a 0x00 byte for a break. `autoblink_core_ui::frame_channels` removes up to one 0x00 byte for each break event from the end of the frame. A frame must have 24 to 512 channels. After 8 rejected frames in a row, the thread clears the receive buffer.
-- To examine DMX IN, connect DMX OUT to DMX IN. `curl http://autoblink.local/log` must show "DMX input: signal" with about 41 frames each second. The OLED shows the same rate. The page does not show the field `dmx`.
+- To examine DMX IN, turn on the setting "DMX IN", then connect DMX OUT to DMX IN. `curl http://autoblink.local/log` must show "DMX input: signal" with about 41 frames each second. The OLED and the Sync tab of the page show the same rate.
 - IO36 has no internal pull resistor. Without the RS-485 module, noise on IO36 can look like a frame. Connect the module or a pull-up resistor.
+- The setting "DMX IN" (112, default off, since 1.36.0) turns on the input. While it is off, the `dmx` thread ignores each frame on IO36. Thus an open IO36 cannot block Art-Net. The OLED menu has no row for it.
 - The settings 110 to 121 are firmware settings in `autoblink_core_ui::config`. NVS keeps them as JSON under the key `box`. The firmware writes them 2 s after the last change.
 - "DMX Mode" (110) is Off, Box only, Merge (the default) or Pass. The outside source is DMX IN. Without a DMX IN signal, the outside source is a live Art-Net frame. Without an outside source, Merge and Pass send the output of the box.
 - In Merge, a show with lights uses the HTP and LTP rules of `autoblink_core_dmx::Merge` (see "Art-Net in on the box"). A show without lights uses HTP for each channel.
 - The OLED DMX page shows the DMX IN frames each second and the Art-Net state: "live", "no signal", or "ignored" while DMX IN has a signal. The Main page shows "Art-Net live" when DMX IN has no signal and Art-Net is live. The line "Out" shows the channel and the value of the last change in the DMX output. When one frame changes more than one channel, it shows the lowest channel.
 - The status field `dmx` has `mode`, `in_fps` and `signal`, and the fields of the show engine (`layers`, `master`, `strobe_hold`, `artnet`). The firmware without the feature `dmx` sends no field `dmx`.
+- The status field `dmx` also has `in_recent` and `out_recent` (since 1.34.0). Each holds up to 5 changed channels as (channel, value, age in ms), newest first, for 3 s (`autoblink_core_dmx::Changes`). One channel has one entry. In one frame, the lowest changed channel comes first. `in_recent` shows DMX IN, or live Art-Net when DMX IN has no signal.
+- The Sync tab shows `in_recent` and `out_recent` under DMX in and DMX out. The host sends no such fields, so its page hides the columns.
 - The `ui` thread always starts. It has priority 3 on core 0. It looks for the OLED at address 0x3C and 0x3D every 5 s. The first failure logs the I2C addresses that answer. When the OLED answers, the thread draws 5 frames each second. After a write error, it initializes the OLED again before each frame, so that a display that lost its power comes back.
 - The joystick is optional. Without it, the OLED shows the Main page.
 - The OLED has seven pages: Main, Decks, Track, DMX, Scenes, Network and Settings (`menu::Page`). Left and right flip the pages. Each tilt flips one page.
@@ -236,7 +239,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 ### DMX show
 
 - The `show` partition holds the DMX show (`show, data, undefined, 0x3F0000, 0x10000` in `esp32/partitions.csv`). Its content is JSON. A u32 length comes first. The firmware writes the length last, so a write that stops early leaves no show. The box then starts with an empty show until the page saves again.
-- OTA does not change the partition table. Flash a box once over USB to add the partition.
+- OTA does not change the partition table. A table from 1.18 to 1.23 has no `show` partition, but the flash at 0x3F0000 is free in it. The firmware then adds the partition to the list in RAM at each start (`esp_partition_register_external` in `show.rs`).
+- ESP-IDF refuses the region when it overlaps a partition of the table. The box then has no show storage, and `POST /show` answers 500. Flash such a box over USB.
 - Do not use the subtype `0x40` for the partition. It panics espflash 4.6.0. The table uses the named subtype `undefined`.
 - `GET /show` serializes the running show. `POST /show` is a CORS simple request with an Origin check. It answers 413 when the body is larger than 60 000 bytes. It answers 503 when the body is larger than half of the largest free heap block. The reader bounds the lists of the show while it reads them.
 - The firmware sends the capability `dmx` and the status field `dmx`. The page sends the WebSocket commands `dmx_live`, `dmx_fog` and `dmx_aim`.
@@ -246,6 +250,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
 - The HTTP task has 8 KB of stack. Nobody has measured it under `POST /show`.
 - A fixture has the channel kinds `pan`, `pan_fine`, `tilt` and `tilt_fine`. The generic types are `moving_head` (pan, tilt, dimmer, red, green, blue) and `moving_head_16` (with the fine channels). A head with only coarse channels gets the high byte of the 16-bit value.
+- The patch card has a channel list, for example `dimmer 120 strobe 0 0`. A number from 0 to 255 is a `fixed` channel. Use it for a light that no type fits, such as a light with a colour macro channel. The page does not save a list with an unknown word.
 - The show holds up to 8 positions (`MAX_POSITIONS`, names of 16 characters). A position holds aims, and an aim is a 16-bit pan and tilt for one fixture. A head without an aim in the position sits at 32768 on each axis.
 - A look row can have `position` (an index) and `shape`. The shapes are `circle`, `figure8` and `sweep`. A shape has `beats` (1 to 32) and `size` (0 to 255). The amplitude is `size` x 64 units of the 16-bit range, so 255 is a quarter of the range.
 - The offset of a shape comes from `t = (i + phase) / beats + k / n`, where `i` is the beat index. `i` counts the beats from a bar line: `i = (beat in bar - 1 + 4 * bar number) mod beats`. A period of 4, 8 or 16 beats therefore starts on beat 1. Without bar information, `i` is the beat count mod beats. The effects with `Every::Bar` use the same fallback: the beat in the bar is the count mod 4. Fixture `k` of `n` in the group is `k / n` of a cycle ahead of the first one. Circle is (cos, sin) of 2 pi t. Figure8 is (sin, sin(2a) / 2). Sweep moves pan only, as sin. The sum of position and offset is clamped to 0 to 65535. It does not wrap. Without a beat, the offset is zero.
@@ -283,9 +288,10 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - `dmx_blackout` is a flag in `DmxLive`, like the strobe hold. The release of the strobe hold also releases the blackout (`release_strobe` in `webui.rs`, `StrobeGuard` on the host). A take-over of another page and a failed send do the same.
 - The page has four tabs: `#live`, `#lights`, `#sync` and `#system` in the URL. The default is `#live`. The old `#setup` opens Lights. A panel names its tab in `data-mode`, and the page hides the panels of the other tabs. `navSync` hides a tab without a visible panel.
 - Live has the Master panel and the decks. The sticky strip with MASTER, STROBE and FOG shows in each tab.
-- Lights has "Who drives the lights", Box DMX, Scenes and Autopilot. Sync has the input, the output port, the MIDI clock, notes, CC and timecode, OSC, and the output status. System has the firmware, the WiFi, Diagnostics and the Display rows.
+- Lights has the driver bar "Who drives the lights", then Autopilot, Scenes and Box DMX, in this order. Box DMX (`p-dmx`) starts closed. Sync has the input, the output port, the MIDI clock, notes, CC and timecode, OSC, and the output status. System has the firmware, the WiFi, Diagnostics and the Display rows.
 - `onSettings` puts a settings group into a tab by its section (`SECTION_HOME`). The group `DMX` goes to Box DMX › Desk in. The group `Display` goes to System. The other groups go to Sync.
-- "Who drives the lights" has one switch: Off, Manual rules or Autopilot. Off sets `scenes.enabled` and `show.auto.on` to false. Manual rules sets `scenes.enabled` to true and `show.auto.on` to false. Autopilot sets `show.auto.on` to true and keeps `scenes.enabled`. Below the switch, one line each shows the MIDI to the console, the box DMX and the desk input (`status.dmx`). A tap on a line opens its control.
+- "Who drives the lights" has one switch: Off, Manual rules or Autopilot. Off sets `scenes.enabled` and `show.auto.on` to false. Manual rules sets `scenes.enabled` to true and `show.auto.on` to false. Autopilot sets `show.auto.on` to true and keeps `scenes.enabled`.
+- The driver bar is not a panel and does not close. The scene note channel and the first note are in Scenes. The program change channel is in the settings row of Autopilot.
 - `#phone` shows the phone screen alone: the tier buttons, BLACKOUT, STROBE and FOG. The link "Phone" in the header and the button in the Autopilot header open it. Escape or Exit closes it.
 - Each panel is a `<details>`. The page keeps its open state in `localStorage` (`autoblink.open.<id>`). A button in a panel header does not open or close the panel. Escape closes the top open item. The order is the hold popover, the look editor and the autopilot form. Then come the library box, the Diagnostics output and the phone screen.
 - The autopilot has no PIN since 1.33.0. A stored show with the old field `pin` still loads, because serde ignores an unknown field.
@@ -348,6 +354,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 - Run `curl http://autoblink.local/log` to read the log over WiFi. The buttons Log and Memory in the System tab of the page show `/log` and `/mem`.
 - Run `curl http://autoblink.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
+- `/mem` also shows the configuration of GPIO4 (DMX OUT) (since 1.35.1). `GPIO Matrix SigOut ID: 17` is UART1 TX.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
@@ -392,8 +399,8 @@ The wiring diagram is `docs/wiring.svg`. It gives the board label first and the 
 | IO33 | Status LED, with the label 485_EN on the board. While the master deck plays, it pulses for 120 ms on beat 1 and for 25 ms on the other beats. When no beat arrives for 2 s, it shows a blink code (see below). |
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
 | IO2 | UART2 RX. It has no wire, but the UART driver needs a receive pin. |
-| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. The feature `dmx` is on by default. |
-| IO36 | DMX IN (UART1 RX, 250 kbaud) from the RO pin of a second RS-485 module. |
+| IO4 | DMX out (UART1 TX, 250 kbaud) to TXD of an RS485 module (V2.03). EN of that module goes to 3V3, so that it always sends. The feature `dmx` is on by default. |
+| IO36 | DMX IN (UART1 RX, 250 kbaud) from RXD of a second RS485 module. EN of that module goes to GND, so that it always receives. |
 | IO14, IO15 | I2C0 SCL and SDA for an SSD1306 or SSD1315 OLED (address 0x3C, 400 kHz). The OLED module has the pull-up resistors. |
 | IO39 | Joystick VRx (ADC1 channel 3). |
 | IO35 | Joystick VRy (ADC1 channel 7). |

@@ -9,28 +9,27 @@ use std::io;
 
 use autoblink_core_dmx::Show;
 use esp_idf_svc::partition::EspPartition;
+use esp_idf_svc::sys::{self, EspError};
 
 /// The bytes of the length field before the JSON.
 const HEADER: usize = 4;
 /// The size of the read buffer and of the write buffer. The buffers are on the stack.
 const BUF: usize = 256;
+/// The offset and the size of the show partition in `partitions.csv`.
+const OFFSET: usize = 0x3F_0000;
+const SIZE: usize = 0x1_0000;
 
 pub struct ShowStore {
     part: EspPartition,
 }
 
 impl ShowStore {
-    /// `None` when the partition table has no "show" partition (a box flashed before 1.24.0).
+    /// `None` when the box has no "show" partition and the flash for it is not free.
     pub fn open() -> Option<ShowStore> {
         // SAFETY: only this function opens the show partition, and `main` calls it one time.
         match unsafe { EspPartition::new("show") } {
             Ok(Some(part)) => Some(ShowStore { part }),
-            Ok(None) => {
-                log::warn!(
-                    "The partition table has no show partition. Flash the box over USB to add it."
-                );
-                None
-            }
+            Ok(None) => register(),
             Err(e) => {
                 log::warn!("The firmware cannot open the show partition: {e}");
                 None
@@ -105,6 +104,48 @@ impl ShowStore {
             filled: 0,
         };
         Ok(Some(serde_json::from_reader(reader)?))
+    }
+}
+
+/// Adds the show partition to the partition list in RAM. The table on the flash does not change.
+///
+/// A box that got its table from 1.18 to 1.23 over USB has no show partition. OTA cannot change
+/// the table, but the flash at `OFFSET` is free in that table. ESP-IDF refuses the region when it
+/// overlaps a partition of the table or ends after the flash. Thus another table stays safe.
+fn register() -> Option<ShowStore> {
+    let mut out = std::ptr::null();
+    // SAFETY: a null chip is the main flash. The label is a C string, and `out` lives for the call.
+    let err = unsafe {
+        sys::esp_partition_register_external(
+            std::ptr::null_mut(),
+            OFFSET,
+            SIZE,
+            c"show".as_ptr(),
+            sys::esp_partition_type_t_ESP_PARTITION_TYPE_DATA,
+            sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_DATA_UNDEFINED,
+            &mut out,
+        )
+    };
+    if let Err(e) = EspError::convert(err) {
+        log::warn!(
+            "The box has no show partition, and the flash for it is not free ({e}). Flash the box over USB."
+        );
+        return None;
+    }
+    // SAFETY: as in `open`. The partition list now has the region.
+    match unsafe { EspPartition::new("show") } {
+        Ok(Some(part)) => {
+            log::info!("The partition table has no show partition. The firmware uses the free flash at 0x3F0000.");
+            Some(ShowStore { part })
+        }
+        Ok(None) => {
+            log::warn!("The firmware cannot find the show partition that it added");
+            None
+        }
+        Err(e) => {
+            log::warn!("The firmware cannot open the show partition that it added: {e}");
+            None
+        }
     }
 }
 
