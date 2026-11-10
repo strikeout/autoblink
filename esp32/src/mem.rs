@@ -75,3 +75,74 @@ fn dmx_pin(out: &mut String) {
         String::from_utf8_lossy(&buf[..end])
     );
 }
+
+/// The number of edges that one capture of the DMX output pin keeps. Each edge takes 4 bytes.
+#[cfg(feature = "dmx")]
+const MAX_EDGES: usize = 4000;
+
+/// The time of one capture of the DMX output pin, in ms. It holds about 2.5 frames.
+#[cfg(feature = "dmx")]
+pub const SCOPE_MS: u32 = 60;
+
+/// One capture of GPIO4 (DMX OUT).
+#[cfg(feature = "dmx")]
+pub struct Capture {
+    /// The CPU clock in MHz. The times are in CPU cycles.
+    pub mhz: u32,
+    /// The level of the pin at the start.
+    pub first: u32,
+    /// Each entry is the time after the start in cycles. Bit 0 is the new level. The loop can
+    /// stop for more than 2 µs. Two entries with bit 1 set then give the start and the end of
+    /// the stop. An edge in the stop has no exact time.
+    pub edges: Vec<u32>,
+}
+
+/// Reads the level of the DMX output pin for `SCOPE_MS` and records each edge.
+///
+/// A task with priority 24 on core 0 reads the pad in a loop. Interrupts can stop the loop for
+/// some µs, and the capture marks each such stop. The loop blocks the WiFi task for the capture
+/// time. The `dmx` and `midi` threads on core 1 keep running.
+#[cfg(feature = "dmx")]
+pub fn scope() -> std::io::Result<Capture> {
+    use esp_idf_svc::hal::cpu::Core;
+    crate::spawn_rt(c"scope", 4096, 24, Some(Core::Core0), capture)?
+        .join()
+        .map_err(|_| std::io::Error::other("the capture panicked"))
+}
+
+#[cfg(feature = "dmx")]
+fn capture() -> Capture {
+    const PIN: u32 = 4;
+    let mhz = sys::CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    let span = SCOPE_MS * 1000 * mhz;
+    let gap = 2 * mhz;
+    // SAFETY: GPIO_IN_REG is a read-only register of the GPIO peripheral. The UART drives the
+    // pad, and its input buffer is on (`gpio_dump_io_configuration` shows InputEn: 1).
+    let read = || (unsafe { std::ptr::read_volatile(sys::GPIO_IN_REG as *const u32) } >> PIN) & 1;
+    // SAFETY: xthal_get_ccount reads the cycle counter of the current core.
+    let ccount = || unsafe { sys::xthal_get_ccount() };
+    let mut edges = Vec::with_capacity(MAX_EDGES);
+    let start = ccount();
+    let first = read();
+    let mut level = first;
+    let mut last = start;
+    loop {
+        let now = ccount();
+        let l = read();
+        let t = now.wrapping_sub(start);
+        if t >= span || edges.len() >= MAX_EDGES {
+            break;
+        }
+        let stopped = now.wrapping_sub(last) > gap;
+        if stopped {
+            // The stop starts at the last read. This entry keeps the old level.
+            edges.push((last.wrapping_sub(start) & !3) | 2 | level);
+        }
+        if l != level || stopped {
+            edges.push((t & !3) | u32::from(stopped) << 1 | l);
+            level = l;
+        }
+        last = now;
+    }
+    Capture { mhz, first, edges }
+}

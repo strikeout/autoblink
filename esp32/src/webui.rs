@@ -229,6 +229,25 @@ pub fn start(
             .write_all(crate::mem::report().as_bytes())
     })?;
 
+    // The edges of the DMX output pin for a decoder on a computer. One line holds the CPU clock
+    // in MHz, the level at the start and the number of edges. Then each edge has one line.
+    #[cfg(feature = "dmx")]
+    server.fn_handler("/scope", Method::Get, |req| -> anyhow::Result<()> {
+        let c = crate::mem::scope()?;
+        let mut resp = req.into_response(200, None, &[("Content-Type", "text/plain")])?;
+        let mut buf = format!("{} {} {}\n", c.mhz, c.first, c.edges.len());
+        for e in &c.edges {
+            buf.push_str(&e.to_string());
+            buf.push('\n');
+            if buf.len() > 1000 {
+                resp.write_all(buf.as_bytes())?;
+                buf.clear();
+            }
+        }
+        resp.write_all(buf.as_bytes())?;
+        Ok(())
+    })?;
+
     #[cfg(feature = "dmx")]
     show_routes(&mut server, &state)?;
     #[cfg(feature = "dmx")]

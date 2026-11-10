@@ -356,6 +356,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Run `curl http://autoblink.local/log` to read the log over WiFi. The buttons Log and Memory in the System tab of the page show `/log` and `/mem`.
 - Run `curl http://autoblink.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
 - `/mem` also shows the configuration of GPIO4 (DMX OUT) (since 1.35.1). `GPIO Matrix SigOut ID: 17` is UART1 TX.
+- `GET /scope` records each edge of GPIO4 (DMX OUT) for 60 ms (since 1.36.2). A task with priority 24 on core 0 reads the pad. It blocks the WiFi task for the capture time. Interrupts can stop the loop for some µs, and the capture marks each stop. `scripts/dmx-decode.py` decodes the break, the mark after break and the slots.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
