@@ -192,9 +192,12 @@ pub fn start(
 
     // Priority 6 is above the HTTP server task (5) and below the `prolink-rx` (8) and `midi` (10)
     // threads on core 1.
-    // 1.32.3 used 4096 bytes of the stack (/mem) with the engine and DMX IN. 6 KB keeps a
-    // margin of 2 KB.
-    crate::spawn_rt(c"dmx", 6 * 1024, 6, Some(Core::Core1), move || {
+    // 1.32.3 used 4096 bytes of the stack (/mem) with the engine and DMX IN. The Art-Net reads
+    // and the ArtPoll reply have their own frames of 144 and 560 bytes beside the engine calls.
+    // With the log line of the reply, the path can use about 4.8 KB.
+    // ponytail: 6.5 KB is an estimate. Measure with /mem on a box that gets ArtPoll from a desk,
+    // and keep 1.5 KB above the low point.
+    crate::spawn_rt(c"dmx", 6656, 6, Some(Core::Core1), move || {
         run(&uart, &state, &show, &box_cfg, &msgs)
     })?;
     log::info!("DMX output is on IO4, DMX input is on IO36");
@@ -221,13 +224,15 @@ fn run(
     let mut last_change: Option<(u16, u8)> = None;
     let mut input: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut art: Box<Universe> = Box::new([0; UNIVERSE]);
+    let mut art_buf: Box<[u8; crate::artnet::PACKET_LEN]> =
+        Box::new([0; crate::artnet::PACKET_LEN]);
     let mut rx: Box<[u8; FRAME_LEN + 3]> = Box::new([0; FRAME_LEN + 3]);
     let mut lts = Box::<Merge>::default();
     let mut lights = Lights::default();
     let mut clock = BeatClock::default();
     let mut playing = None;
     let mut last_beat_ms: Option<u64> = None;
-    // The time of the Art-Net frame in `art`. The thread keeps the old copy when the lock is busy.
+    // The time of the Art-Net frame in `art`.
     let mut art_at: Option<u64> = None;
     let mut rx_len = 0;
     let mut rx_bad = false;
@@ -306,6 +311,13 @@ fn run(
             }
         }
 
+        // `main` gives the socket after the network starts. Before that, there is no Art-Net.
+        if let Some(sock) = state.artnet.get() {
+            if crate::artnet::drain(sock, state, &mut art_buf, &mut art) {
+                art_at = Some(state.now_ms());
+            }
+        }
+
         let signal = last_good.is_some_and(|t| t.elapsed() < SIGNAL_TIMEOUT);
         if !signal {
             input.fill(0);
@@ -350,12 +362,6 @@ fn run(
             strobe_hold: state.dmx_live.strobe_hold.load(Ordering::Relaxed),
             blackout: state.dmx_live.blackout.load(Ordering::Relaxed),
         };
-        // The thread does not wait for the `artnet` thread. It copies the frame and releases the
-        // lock before the merge.
-        if let Ok(slot) = state.artnet.try_lock() {
-            art.copy_from_slice(&slot.data[..]);
-            art_at = slot.at_ms;
-        }
         let art_live = art_at.is_some_and(|t| now_ms.saturating_sub(t) <= ARTNET_TIMEOUT_MS);
         let (mode, beat_channel) = {
             let cfg = cfg.lock().unwrap();

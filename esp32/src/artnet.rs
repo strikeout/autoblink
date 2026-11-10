@@ -1,20 +1,15 @@
-//! The `artnet` thread receives Art-Net from a lighting desk. The desk sends ArtDmx for universe 0
-//! to UDP port 6454.
+//! Art-Net from a lighting desk. The desk sends ArtDmx for universe 0 to UDP port 6454.
 //!
 //! The box answers an ArtPoll with an ArtPollReply, so that a desk finds it. The reply gives the
 //! address of the interface in the subnet of the desk, and comes from port 6454.
 //!
-//! The thread receives on all interfaces: the own WiFi network, the joined WiFi network and the
-//! Ethernet port. It keeps the last frame of universe 0 in `State::artnet`. The `dmx` thread
-//! merges that frame into its output (`autoblink_core_dmx::Merge`).
+//! The socket receives on all interfaces: the own WiFi network, the joined WiFi network and the
+//! Ethernet port. The `dmx` thread reads it without a wait on each loop pass (`drain`). It keeps
+//! the last frame of universe 0 and merges it into its output (`autoblink_core_dmx::Merge`).
 
-use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use autoblink_core_dmx::{
     build_artpoll_reply, is_artpoll, parse_artdmx, Universe, ARTNET_PORT, UNIVERSE,
@@ -24,71 +19,63 @@ use crate::State;
 
 /// The Art-Net header (18 bytes) and a full universe. The receive cuts a longer datagram, and
 /// the parser then refuses it when its length field is too large.
-const PACKET_LEN: usize = 18 + UNIVERSE;
+pub const PACKET_LEN: usize = 18 + UNIVERSE;
 
-/// The last Art-Net frame of universe 0.
-pub struct ArtIn {
-    /// The data is on the heap, so that `State` stays small.
-    pub data: Box<Universe>,
-    /// The time of the frame, with the clock of `State::now_ms`. `None` before the first frame.
-    pub at_ms: Option<u64>,
-}
+/// The most packets that one `drain` reads. The lwIP receive queue of the socket holds 16
+/// (`CONFIG_LWIP_UDP_RECVMBOX_SIZE`).
+// ponytail: without DMX IN, the `dmx` loop drains once in each frame (24 ms), so the box takes
+// about 660 packets each second. A desk that sends 16 or more universes at 44 Hz fills the queue,
+// and lwIP drops frames of universe 0 too. The upgrade is a larger receive queue and DRAIN_MAX.
+const DRAIN_MAX: usize = 16;
 
-impl Default for ArtIn {
-    fn default() -> Self {
-        Self {
-            data: Box::new([0; UNIVERSE]),
-            at_ms: None,
+/// Opens the Art-Net socket and gives it to the `dmx` thread. Without the port, the firmware logs
+/// a warning and continues without Art-Net.
+pub fn start(state: &State) {
+    let sock = match UdpSocket::bind(("0.0.0.0", ARTNET_PORT)) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("Art-Net is off: port {ARTNET_PORT} is not available: {e}");
+            return;
         }
+    };
+    if let Err(e) = sock.set_nonblocking(true) {
+        log::warn!("Art-Net is off: the socket cannot be non-blocking: {e}");
+        return;
     }
+    log::info!("Art-Net: the firmware receives universe 0 on port {ARTNET_PORT}");
+    let _ = state.artnet.set(sock);
 }
 
-/// Starts the `artnet` thread. When the thread does not start, the firmware logs a warning and
-/// continues without Art-Net.
-pub fn start(state: Arc<State>) {
-    // 1.30.0 kept 2.1 KB of its 4 KB free (/mem). The ArtPollReply adds a 239-byte packet and a
-    // second bind below the receive buffer, so the stack is 5 KB. Measure with /mem on a box.
-    let started = crate::spawn(c"artnet", 5 * 1024, move || {
-        let sock = match UdpSocket::bind(("0.0.0.0", ARTNET_PORT)) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("Art-Net is off: port {ARTNET_PORT} is not available: {e}");
-                return;
-            }
+/// Reads the waiting packets of `sock` without a wait. Copies the last frame of universe 0 into
+/// `art`, and replies to each ArtPoll. Returns true when a frame of universe 0 came.
+// The reads have their own stack frame. Thus the frame loop of the `dmx` thread does not hold
+// them.
+#[inline(never)]
+pub fn drain(
+    sock: &UdpSocket,
+    state: &State,
+    buf: &mut [u8; PACKET_LEN],
+    art: &mut Universe,
+) -> bool {
+    let mut got = false;
+    for _ in 0..DRAIN_MAX {
+        let (len, from) = match sock.recv_from(buf) {
+            Ok(r) => r,
+            // An empty queue gives WouldBlock. The next loop pass tries again after an error.
+            Err(_) => break,
         };
-        let _ = sock.set_read_timeout(Some(Duration::from_secs(1)));
-        log::info!("Art-Net: the firmware receives universe 0 on port {ARTNET_PORT}");
-        let mut buf = [0u8; PACKET_LEN];
-        loop {
-            let (len, from) = match sock.recv_from(&mut buf) {
-                Ok(r) => r,
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                    continue
-                }
-                // The sleep lets the lower-priority tasks run after a receive error.
-                Err(_) => {
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-            };
-            if is_artpoll(&buf[..len]) {
-                reply_to_poll(&sock, &state, from);
-                continue;
-            }
-            let Some((0, data)) = parse_artdmx(&buf[..len]) else {
-                continue;
-            };
-            let now_ms = state.now_ms();
-            // The lock is short. The `dmx` thread does not wait for it.
-            let mut slot = state.artnet.lock().unwrap();
-            slot.data[..data.len()].copy_from_slice(data);
-            slot.data[data.len()..].fill(0);
-            slot.at_ms = Some(now_ms);
+        if is_artpoll(&buf[..len]) {
+            reply_to_poll(sock, state, from);
+            continue;
         }
-    });
-    if let Err(e) = started {
-        log::warn!("Art-Net is off: the thread did not start: {e}");
+        let Some((0, data)) = parse_artdmx(&buf[..len]) else {
+            continue;
+        };
+        art[..data.len()].copy_from_slice(data);
+        art[data.len()..].fill(0);
+        got = true;
     }
+    got
 }
 
 /// A network interface of the box, for the ArtPollReply.
@@ -115,6 +102,7 @@ pub struct Iface {
 // ponytail: the joined WiFi network wins over the own WiFi network when the two use one subnet,
 // so a desk on the own network gets the wrong address. The upgrade is to read the receive
 // interface of the poll (lwIP IP_PKTINFO).
+#[inline(never)]
 fn reply_to_poll(sock: &UdpSocket, state: &State, from: SocketAddr) {
     let IpAddr::V4(desk) = from.ip() else {
         return;
