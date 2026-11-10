@@ -121,11 +121,13 @@ details.panel>summary h2 .kv{margin-left:auto}
 .fdr.unk{opacity:.35}
 /* output */
 .row span:empty{display:none}
-.hist{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:0 24px;margin-top:10px}
+.hist{display:flex;flex-wrap:wrap;gap:0 24px;margin-top:10px}
+.hist>div{min-width:72px}
+#hoscc{flex:1 1 160px;min-width:0}
 .hist h3{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin-bottom:2px}
 .hist ol{list-style:none}
 .hist li{height:1.4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hist .note li{color:var(--flash);font-weight:700}.hist .cc li{color:var(--accent)}.hist .osc li{color:var(--play)}
+.hist .note li{color:var(--flash);font-weight:700}.hist .cc li{color:var(--accent)}.hist .osc li{color:var(--play)}.hist .dmx li{color:var(--warn)}
 .hist li.idle{color:var(--dim);font-weight:400}
 #ooerr{color:var(--danger)}
 /* firmware */
@@ -570,10 +572,13 @@ body.busy #lvs{display:none!important}
     <summary><h2>Output Status</h2></summary>
     <div class="row"><span>port <b id="oport">—</b> <span id="oconn"></span></span><span>clock <b id="oclock">—</b></span><span class="num">pulses <b id="opulses">0</b></span></div>
     <div class="row num"><span>notes <b id="onotes">0</b></span><span>CCs <b id="occs">0</b></span><span id="odropped"></span><span>MTC <b id="omtc">—</b></span></div>
+    <div class="row" id="dmxrow" hidden><span>DMX <b id="odmx">—</b></span></div>
     <div class="row" id="oscrow" hidden><span>OSC <b id="oosc">—</b> <span id="oosctg" class="num"></span></span><span class="num" id="ooscn">sent <b id="oosent">0</b> <span id="ooerr"></span></span></div>
     <div class="hist num">
       <div><h3>Notes</h3><ol id="hnote" class="note"></ol></div>
       <div><h3>CC</h3><ol id="hcc" class="cc"></ol></div>
+      <div class="hdmx" hidden><h3 title="The channels that changed in DMX IN, or in Art-Net when DMX IN has no signal.">DMX in</h3><ol id="hdin" class="dmx"></ol></div>
+      <div class="hdmx" hidden><h3 title="The channels that changed in the DMX output of the box.">DMX out</h3><ol id="hdout" class="dmx"></ol></div>
       <div id="hoscc" hidden><h3>OSC</h3><ol id="hosc" class="osc"></ol></div>
     </div>
   </details>
@@ -735,8 +740,9 @@ function onStatus(s) {
   }
 
   if (s.output) renderOutput(s.output);
-  if (scenes) renderSceneLive(s.scene);
   if (s.dmx) dmxLast = s.dmx; // some status messages have no dmx field
+  renderDmxHist();
+  if (scenes) renderSceneLive(s.scene);
   // The server released the strobe: a local hold that is not under the pointer is stale.
   if (s.dmx && !s.dmx.strobe_hold && strobeHeld && !strobeDown) strobeHeld = false;
   const ms = $('ltmaster');
@@ -845,6 +851,18 @@ function renderOutput(o) {
     set('ooerr', osc.errors ? 'errors ' + osc.errors : '');
     fillHist('hosc', osc.recent, (e) => e[0]);
   }
+}
+
+/** Shows the DMX state and the last changed channels of DMX in and out. Only the box sends them. */
+function renderDmxHist() {
+  const d = dmxLast, on = !!(d && d.out_recent);
+  $('dmxrow').hidden = !on;
+  document.querySelectorAll('.hdmx').forEach((e) => { e.hidden = !on; });
+  if (!on) return;
+  set('odmx', deskText());
+  const ch = (e) => 'ch' + e[0] + ' = ' + e[1];
+  fillHist('hdin', d.in_recent, ch);
+  fillHist('hdout', d.out_recent, ch);
 }
 
 // Note 60 is C3, as in Ableton Live.

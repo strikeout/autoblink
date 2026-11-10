@@ -26,3 +26,5 @@ pub mod merge;
 pub use merge::*;
 pub mod pilot;
 pub use pilot::*;
+pub mod watch;
+pub use watch::*;

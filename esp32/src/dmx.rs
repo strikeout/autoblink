@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use autoblink_core_dmx::{
-    apply_room, Action, BeatClock, Lights, Live, Merge, PilotStatus, Show, Tier, Universe,
+    apply_room, Action, BeatClock, Changes, Lights, Live, Merge, PilotStatus, Show, Tier, Universe,
     ARTNET_TIMEOUT_MS, UNIVERSE,
 };
 use autoblink_core_midi::scenes::Event;
@@ -160,6 +160,11 @@ pub struct DmxStatus {
     /// The channel (1 to 512) and the value of the last change in the output. When one frame
     /// changes more than one channel, this is the lowest channel. `None` before the first change.
     pub last_change: Option<(u16, u8)>,
+    /// The last changed channels of the outside source (DMX IN, else live Art-Net), newest first,
+    /// as (channel, value, age in ms). Each stays for 3 s, like `ccs_recent`.
+    pub in_recent: Vec<(u16, u8, u32)>,
+    /// The last changed channels of the output, in the same form as `in_recent`.
+    pub out_recent: Vec<(u16, u8, u32)>,
 }
 
 /// Starts the `dmx` thread. Returns the queue for the messages to the thread.
@@ -215,13 +220,16 @@ fn run(
         log::error!("DMX: the UART has no event queue");
         return;
     };
-    // The buffers and the merge state (about 1.5 KB) are on the heap, not on the stack of the
+    // The buffers and the merge state (about 5 KB) are on the heap, not on the stack of the
     // thread. The receive buffer has space for a frame, two break bytes and one byte that shows a
     // frame that is too long.
     let mut out: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
-    // The channels of the last sent frame, to find the last change for the display.
-    let mut prev: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
-    let mut last_change: Option<(u16, u8)> = None;
+    // The channels of the last sent frame and of the last outside frame, for the change logs of
+    // the page and the display.
+    let mut prev: Box<Universe> = Box::new([0; UNIVERSE]);
+    let mut prev_in: Box<Universe> = Box::new([0; UNIVERSE]);
+    let mut out_log = Changes::default();
+    let mut in_log = Changes::default();
     let mut input: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut art: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut art_buf: Box<[u8; crate::artnet::PACKET_LEN]> =
@@ -413,6 +421,11 @@ fn run(
             } else {
                 None
             };
+            // Without a source, the next source shows each of its channels that is not 0.
+            match outside {
+                Some(o) => in_log.frame(&mut prev_in, o, now_ms),
+                None => prev_in.fill(0),
+            }
             let send = if mode == DmxMode::Merge && lit {
                 lts.apply(&show, outside.map(|o| (o, now_ms)), now_ms, &mut effect);
                 channels.copy_from_slice(&effect);
@@ -434,11 +447,8 @@ fn run(
             send
         };
         if send {
-            // The lowest channel that changed since the last sent frame.
-            if let Some(i) = (1..FRAME_LEN).find(|&i| out[i] != prev[i]) {
-                last_change = Some((i as u16, out[i]));
-            }
-            prev.copy_from_slice(&out[..]);
+            let channels: &Universe = (&out[1..]).try_into().expect("512 channels");
+            out_log.frame(&mut prev, channels, now_ms);
         }
         // The page and the display read the status. The thread does not wait for the lock, and
         // it writes the layers only after a change. The next frame tries again.
@@ -454,7 +464,9 @@ fn run(
             s.mode = mode.key();
             s.in_fps = in_fps;
             s.signal = signal;
-            s.last_change = last_change;
+            s.last_change = out_log.newest();
+            in_log.recent(now_ms, &mut s.in_recent);
+            out_log.recent(now_ms, &mut s.out_recent);
         }
         // The UART sends the frame, then the break. The break before the next frame and the idle
         // time after it make the reset sequence of DMX512.
