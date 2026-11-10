@@ -153,7 +153,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 - The flash has two app slots, `ota_0` and `ota_1` (`esp32/partitions.csv`). The NVS partition keeps its old offset and size, so the settings stay.
 - Firmware 1.17 and older use a single-app table. Flash the first firmware with OTA over USB. After that, the box can update itself.
-- The System panel of the page sends `ota_check` and `ota_install`. Its Restart button sends `reboot`, and the firmware restarts after 1 s (`restart_soon`). The panel also has the WiFi rows of the settings (section `WiFi`, indices 100 to 103). The header shows the uptime from `system.uptime_s`. The host sends no uptime, so the header hides it. TLS to GitHub takes about 50 KB of heap. Version 1.19.0 has about 100 KB free with 1 track loaded and the page open.
+- The System panel of the page (`#system`) sends `ota_check` and `ota_install`. Its Restart button sends `reboot`, and the firmware restarts after 1 s (`restart_soon`). The panel also has the WiFi rows of the settings (section `WiFi`, indices 100 to 103). The header shows the uptime from `system.uptime_s`. The host sends no uptime, so the header hides it. TLS to GitHub takes about 50 KB of heap. Version 1.19.0 has about 100 KB free with 1 track loaded and the page open.
 - `ota_check` starts an `ota` thread, which stops after the check. It reads `esp32-version.txt` from the prerelease `esp32-latest` on GitHub. The check refuses to start below 60 KB free heap or a 24 KB largest block. While it runs, the page gets no status.
 - `ota_install` stores a request in NVS (namespace `ota`) and restarts. In this maintenance start, `main` starts only WiFi and Ethernet, and `ota::install_and_restart` downloads the image into the free slot. Then the box restarts. An error goes into NVS, and the page shows it after the next normal start.
 - The maintenance start removes the request first. Thus a crash during the download does not repeat the download at each start.
@@ -281,7 +281,11 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The WebSocket commands are `auto_pin` (`tier`: `auto`, `calm`, `groove` or `peak`), `dmx_blackout` (`on`) and `auto_try`. The field `move` of `auto_try` is an index below `MAX_MOVES` (24). `auto_try` shows one move for 8 bars, also while the autopilot is off. The engine then shows the base and the move, and after that the manual frame again. The `dmx` queue drops it when full.
 - The status field `auto` has `on`, `tier`, `spot`, `pinned`, `program`, `moves` (a bit mask) and `drop_in_beats`. The field `dmx.blackout` is true while the blackout runs. The firmware sends the capability `auto`. The firmware without the feature `dmx` sends none of them.
 - `dmx_blackout` is a flag in `DmxLive`, like the strobe hold. The release of the strobe hold also releases the blackout (`release_strobe` in `webui.rs`, `StrobeGuard` on the host). A take-over of another page and a failed send do the same.
-- The live screen is the page at `#live` in the URL. It has the tier buttons, a blackout button and a fog button. The blackout runs while the user holds the button. The page releases it on pointer up, pointer cancel and pointer leave. It also releases it on `pagehide` and when the page hides. It releases only a blackout that it holds.
+- The page has three modes: `#live`, `#setup` and `#system` in the URL. The default is `#live`. A panel names its mode in `data-mode`, and the page hides the panels of the other modes.
+- The Live mode has the tier buttons, the blackout button, the Master panel and the decks. The sticky strip with MASTER, STROBE and FOG shows in each mode.
+- The Setup mode has the lights, the scenes and the autopilot. The System mode has the input, the firmware, the WiFi, the settings and the output status.
+- On a computer, hold B for the blackout and hold S for the strobe. F starts the fog, and 1 to 4 pin a tier.
+- The blackout runs while the user holds the button. The page releases it on pointer up, pointer cancel and pointer leave. It also releases it on `pagehide` and when the page hides. It releases only a blackout that it holds.
 - After a reconnect, the page sends a held blackout again. The server released the old blackout with the old socket.
 - The box builds the drop guess for every track with a preview, not only for tracks without phrases. The autopilot needs its energy. With 4 decks, the guess takes about 2.5 KB more heap. The scene engine still uses the guess only without phrases.
 - The `midi` thread has 7 KB of stack with the feature `dmx` since 1.31.0 (6 KB before and without `dmx`). This size is an estimate. Measure it with `/mem` on a box.
@@ -334,7 +338,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 ### Debug logs
 
-- Run `curl http://autoblink.local/log` to read the log over WiFi. The page shows no log.
+- Run `curl http://autoblink.local/log` to read the log over WiFi. The buttons Log and Memory in the System mode of the page show `/log` and `/mem`.
 - Run `curl http://autoblink.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.

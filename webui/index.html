@@ -32,7 +32,6 @@ footer{padding:4px 16px 12px;text-align:center;font-size:11px;color:var(--dim)}
 #offbar{display:none;position:fixed;top:0;left:0;right:0;z-index:21;padding:6px 16px;background:var(--danger);color:#000;font-weight:700;text-align:center}
 body.offline #offbar{display:block}
 body.offline main,body.offline .live{filter:grayscale(1) brightness(.5)}
-body.busy #lvs{display:none!important}
 main{padding:12px;display:grid;gap:12px;grid-template-columns:2fr 1fr;max-width:1600px;margin:0 auto}
 @media(max-width:900px){main{grid-template-columns:1fr}}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}
@@ -44,7 +43,13 @@ details.panel>summary h2{justify-content:flex-start;gap:6px}
 details.panel>summary h2::before{content:'▸';color:var(--dim);font-size:14px;letter-spacing:0}
 details.panel[open]>summary h2::before{content:'▾'}
 details.panel:not([open])>summary h2{margin-bottom:0}
-[hidden]{display:none!important}
+[hidden],.offmode{display:none!important}
+#modes{display:flex;gap:6px;margin-left:auto}
+#modes a{padding:8px 16px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600}
+#modes a.on{color:var(--text);border-color:var(--accent);background:#0b1820}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+#dg{height:auto;max-height:50vh;margin-top:6px}
 #takeover{max-width:520px;margin:24px auto}
 #takeover p{color:var(--muted);margin-bottom:10px}
 /* master */
@@ -306,6 +311,15 @@ input.num.text{width:150px;text-align:left}
 .chip.live{background:var(--flash);border-color:var(--flash)}
 .chip.live b,.chip.live small,.chip.live .x{color:#000}
 .chip.next{border:1px dashed var(--flash)}
+/* A finger needs a larger target than a mouse. A tap on a row or a heading with help shows the help. */
+@media(pointer:coarse){
+button,select,input.num{min-height:36px}
+button{padding:4px 10px}
+.pill{padding:6px 12px}
+.swt{width:32px;height:32px}
+.chip .x,.chip .edit{padding:6px}
+.section[title]::after,.set[title]>label::after{content:' ⓘ';color:var(--muted)}
+}
 .ghost{position:fixed;z-index:10;pointer-events:none;display:flex;gap:4px;transform:rotate(-4deg);box-shadow:0 6px 18px rgba(0,0,0,.6)}
 .slots{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:6px 12px;align-items:center}
 .grp{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;margin:12px 0 2px;padding-bottom:4px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:var(--text);cursor:pointer;user-select:none}
@@ -329,6 +343,7 @@ input.num.text{width:150px;text-align:left}
 .drop .info{color:var(--dim);font-size:11px}
 .ctl{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:12px;white-space:nowrap}
 .ctl.dim{opacity:.4}
+@media(max-width:600px){.slots{grid-template-columns:1fr}.ctl{flex-wrap:wrap;white-space:normal}.ev{margin-top:12px}}
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:5px;overflow:hidden}
 .seg button{border:0;border-radius:0;border-right:1px solid var(--border);color:var(--muted)}
 .seg button:last-child{border-right:0}
@@ -387,19 +402,13 @@ input.num.text{width:150px;text-align:left}
 .mfoot{display:flex;flex-wrap:wrap;gap:10px;padding:10px 14px;align-items:center}
 .mfoot .note{color:var(--muted);font-size:12px;margin-right:auto}
 .mfoot .go{border-color:var(--play);color:var(--play)}
-#lvs{display:none}
-body.lv>*:not(#lvs):not(#takeover):not(#toast):not(#boxbar){display:none!important}
-body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:560px;margin:0 auto;min-height:100vh;min-height:100dvh}
+#lvs{display:flex;flex-direction:column;gap:14px}
 #lvs .lvh{display:flex;align-items:baseline;gap:14px;font-size:20px}
 #lvs .lvh b{font-size:26px}
-#lvs #lvc{font-size:12px;color:var(--danger);margin-left:auto}
-#lvs #lvc:not(.off){display:none}
-#lvs #lvc::before{content:'';display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--danger);margin-right:6px}
-#lvs .lvh a{margin-left:auto;font-size:12px;color:var(--muted)}
 #lvs button{font-size:20px;font-weight:700;padding:22px 8px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #lvs .lvt{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 #lvs button.on{border-color:var(--accent);color:var(--accent);background:rgba(0,224,255,.14)}
-#lvs #lvb{flex:1;min-height:150px;font-size:30px;border-color:var(--danger);color:var(--danger)}
+#lvs #lvb{min-height:120px;font-size:30px;border-color:var(--danger);color:var(--danger)}
 #lvs #lvb.on{background:var(--danger);color:#000}
 /* logs */
 .log{background:#08080d;border-radius:6px;padding:8px;height:200px;overflow-y:auto;font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-all}
@@ -415,6 +424,7 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
   <span class="kv">iface <b id="iface">—</b></span>
   <span class="kv" id="uptimekv" hidden>uptime <b id="uptime" class="num">—</b></span>
   <b id="state" class="stop">■ STOP</b>
+  <nav id="modes"><a href="#live">Live</a><a href="#setup">Setup</a><a href="#system">System</a></nav>
 </header>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="offbar">Offline · reconnecting…</div>
@@ -425,21 +435,21 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
   <button id="ltfog" class="big" title="Run the fog machine once.">FOG</button>
   <div id="ltlayers" class="now" title="The looks that play now."></div>
 </div>
-<div id="lvs">
-  <div class="lvh"><b id="lvtier">-</b><span><span id="lvbpm" class="mono">-</span> BPM</span><span id="lvc" class="off">offline</span><a href="#">Exit</a></div>
-  <div class="lvt" id="lvt"></div>
-  <button id="lvb">BLACKOUT</button>
-  <button id="lvf">FOG</button>
-</div>
 <section id="takeover" class="panel" hidden>
   <h2>Another screen is connected</h2>
   <p>The box sends its status to one screen at a time.</p>
   <div class="row"><button id="takeoverbtn">Use this screen</button></div>
 </section>
 <main>
-  <section class="panel">
+  <section id="lvs" class="panel" data-mode="live">
+    <div class="lvh"><b id="lvtier">-</b><span><span id="lvbpm" class="mono">-</span> BPM</span></div>
+    <div class="lvt" id="lvt"></div>
+    <button id="lvb">BLACKOUT</button>
+  </section>
+
+  <section class="panel" data-mode="live">
     <h2>Master <span class="kv">deck <b id="mdeck">—</b></span></h2>
-    <div id="nomaster" class="empty" hidden>No player is on the Pro DJ Link network.<br>Connect the players and this device to the same network.</div>
+    <div id="nomaster" class="empty" hidden>No player is on the Pro DJ Link network.<br>Connect the players and this device to the same network. Each device needs its own Device Number, 7 or higher (System).</div>
     <div id="mgrid" class="mgrid">
       <div>
         <div id="bpm" class="num">---.-</div>
@@ -466,34 +476,32 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
     </div>
   </section>
 
-  <section class="panel" data-cap="output">
-    <h2>Output Status</h2>
-    <div class="row"><span>port <b id="oport">—</b> <span id="oconn"></span></span><span>clock <b id="oclock">—</b></span><span class="num">pulses <b id="opulses">0</b></span></div>
-    <div class="row num"><span>notes <b id="onotes">0</b></span><span>CCs <b id="occs">0</b></span><span id="odropped"></span><span>MTC <b id="omtc">—</b></span></div>
-    <div class="row" id="oscrow" hidden><span>OSC <b id="oosc">—</b> <span id="oosctg" class="num"></span></span><span class="num" id="ooscn">sent <b id="oosent">0</b> <span id="ooerr"></span></span></div>
-    <div class="hist num">
-      <div><h3>Notes</h3><ol id="hnote" class="note"></ol></div>
-      <div><h3>CC</h3><ol id="hcc" class="cc"></ol></div>
-      <div id="hoscc" hidden><h3>OSC</h3><ol id="hosc" class="osc"></ol></div>
-    </div>
-  </section>
-
-  <section class="panel wide" data-cap="decks">
+  <section class="panel wide" data-cap="decks" data-mode="live">
     <h2>Deck Information <span id="link" class="kv"></span></h2>
     <div id="decks" class="decks"></div>
   </section>
 
-  <details id="p-auto" class="panel wide" data-cap="auto" hidden open>
-    <summary><h2>Autopilot <span class="aphd"><span id="aphd"><span id="apviews" class="seg"></span></span><button id="lvlink" title="Big buttons for the tier, the blackout and the fog.">Live screen</button></span></h2></summary>
-    <div id="apdrv" class="seg"></div>
-    <div id="aplive" class="aplive"></div>
-    <div id="apview"></div>
-    <div id="apform"></div>
-    <div id="apdrop"></div>
-    <div id="apset" class="apset"></div>
+  <details id="p-setup" class="panel wide" data-cap="dmx" data-mode="setup" hidden open>
+    <summary><h2>Lights setup <span id="stsum" class="sum"></span></h2></summary>
+    <div id="ltlock"></div>
+    <div id="ltsrc" class="hint"></div>
+    <div class="section" title="A file with the show and the scenes. Load a file to replace them.">Show file <button id="shbak">Download</button> <button id="shres">Load</button><input id="shfile" type="file" accept=".json,application/json" hidden></div>
+    <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button> <button id="ltpack" title="Give the lights addresses one after the other, in their order on the DMX line." hidden>Pack addresses</button></div>
+    <div id="ltofl" class="oflbox" hidden>
+      <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span></div>
+      <div id="oflres" class="oflres"></div>
+      <div id="ofldet" class="ofldet" hidden></div>
+    </div>
+    <div id="ltpatch" class="cardrow"></div>
+    <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
+    <div id="ltgroups" class="cardrow"></div>
+    <div class="section" title="A position is a pan and a tilt for each moving head. A row of a look can use one. The first position is the home of the autopilot.">Positions <button id="ltaddpos">+ Position</button></div>
+    <div id="ltpos" class="cardrow"></div>
+    <div class="section">Idle look</div>
+    <div id="ltidle" class="cardrow"></div>
   </details>
 
-  <details id="p-scenes" class="panel wide" data-cap="scenes" open>
+  <details id="p-scenes" class="panel wide" data-cap="scenes" data-mode="setup" open>
     <summary><h2 id="sctitle">DMX Scenes</h2></summary>
     <div id="apnote" class="hint" hidden>The autopilot drives the lights. Manual rules are paused.</div>
     <div class="scfg">
@@ -517,45 +525,21 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
     </div>
   </details>
 
-  <details id="p-setup" class="panel wide" data-cap="dmx" hidden>
-    <summary><h2>Lights setup <span id="stsum" class="sum"></span></h2></summary>
-    <div id="ltlock"></div>
-    <div id="ltsrc" class="hint"></div>
-    <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button></div>
-    <div id="ltofl" class="oflbox" hidden>
-      <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span></div>
-      <div id="oflres" class="oflres"></div>
-      <div id="ofldet" class="ofldet" hidden></div>
-    </div>
-    <div id="ltpatch" class="cardrow"></div>
-    <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
-    <div id="ltgroups" class="cardrow"></div>
-    <div class="section" title="A position is a pan and a tilt for each moving head. A row of a look can use one. The first position is the home of the autopilot.">Positions <button id="ltaddpos">+ Position</button></div>
-    <div id="ltpos" class="cardrow"></div>
-    <div class="section">Idle look</div>
-    <div id="ltidle" class="cardrow"></div>
+  <details id="p-auto" class="panel wide" data-cap="auto" data-mode="setup" hidden open>
+    <summary><h2>Autopilot <span class="aphd"><span id="aphd"><span id="apviews" class="seg"></span></span><button id="lvlink" title="Big buttons for the tier, the blackout and the fog.">Live screen</button></span></h2></summary>
+    <div id="apdrv" class="seg"></div>
+    <div id="aplive" class="aplive"></div>
+    <div id="apview"></div>
+    <div id="apform"></div>
+    <div id="apdrop"></div>
+    <div id="apset" class="apset"></div>
   </details>
 
-  <details id="p-settings" class="panel wide" data-cap="settings" open>
-    <summary><h2>Settings</h2></summary>
-    <div id="sgrid" class="sgrid">
-      <div id="set-input" class="group"><div class="section" title="Where the app gets the tempo and the beat.">Input</div></div>
-      <div class="group" data-cap="ports">
-        <div class="section" title="The MIDI port that gets all MIDI output. Click a port to use it.">Output Port <button id="rescan" title="Find the MIDI ports again.">Rescan</button></div>
-        <div id="ports" class="ports"></div>
-      </div>
-    </div>
-  </details>
-
-  <details id="p-logs" class="panel wide" data-cap="logs" open>
-    <summary><h2>Logs</h2></summary>
-    <div id="log" class="log"></div>
-  </details>
-
-  <section class="panel wide" data-cap="ota">
+  <section class="panel wide" data-mode="system">
     <h2>System</h2>
     <div class="sgrid">
-      <div class="group">
+      <div id="set-input" class="group"><div class="section" title="Where the app gets the tempo and the beat.">Input</div></div>
+      <div class="group" data-cap="ota">
         <div class="section">Firmware</div>
         <div class="row">installed <b id="fwcur">—</b> <span id="fwstate" class="num"></span></div>
         <div class="row"><button id="fwcheck" title="Read the version of the latest release on GitHub. The box needs a network with internet.">Check for update</button> <i id="fwspin" class="spin" hidden></i> <button id="fwinstall" hidden></button></div>
@@ -563,9 +547,41 @@ body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:
         <div class="row" id="fwerr"></div>
         <div class="row"><button id="reboot" title="Restart the box. The settings stay. A WiFi change applies after the restart.">Restart</button></div>
       </div>
-      <div id="set-wifi" class="group"><div class="section">WiFi</div></div>
+      <div id="set-wifi" class="group" data-cap="ota"><div class="section">WiFi</div></div>
+      <div class="group" data-cap="ota">
+        <div class="section" title="The log of the box and the free memory of each task.">Diagnostics</div>
+        <div class="row"><button id="dglog">Log</button> <button id="dgmem">Memory</button></div>
+        <pre id="dg" class="log" hidden></pre>
+      </div>
     </div>
   </section>
+
+  <details id="p-settings" class="panel wide" data-cap="settings" data-mode="system" open>
+    <summary><h2>Settings</h2></summary>
+    <div id="sgrid" class="sgrid">
+      <div class="group" data-cap="ports">
+        <div class="section" title="The MIDI port that gets all MIDI output. Click a port to use it.">Output Port <button id="rescan" title="Find the MIDI ports again.">Rescan</button></div>
+        <div id="ports" class="ports"></div>
+      </div>
+    </div>
+  </details>
+
+  <section class="panel wide" data-cap="output" data-mode="system">
+    <h2>Output Status</h2>
+    <div class="row"><span>port <b id="oport">—</b> <span id="oconn"></span></span><span>clock <b id="oclock">—</b></span><span class="num">pulses <b id="opulses">0</b></span></div>
+    <div class="row num"><span>notes <b id="onotes">0</b></span><span>CCs <b id="occs">0</b></span><span id="odropped"></span><span>MTC <b id="omtc">—</b></span></div>
+    <div class="row" id="oscrow" hidden><span>OSC <b id="oosc">—</b> <span id="oosctg" class="num"></span></span><span class="num" id="ooscn">sent <b id="oosent">0</b> <span id="ooerr"></span></span></div>
+    <div class="hist num">
+      <div><h3>Notes</h3><ol id="hnote" class="note"></ol></div>
+      <div><h3>CC</h3><ol id="hcc" class="cc"></ol></div>
+      <div id="hoscc" hidden><h3>OSC</h3><ol id="hosc" class="osc"></ol></div>
+    </div>
+  </section>
+
+  <details id="p-logs" class="panel wide" data-cap="logs" data-mode="system" open>
+    <summary><h2>Logs</h2></summary>
+    <div id="log" class="log"></div>
+  </details>
 </main>
 <footer id="version"></footer>
 <script>
@@ -645,7 +661,8 @@ function syncDmx() {
   $('boxbar').hidden = !box;
   // The live screen sends to this server. Without the capability, its buttons do nothing.
   $('lvt').hidden = !caps.has('auto') || !!box;
-  $('lvb').hidden = $('lvf').hidden = !own || !!box;
+  $('lvb').hidden = !own || !!box;
+  $('lvs').hidden = $('lvt').hidden && $('lvb').hidden;
   if (box) $('boxlink').href = 'http://' + box + '/';
   set('sctitle', avail ? 'DMX Scenes & Looks' : 'DMX Scenes');
   const lan = !['127.0.0.1', 'localhost'].includes(location.hostname) && !BOX;
@@ -826,7 +843,16 @@ function fillHist(id, items = [], text) {
 
 function fmtTime(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + pad2(s % 60); }
 
+let deckKey = '';
 function renderDecks(s) {
+  // New cards on each status cost much on a phone. Without a change, only the waveforms move.
+  const key = JSON.stringify([s.decks.map((d) => ({ ...d, playhead_ms: d.playhead_ms == null ? null : Math.floor(d.playhead_ms / 1000) })),
+    s.mixer, s.link_peers, s.link_active, s.no_devices]);
+  if (key === deckKey) {
+    for (const d of s.decks) { const w = waves.get(d.num); if (w && w.canvas.isConnected) drawWave(w, d); }
+    return;
+  }
+  deckKey = key;
   set('link', s.link_peers > 0 ? 'Ableton Link: ' + s.link_peers + ' peer(s)' + (s.link_active ? ' · active' : '') : (s.link_active ? 'Ableton Link active' : ''));
   // A device above 16 without a play state is a mixer or a computer, not a deck.
   const decks = s.decks.filter((d) => d.play_state != null || d.num <= 16);
@@ -1222,7 +1248,6 @@ function onBusy() {
   $('live').hidden = true;
   $('takeover').hidden = false;
   // The box ignores the commands of this page, so the live screen must not show its buttons.
-  document.body.classList.add('busy');
   $('dot').classList.remove('on');
   set('conn', 'waiting');
 }
@@ -1836,12 +1861,13 @@ function showEdit(f, redraw = true) {
   if (redraw) { renderLights(); renderScenes(); renderAuto(); }
 }
 
-/** Runs a removal like showEdit. The toast offers to undo it until the show changes its source. */
-function showDrop(what, f) {
-  const before = JSON.stringify(show), was = show;
+/** Runs an edit like showEdit. The toast offers to undo it until the show changes its source. */
+function showDrop(text, f) {
+  const before = JSON.stringify(show);
   showEdit(f);
-  toast(what + ' removed', () => {
-    if (show !== was) return;
+  const after = show;
+  toast(text, () => {
+    if (show !== after) return;
     show = JSON.parse(before);
     apFix(show);
     apFormState = null;
@@ -1890,6 +1916,7 @@ function consoleToggle(f) {
 
 function renderLights() {
   if (!show || !scenes) return;
+  $('ltpack').hidden = !show.fixtures.some((_, i) => addressBad(i));
   const patch = show.fixtures.map((f, i) => {
     const t = ftype(f);
     const types = Object.keys(FIXTURE_TYPES).map((k) => [k, k.replace('_', ' ')]);
@@ -1900,7 +1927,7 @@ function renderLights() {
     adr.classList.toggle('bad', bad);
     const del = h('button', null, '×');
     del.title = 'Remove this light.';
-    del.addEventListener('click', () => showDrop(f.name || 'Light', () => {
+    del.addEventListener('click', () => showDrop((f.name || 'Light') + ' removed', () => {
       show.fixtures.splice(i, 1);
       apRetarget('fixture', i);
       for (const p of show.positions) p.aims = p.aims.filter((a) => a.fixture !== i).map((a) => (a.fixture > i ? { ...a, fixture: a.fixture - 1 } : a));
@@ -1917,7 +1944,7 @@ function renderLights() {
   $('ltgroups').replaceChildren(...show.groups.map((g, gi) => {
     const del = h('button', null, '×');
     del.title = 'Remove this group.';
-    del.addEventListener('click', () => showDrop(g.name || 'Group', () => {
+    del.addEventListener('click', () => showDrop((g.name || 'Group') + ' removed', () => {
       show.groups.splice(gi, 1);
       apRetarget('group', gi);
       for (const l of show.looks) {
@@ -2193,7 +2220,7 @@ function renderAutoForm() {
   if (st.move !== undefined) {
     const m = a.moves[st.move];
     if (!m) return close();
-    del.addEventListener('click', () => { showDrop('Move', () => a.moves.splice(st.move, 1)); close(); });
+    del.addEventListener('click', () => { showDrop('Move removed', () => a.moves.splice(st.move, 1)); close(); });
     return box.replaceChildren(moveEditor(m, st.move, del, done));
   }
   const p = st.obj;
@@ -2215,7 +2242,7 @@ function renderAutoForm() {
     add.addEventListener('click', () => { showEdit(() => a.programs.push(p)); close(); });
     parts.unshift(add);
   } else {
-    del.addEventListener('click', () => { showDrop(p.name || 'Program', () => a.programs.splice(st.idx, 1)); close(); });
+    del.addEventListener('click', () => { showDrop((p.name || 'Program') + ' removed', () => a.programs.splice(st.idx, 1)); close(); });
     parts.push(del);
   }
   box.replaceChildren(h('div', 'apf', ...parts));
@@ -2292,7 +2319,7 @@ function renderPositions() {
     ...(heads.length ? show.positions.map((p, pi) => {
       const del = h('button', null, '×');
       del.title = 'Remove this position.';
-      del.addEventListener('click', () => showDrop(p.name || 'Position', () => {
+      del.addEventListener('click', () => showDrop((p.name || 'Position') + ' removed', () => {
         show.positions.splice(pi, 1);
         for (const l of show.looks) {
           if (!l) continue;
@@ -2357,7 +2384,7 @@ function renderLook() {
   test.addEventListener('click', () => send({ type: 'scene_test', preset: i }));
   const clear = h('button', null, 'Clear');
   clear.title = 'Remove the look of this preset.';
-  clear.addEventListener('click', () => showDrop('Look', () => {
+  clear.addEventListener('click', () => showDrop('Look removed', () => {
     show.looks[i] = null;
     if (show.idle === i) show.idle = null;
   }));
@@ -2500,12 +2527,36 @@ function liveSend(strobe) {
   send({ type: 'dmx_live', master: +$('ltmaster').value, strobe });
 }
 $('ltmaster').addEventListener('input', () => { masterPct(); liveSend(strobeHeld); });
-$('ltstrobe').addEventListener('pointerdown', (e) => { strobeDown = true; $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
+$('ltstrobe').addEventListener('pointerdown', (e) => { navigator.vibrate?.(30); strobeDown = true; $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
 for (const t of ['pointerup', 'pointercancel']) $('ltstrobe').addEventListener(t, () => { strobeDown = false; liveSend(false); });
 $('ltfog').addEventListener('click', () => send({ type: 'dmx_fog' }));
 $('ltaddfx').addEventListener('click', () => {
   if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
   showEdit(() => show.fixtures.push({ name: 'Light ' + (show.fixtures.length + 1), address: nextAddress(), channels: [...FIXTURE_TYPES.rgb] }));
+});
+$('ltpack').addEventListener('click', () => showDrop('Addresses packed', () => {
+  let a = 1;
+  for (const f of [...show.fixtures].sort((x, y) => x.address - y.address)) { f.address = a; a += chanLen(f); }
+}));
+$('shbak').addEventListener('click', () => {
+  if (!show) return;
+  const a = h('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ show, scenes })], { type: 'application/json' }));
+  a.download = 'autoblink-show.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$('shres').addEventListener('click', () => $('shfile').click());
+$('shfile').addEventListener('change', async () => {
+  const f = $('shfile').files[0];
+  $('shfile').value = '';
+  if (!f || !show) return;
+  let j;
+  try { j = JSON.parse(await f.text()); } catch { j = null; }
+  if (!j || !j.show || !Array.isArray(j.show.fixtures)) return toast('The file has no show.');
+  // Undo restores the show only. The scenes of the file stay.
+  if (j.scenes && scenes) { Object.assign(scenes, j.scenes); sceneSave(); }
+  showDrop('Show loaded from ' + f.name, () => { show = j.show; if (!show.positions) show.positions = []; apFix(show); });
 });
 $('ltaddgr').addEventListener('click', () => {
   if (!show || show.groups.length >= 8) return toast('8 groups is the maximum.');
@@ -2754,7 +2805,6 @@ function connect() {
     try { m = JSON.parse(e.data); } catch { return; }
     if ((m.type === 'status' || m.type === 'settings') && !$('takeover').hidden) {
       $('takeover').hidden = true;
-      document.body.classList.remove('busy');
       $('dot').classList.add('on');
       document.querySelector('main').hidden = false;
       syncDmx();
@@ -2775,6 +2825,23 @@ function connect() {
 
 $('rescan').addEventListener('click', () => send({ type: 'rescan' }));
 $('takeoverbtn').addEventListener('click', () => send({ type: 'take_over' }));
+for (const [id, path] of [['dglog', '/log'], ['dgmem', '/mem']]) {
+  $(id).addEventListener('click', async () => {
+    try {
+      const r = await fetch(BASE + path);
+      $('dg').textContent = await r.text();
+      $('dg').hidden = false;
+    } catch { toast('The box did not send ' + path); }
+  });
+}
+// A tap shows the help of a row or a heading. A mouse shows it as a tooltip.
+if (matchMedia('(pointer:coarse)').matches) {
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('button,input,select,a,summary,.chip')) return;
+    const t = e.target.closest('.section[title],.set[title]');
+    if (t && t.title) { toast(t.title); $('toast').classList.add('info'); }
+  });
+}
 
 // The 16-beat phrase strip: four bars of four beats.
 for (let bar = 0; bar < 4; bar++) $('s16').append(h('div', null, h('span'), h('span'), h('span'), h('span')));
@@ -2931,10 +2998,18 @@ function moveEditor(m, i, del, done) {
     h('div', 'mfoot', h('span', 'note', '2 bars shown' + (nf > 1 && m.spread !== 'together' ? ' · ' + (nf > 4 ? 'first 4 of ' + nf + ' lights' : nf + ' lights') + ' offset (' + (AP_SPREAD.find(([v]) => v === m.spread) || [])[1] + ')' : '')), del, go, done));
 }
 
-// ---- The live screen: #live in the URL ----
-const lvOn = () => document.body.classList.toggle('lv', location.hash === '#live');
-addEventListener('hashchange', lvOn);
-lvOn();
+// ---- The modes: #live, #setup and #system in the URL. A mode shows only its panels. ----
+const MODES = ['live', 'setup', 'system'];
+function modeOn() {
+  const m = MODES.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'live';
+  document.querySelectorAll('main>[data-mode]').forEach((e) => e.classList.toggle('offmode', e.dataset.mode !== m));
+  for (const a of $('modes').children) a.classList.toggle('on', a.hash === '#' + m);
+  scrollTo(0, 0);
+}
+addEventListener('hashchange', modeOn);
+modeOn();
+
+// ---- The live panel ----
 let lvDown = false;
 const lvTiers = ['auto', 'calm', 'groove', 'peak'];
 $('lvt').replaceChildren(...lvTiers.map((t) => {
@@ -2945,12 +3020,9 @@ $('lvt').replaceChildren(...lvTiers.map((t) => {
 }));
 // The old socket closed, so the server released the blackout. A held button sets it again.
 function lvConn(on) {
-  $('lvc').classList.toggle('off', !on);
-  set('lvc', on ? '' : 'offline');
   if (on && lvDown) lvBlack(true);
 }
 function renderLive(s) {
-  if (!document.body.classList.contains('lv')) return;
   const a = s.auto || {};
   set('lvtier', a.tier ? a.tier.toUpperCase() : '-');
   set('lvbpm', s.master.bpm > 0 ? s.master.bpm.toFixed(0) : '-');
@@ -2958,15 +3030,29 @@ function renderLive(s) {
   $('lvb').classList.toggle('on', !!(s.dmx && s.dmx.blackout));
 }
 const lvBlack = (on) => send({ type: 'dmx_blackout', on });
-$('lvb').addEventListener('pointerdown', (e) => { lvDown = true; $('lvb').setPointerCapture(e.pointerId); lvBlack(true); });
+$('lvb').addEventListener('pointerdown', (e) => { navigator.vibrate?.(30); lvDown = true; $('lvb').setPointerCapture(e.pointerId); lvBlack(true); });
 for (const t of ['pointerup', 'pointercancel', 'pointerleave']) $('lvb').addEventListener(t, () => { if (lvDown) { lvDown = false; lvBlack(false); } });
 $('lvb').addEventListener('contextmenu', (e) => e.preventDefault());
 // Only the page that holds the blackout releases it. The flag is global on the host.
 const lvRelease = () => { if (lvDown) { lvDown = false; lvBlack(false); } };
 addEventListener('pagehide', lvRelease);
+// Keys on a computer: hold B for the blackout, hold S for the strobe, F for the fog, 1 to 4 for the tiers.
+addEventListener('keydown', (e) => {
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.target.closest('input,select,textarea')) return;
+  const k = e.key.toLowerCase();
+  if (k === 'b' && !$('lvb').hidden) { lvDown = true; lvBlack(true); }
+  else if (k === 's' && !$('live').hidden) { strobeDown = true; liveSend(true); }
+  else if (k === 'f' && !$('live').hidden) send({ type: 'dmx_fog' });
+  else if (k >= '1' && k <= '4' && !$('lvt').hidden) send({ type: 'auto_pin', tier: lvTiers[k - 1] });
+});
+addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'b') lvRelease();
+  if (k === 's' && strobeDown) { strobeDown = false; liveSend(false); }
+});
+addEventListener('blur', () => { lvRelease(); if (strobeDown) { strobeDown = false; liveSend(false); } });
 document.addEventListener('visibilitychange', () => { if (document.hidden) lvRelease(); });
 $('lvlink').addEventListener('click', (e) => { e.preventDefault(); location.hash = '#live'; });
-$('lvf').addEventListener('click', () => send({ type: 'dmx_fog' }));
 
 connect();
 </script>
