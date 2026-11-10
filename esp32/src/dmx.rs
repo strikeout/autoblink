@@ -69,15 +69,22 @@ pub struct Tune {
     /// The time from one write to the next, in µs. With 0, the thread writes the next frame when
     /// the TX buffer has space for it. The frames then go out back to back.
     pub period_us: AtomicU32,
-    /// The channels in each frame, 24 to 512.
+    /// The channels in each frame, 24 to 512. With 0, the setting "DMX Channels" decides.
     pub slots: AtomicU32,
+    /// The idle time between two slots in µs. With 0, the slots go out back to back. Otherwise
+    /// the thread writes each slot alone and waits.
+    pub gap_us: AtomicU32,
+    /// The baud rate. DMX512 uses 250 000. A test can move it by a few percent.
+    pub baud: AtomicU32,
 }
 
 pub static TUNE: Tune = Tune {
     break_bits: AtomicU32::new(BREAK_BITS as u32),
     idle_bits: AtomicU32::new(0),
     period_us: AtomicU32::new(FRAME_PERIOD.as_micros() as u32),
-    slots: AtomicU32::new(512),
+    slots: AtomicU32::new(0),
+    gap_us: AtomicU32::new(0),
+    baud: AtomicU32::new(250_000),
 };
 
 /// The space in the TX buffer for one frame: the data and the item headers of the ring buffer.
@@ -291,6 +298,7 @@ fn run(
     let mut late_max = Duration::ZERO;
     let mut next_late_log = Instant::now() + Duration::from_secs(60);
     let mut idle_set = 0u16;
+    let mut baud_set = 250_000u32;
     // The setting "DMX IN". The thread reads it with the other settings before each frame.
     let mut dmx_in = false;
     loop {
@@ -398,6 +406,12 @@ fn run(
                 continue;
             }
         }
+        let baud = TUNE.baud.load(Ordering::Relaxed);
+        if baud != baud_set {
+            // SAFETY: the driver of the port is installed.
+            unsafe { esp_idf_svc::sys::uart_set_baudrate(uart.port(), baud) };
+            baud_set = baud;
+        }
         let idle = TUNE.idle_bits.load(Ordering::Relaxed) as u16;
         if idle != idle_set {
             // SAFETY: the driver of the port is installed.
@@ -439,14 +453,17 @@ fn run(
             blackout: state.dmx_live.blackout.load(Ordering::Relaxed),
         };
         let art_live = art_at.is_some_and(|t| now_ms.saturating_sub(t) <= ARTNET_TIMEOUT_MS);
-        let (mode, beat_channel) = {
+        let (mode, beat_channel, frame_cfg) = {
             let cfg = cfg.lock().unwrap();
             dmx_in = cfg.dmx_in;
             (
                 cfg.dmx_mode,
                 usize::from(cfg.beat_channel).clamp(1, UNIVERSE),
+                cfg.clone(),
             )
         };
+        // The channels of this frame. The setting "DMX Channels" gives them from the show.
+        let mut slots = 512;
         let send = {
             let show = show.lock().unwrap();
             while let Some((msg, _)) = msgs.recv_front(0) {
@@ -475,6 +492,7 @@ fn run(
             let mut effect = [0u8; UNIVERSE];
             lights.frame(&show, beat.as_ref(), &live, now_ms, &mut effect);
             let lit = !show.fixtures.is_empty();
+            slots = frame_cfg.frame_channels(show.last_channel());
             if !lit {
                 // A show without lights keeps the beat flash of the older firmware.
                 let level = last_beat_ms.map_or(0, |t| {
@@ -543,9 +561,24 @@ fn run(
         // The UART sends the frame, then the break. The break before the next frame and the idle
         // time after it make the reset sequence of DMX512.
         if send {
-            let len = 1 + (TUNE.slots.load(Ordering::Relaxed) as usize).clamp(24, 512);
+            let len = 1 + match TUNE.slots.load(Ordering::Relaxed) as usize {
+                0 => slots,
+                n => n.clamp(24, 512),
+            };
             let brk = TUNE.break_bits.load(Ordering::Relaxed) as i32;
-            if let Err(e) = uart.write_with_break(&out[..len], brk) {
+            let gap = TUNE.gap_us.load(Ordering::Relaxed);
+            let sent = if gap == 0 {
+                uart.write_with_break(&out[..len], brk)
+            } else {
+                // One slot takes 11 bits. The wait after each write is the slot and the gap.
+                let slot_us = 11_000_000 / baud_set.max(1);
+                for &b in &out[..len - 1] {
+                    let _ = uart.write(&[b]);
+                    esp_idf_svc::hal::delay::Ets::delay_us(slot_us + gap);
+                }
+                uart.write_with_break(&out[len - 1..len], brk)
+            };
+            if let Err(e) = sent {
                 log::warn!("DMX frame not sent: {e}");
             }
         }

@@ -249,7 +249,7 @@ pub fn start(
     })?;
 
     // Changes the timing of the DMX output for a test, for example
-    // `/dmxtune?break=44&idle=25&period=0&slots=64`. Without a value, the route only gives the
+    // `/dmxtune?break=44&idle=25&period=0&slots=64&gap=40&baud=250000`. Without a value, the route only gives the
     // timing. A restart sets the defaults again.
     #[cfg(feature = "dmx")]
     server.fn_handler("/dmxtune", Method::Get, |req| -> anyhow::Result<()> {
@@ -267,16 +267,22 @@ pub fn start(
                 "period" => t
                     .period_us
                     .store(if v == 0 { 0 } else { v.clamp(5_000, 1_000_000) }, Relaxed),
-                "slots" => t.slots.store(v.clamp(24, 512), Relaxed),
+                "slots" => t
+                    .slots
+                    .store(if v == 0 { 0 } else { v.clamp(24, 512) }, Relaxed),
+                "gap" => t.gap_us.store(v.min(1000), Relaxed),
+                "baud" => t.baud.store(v.clamp(240_000, 260_000), Relaxed),
                 _ => {}
             }
         }
         let text = format!(
-            "break {} bits\nidle {} bits\nperiod {} us\nslots {}\n",
+            "break {} bits\nidle {} bits\nperiod {} us\nslots {}\ngap {} us\nbaud {}\n",
             t.break_bits.load(Relaxed),
             t.idle_bits.load(Relaxed),
             t.period_us.load(Relaxed),
-            t.slots.load(Relaxed)
+            t.slots.load(Relaxed),
+            t.gap_us.load(Relaxed),
+            t.baud.load(Relaxed)
         );
         req.into_response(200, None, &[("Content-Type", "text/plain")])?
             .write_all(text.as_bytes())?;
