@@ -266,17 +266,15 @@ pub fn start(
 
     // Priority 6 is above the HTTP server task (5) and below the `prolink-rx` (8) and `midi` (10)
     // threads on core 1.
-    // 1.32.3 used 4096 bytes of the stack (/mem) with the engine and DMX IN. The Art-Net reads
-    // and the ArtPoll reply have their own frames of 144 and 560 bytes beside the engine calls.
-    // With the log line of the reply, the path can use about 4.8 KB.
-    // ponytail: 6.5 KB is an estimate. Measure with /mem on a box that gets ArtPoll from a desk,
-    // and keep 1.5 KB above the low point.
+    // 1.39.0 used 6208 bytes of the 6656-byte stack (/mem) with Art-Net from Lightkey, ArtPoll
+    // and the sACN joins. `dim` and the ArtPollReply path add frames beside the engine calls.
+    // 8 KB keeps more than 1.5 KB above that low point. Measure again with a fade out running.
     //
     // The thread installs the driver, so the UART interrupt runs on core 1. On core 0, the WiFi
     // interrupts delayed it, and a long frame had gaps of up to 30 µs between two slots.
     crate::spawn_rt(
         c"dmx",
-        6656,
+        8192,
         6,
         Some(Core::Core1),
         move || match UartDriver::new(uart, tx, rx, None::<Gpio36>, None::<Gpio4>, &cfg) {

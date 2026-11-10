@@ -187,7 +187,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 ### DMX IN, OLED and joystick
 
-- The `dmx` thread sends and receives on UART1. It has priority 6 on core 1 and a 6.5 KB stack. The thread writes a frame 24 ms after the last write (about 41 frames each second). The UART needs 22.7 ms for a frame and its break.
+- The `dmx` thread sends and receives on UART1. It has priority 6 on core 1 and an 8 KB stack. The thread writes a frame 24 ms after the last write (about 41 frames each second). The UART needs 22.7 ms for a frame and its break.
 - Do not schedule the writes on a fixed grid. A late write and an on-time write can then come less than 22.7 ms apart. The driver starts a queued frame a few µs after the break (TX idle 0). This mark after break is too short, and a light can flicker. The log reports late writes once a minute.
 - A frame ends at the data event with a receive timeout after a break event (`receive_timeout` of 1 character time). The thread reads exactly the bytes of each data event.
 - The thread accepts only start code 0. Without a good frame for 1 s, the input has no signal and is all 0.
@@ -252,7 +252,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Do not use the subtype `0x40` for the partition. It panics espflash 4.6.0. The table uses the named subtype `undefined`.
 - `GET /show` serializes the running show. `POST /show` is a CORS simple request with an Origin check. It answers 413 when the body is larger than 60 000 bytes. It answers 503 when the body is larger than half of the largest free heap block. The reader bounds the lists of the show while it reads them.
 - The firmware sends the capability `dmx` and the status field `dmx`. The page sends the WebSocket commands `dmx_live`, `dmx_fog` and `dmx_aim`.
-- The `dmx` thread has priority 6 on core 1. Its stack is 6.5 KB. On 1.32.3, it used 4096 bytes with DMX IN. The Art-Net reads and the ArtPoll reply add about 0.7 KB. The sACN reads and the source add more in 1.39.0. Measure it with `/mem` on a box that gets ArtPoll and sACN from a desk.
+- The `dmx` thread has priority 6 on core 1. Its stack is 8 KB (since 1.39.1). On 1.32.3, it used 4096 bytes with DMX IN. On 1.39.0, it used 6208 bytes with Art-Net and ArtPoll from Lightkey. Measure it with `/mem` again while a fade out runs.
 - Three senders use one queue of depth 32 to the `dmx` thread: `midi`, `prolink-rx` and the HTTP task (`dmx_fog`). A full queue drops a message. A dropped Off keeps its layer on until the next Off of that preset. An On does not remove the layer. A stop only hides it.
 - The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
 - The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
@@ -396,7 +396,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it, the `midi` thread and the `dmx` thread (since 1.39.0). The loop of the `dmx` thread waits at most 1 s, also with a long `/dmxtune` period. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
 - `prolink-rx` also runs the virtual CDJ (`VirtualCdj` in `prolink.rs`). Between two receives, it does the due step. A join sends a packet every 300 ms. After the join, the virtual CDJ sends the keepalive and the status packets every 1.5 s. The poll waits until the next step, and at most 1 s. The virtual CDJ has no thread.
-- Each stack comes from the heap. Each size keeps 1.5 KB or more above the low point of `/mem`. Measure with `/mem` again after a change that adds work to a thread. The memory trim after 1.32.3 sets the sizes in `sdkconfig.defaults` and in the `spawn` calls. The sizes in bytes are `ui` 6656, `dbserver` 5120, `dmx` 6656, `prolink-rx` 5632, `main` 6144, `mdns` 3072 and IDLE 2176.
+- Each stack comes from the heap. Each size keeps 1.5 KB or more above the low point of `/mem`. Measure with `/mem` again after a change that adds work to a thread. The memory trim after 1.32.3 sets the sizes in `sdkconfig.defaults` and in the `spawn` calls. The sizes in bytes are `ui` 6656, `dbserver` 5120, `dmx` 8192, `prolink-rx` 5632, `main` 6144, `mdns` 3072 and IDLE 2176.
 - The LEDs have no thread. An esp_timer of 5 ms in the `esp_timer` task sets IO32 and IO33 (`led.rs`). The `prolink-rx` thread writes the beat into atomics, and the main loop writes the blink code each second. The `esp_timer` task has 2560 bytes of stack. Measure it with `/mem` after an hour of beats.
 - Put a large struct on the heap (`Box`), not on the stack of a thread. The OLED display struct holds its 1 KB frame buffer. On the 5 KB stack of `ui`, it overflowed the stack, and the box restarted in `malloc` with the address 0xffffffff.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
