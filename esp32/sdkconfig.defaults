@@ -32,6 +32,9 @@ CONFIG_ESP_WIFI_NVS_ENABLED=n
 # A WPA2-Enterprise network is not a use case of the box. WPA3 stays on, so that a WPA3 network
 # of a venue stays available.
 CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+# The own WiFi network uses WPA2 (net.rs), so the access point needs no WPA3 (SAE). The station
+# keeps WPA3 for the joined network.
+CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
 
 # Without A-MPDU, the WiFi driver keeps no reorder window. This uses less RAM, and a beat packet
 # does not wait for a missing frame of an aggregate.
@@ -81,6 +84,10 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # start, the firmware logs the task and the backtrace, and GET /log shows them.
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# A failed C assertion aborts without the file name, the line and the expression text. The core
+# dump still has the task and the backtrace. The image is smaller by the text of all assertions.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 
 # The OTA download uses TLS. mbedTLS frees its record buffers after the handshake, so that the
 # heap keeps space for the web server and the track data. It also frees the certificate data
