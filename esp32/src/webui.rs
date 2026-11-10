@@ -219,8 +219,9 @@ pub fn start(
     })?;
 
     server.fn_handler("/log", Method::Get, |req| {
-        req.into_response(200, None, &[("Content-Type", "text/plain; charset=utf-8")])?
-            .write_all(crate::logring::text().as_bytes())
+        let mut resp =
+            req.into_response(200, None, &[("Content-Type", "text/plain; charset=utf-8")])?;
+        crate::logring::write_text(|part| resp.write_all(part))
     })?;
 
     server.fn_handler("/mem", Method::Get, |req| {
@@ -399,9 +400,10 @@ pub fn start(
                         release_strobe(&state);
                     }
                     // A large status grows the buffer. After the send, give the extra heap back
-                    // when the buffer is more than twice the size of the status. Thus a status
-                    // that is always above 4 KB does not grow and shrink the buffer each time.
-                    if status.capacity() > 2 * status.len().max(4096) {
+                    // when the buffer is more than four times the size of the status. Thus a
+                    // status that changes between 5 KB and 11 KB does not grow and shrink the
+                    // buffer each time.
+                    if status.capacity() > 4 * status.len().max(4096) {
                         status.shrink_to(4096);
                     }
                 }

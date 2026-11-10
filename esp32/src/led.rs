@@ -70,10 +70,13 @@ pub fn start(
     // The start time of the current repetition of the code, the code and the restart flash.
     let mut rep: Option<(u32, u8, bool)> = None;
     let timer = EspTaskTimerService::new()?.timer(move || {
+        // Read the beat before the clock. A beat that arrives between the two reads then has a
+        // time before `now`, and `since` cannot wrap.
+        let kind = BEAT_KIND.load(Ordering::Acquire);
+        let at = BEAT_AT.load(Ordering::Relaxed);
         let now_ms = state.now_ms();
         let now = now_ms as u32;
-        let kind = BEAT_KIND.load(Ordering::Acquire);
-        let since = now.wrapping_sub(BEAT_AT.load(Ordering::Relaxed));
+        let since = now.wrapping_sub(at);
         if kind != 0 && since < IDLE_AFTER_MS {
             // The beat LED pulses for 30 ms. IO33 pulses for 120 ms on beat 1 and for 25 ms on
             // the other beats. The code starts again after the beats.

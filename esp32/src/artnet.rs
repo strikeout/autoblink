@@ -129,8 +129,16 @@ fn reply_to_poll(sock: &UdpSocket, state: &State, from: SocketAddr) {
     let bound = crate::net::bind_device(fd, iface.netif).is_ok();
     let sent = sock.send_to(&reply, (desk, ARTNET_PORT));
     let _ = crate::net::bind_device(fd, "");
+    // A desk polls every few seconds. Only the first failure after a good reply goes into the log,
+    // so that the log ring keeps the other lines.
     match sent {
-        Err(e) => log::warn!("Art-Net: the ArtPollReply to {from} failed: {e}"),
+        Err(e) if !POLL_FAILED.swap(true, Ordering::Relaxed) => {
+            log::warn!("Art-Net: the ArtPollReply to {from} failed: {e}")
+        }
+        Err(_) => {}
+        Ok(_) if POLL_FAILED.swap(false, Ordering::Relaxed) => {
+            log::info!("Art-Net: the ArtPollReply to {from} goes out again")
+        }
         Ok(_) if !FIRST_POLL.swap(true, Ordering::Relaxed) => log::info!(
             "Art-Net: the first ArtPoll came from {from}. The reply gives {} (interface \"{}\", bound: {bound})",
             iface.ip,
@@ -142,3 +150,5 @@ fn reply_to_poll(sock: &UdpSocket, state: &State, from: SocketAddr) {
 
 /// True after the first answered ArtPoll. The log shows only the first one.
 static FIRST_POLL: AtomicBool = AtomicBool::new(false);
+/// True after a failed ArtPollReply, until a reply goes out again.
+static POLL_FAILED: AtomicBool = AtomicBool::new(false);

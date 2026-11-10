@@ -118,17 +118,23 @@ fn push(bytes: &[u8]) {
     }
 }
 
-/// The text in the ring. After a wrap, the text starts at the first full line.
-fn contents(r: &Ring) -> String {
+/// Copies the text of a ring into `buf`. After a wrap, the text starts at the first full line.
+fn copy(previous: bool, buf: &mut Vec<u8>) {
+    buf.clear();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: this function holds LOCK. init() made the ring of this start valid, and the caller
+    // reads the other ring only when PREVIOUS shows that it is valid.
+    let r = unsafe { &*ring(previous) };
     let total = r.total as usize;
     if total <= SIZE {
-        return String::from_utf8_lossy(&r.buf[..total]).into_owned();
+        buf.extend_from_slice(&r.buf[..total]);
+        return;
     }
     let start = total % SIZE;
-    let mut bytes = r.buf[start..].to_vec();
-    bytes.extend_from_slice(&r.buf[..start]);
-    let first = bytes.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1);
-    String::from_utf8_lossy(&bytes[first..]).into_owned()
+    buf.extend_from_slice(&r.buf[start..]);
+    buf.extend_from_slice(&r.buf[..start]);
+    let first = buf.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1);
+    buf.drain(..first);
 }
 
 /// Keeps the ring of the previous start, clears the other ring and installs the logger and the
@@ -159,33 +165,32 @@ pub fn init() {
     }));
 }
 
-/// The text for `GET /log`: the lines of the previous start, then the lines of this start.
-pub fn text() -> String {
-    let (current, previous) = {
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: this function holds LOCK. init() made the ring of this start valid, and
-        // PREVIOUS shows that the other ring is valid.
-        unsafe {
-            let previous = if PREVIOUS.load(Ordering::Relaxed) {
-                contents(&*ring(true))
-            } else {
-                String::new()
-            };
-            (contents(&*ring(false)), previous)
-        }
-    };
-    let previous = if previous.is_empty() {
-        "(no lines: the box started from power-on)\n"
+/// Writes the text for `GET /log` in parts: the last crash, the lines of the previous start, then
+/// the lines of this start. One buffer holds one ring at a time, so the request needs about 4 KB
+/// of heap. A user can read the log while a library fetch keeps the heap low.
+pub fn write_text<E>(mut out: impl FnMut(&[u8]) -> Result<(), E>) -> Result<(), E> {
+    {
+        let crash = CRASH.lock().unwrap_or_else(|e| e.into_inner());
+        out(b"=== The last crash ===\n")?;
+        out(if crash.is_empty() {
+            b"(no core dump)\n"
+        } else {
+            crash.as_bytes()
+        })?;
+    }
+    let mut buf = Vec::with_capacity(SIZE);
+    out(b"=== The previous start ===\n")?;
+    if PREVIOUS.load(Ordering::Relaxed) {
+        copy(true, &mut buf);
+    }
+    out(if buf.is_empty() {
+        b"(no lines: the box started from power-on)\n"
     } else {
-        previous.as_str()
-    };
-    let crash = CRASH.lock().unwrap_or_else(|e| e.into_inner());
-    let crash = if crash.is_empty() {
-        "(no core dump)\n"
-    } else {
-        crash.as_str()
-    };
-    format!("=== The last crash ===\n{crash}=== The previous start ===\n{previous}=== This start ===\n{current}")
+        &buf
+    })?;
+    out(b"=== This start ===\n")?;
+    copy(false, &mut buf);
+    out(&buf)
 }
 
 /// Logs the core dump of the last crash, then erases it. The next crash can then write a new dump.
