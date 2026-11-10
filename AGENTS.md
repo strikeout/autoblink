@@ -66,10 +66,10 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `dmx`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (DMX OUT and DMX IN, feature `dmx`), `show.rs` (the `show` partition), `ofl.rs` (Open Fixture Library fetch), `artnet.rs` (Art-Net in), `ui.rs` (OLED pages, joystick), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS, including the night memory), `logring.rs` (log that stays through a restart, core dump report) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (DMX OUT and DMX IN, feature `dmx`), `show.rs` (the `show` partition), `ofl.rs` (Open Fixture Library fetch), `artnet.rs` (Art-Net in, ArtPollReply), `sacn.rs` (sACN in, multicast joins), `ui.rs` (OLED pages, joystick), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS, including the night memory), `logring.rs` (log that stays through a restart, core dump report) |
 | `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable. The host uses `scenes.rs` too. | `clock.rs`, `mapper.rs`, `scenes.rs` (DMX scenes), `settings.rs` (host setting indices) |
-| `crates/autoblink-core-dmx` | DMX looks of the firmware, host-testable | `show.rs` (show model and limits), `render.rs` (look into universe), `clock.rs` (beat clock), `effect.rs` (intensity and bar effects), `lights.rs` (engine), `artnet.rs` (ArtDmx parse and build), `merge.rs` (HTP and LTP merge), `auto.rs` (autopilot settings), `night.rs` (energy spot, night memory), `pilot.rs` (picks, pins, drop sequence), `moves.rs` (move shapes, room level) |
+| `crates/autoblink-core-dmx` | DMX looks of the firmware, host-testable | `show.rs` (show model and limits), `render.rs` (look into universe), `clock.rs` (beat clock), `effect.rs` (intensity and bar effects), `lights.rs` (engine), `artnet.rs` (ArtDmx, ArtPoll, ArtPollReply), `sacn.rs` (E1.31 parse), `source.rs` (outside source, sender lock, loss action), `merge.rs` (HTP and LTP merge), `auto.rs` (autopilot settings), `night.rs` (energy spot, night memory), `pilot.rs` (picks, pins, drop sequence), `moves.rs` (move shapes, room level) |
 | `crates/autoblink-core-ui` | Logic of the box hardware of the firmware, host-testable | `dmx.rs` (DMX modes, HTP merge), `config.rs` (settings 110 to 121), `screen.rs` (OLED text), `joystick.rs` (input state machine), `menu.rs` (OLED pages, settings menu) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
@@ -195,18 +195,19 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - To examine DMX IN, turn on the setting "DMX IN", then connect DMX OUT to DMX IN. `curl http://autoblink.local/log` must show "DMX input: signal" with about 41 frames each second. The OLED and the Sync tab of the page show the same rate.
 - IO36 has no internal pull resistor. Without the RS-485 module, noise on IO36 can look like a frame. Connect the module or a pull-up resistor.
 - The setting "DMX IN" (112, default off, since 1.36.0) turns on the input. While it is off, the `dmx` thread ignores each frame on IO36. Thus an open IO36 cannot block Art-Net. The OLED menu has no row for it.
-- The setting "DMX Channels" (113, since 1.37.0) sets the channels in each output frame, 1 to 512. The default 0 is Auto: the last channel of the show (since 1.38.0, without a minimum of 24). A show without lights sends 512. DMX512-A allows a short frame, because the time from break to break stays above 1204 µs.
+- The setting "DMX Channels" (113, since 1.37.0) sets the channels in each output frame, 1 to 512. The default 0 is Auto: the last channel of the show. When the outside frame has more slots, Auto uses its slots (since 1.39.0). A show without lights sends 512. DMX512-A allows a short frame, because the time from break to break stays above 1204 µs.
 - A cheap light can flicker and get dim when each frame has 512 channels. A light of the owner did that. Its chip reads each byte of the frame, and its dimming loses time. With 24 channels at 40 frames each second, the light flickered much less, but it still flickered now and then.
 - The setting "DMX Refresh" (114, since 1.38.0) is On change (the default) or 40 Hz. With On change, the thread sends a frame when a channel changes. It checks every 24 ms, and it sends a frame without a change again after 250 ms (`REPEAT`). The light of the owner was stable only with 5 channels at 4 frames each second.
+- With On change, the 3 frames after a change also go out at once, 24 ms apart (`BURST`, since 1.39.0). In 1.38.0, a change went out once and then 4 times each second. Some lights read a value only from a few frames in a row. Such a light took about 2 s for a change from Lightkey.
 - The break is 176 µs (`BREAK_BITS`, since 1.38.0). The UART TX idle time is 100 µs (`IDLE_BITS`). Thus the mark after break is at least 100 µs, also for a frame in the queue.
 - The `dmx` thread installs the UART driver (since 1.38.0). Thus the UART interrupt runs on core 1. On core 0, the WiFi interrupts delayed it. A frame of 512 channels then had gaps of up to 30 µs between two slots.
-- In Auto, the output has no channel after the last light of the show. Set "DMX Channels" to 512 when a desk drives lights that the show does not have.
+- The slots of the outside frame count only in Merge and Pass, and not after a fade out. In Auto without an outside source, the output has no channel after the last light of the show. A desk that sends 512 slots gives 512 channels. Set "DMX Channels" to a number when a light flickers with 512 channels.
 - The settings 110 to 121 are firmware settings in `autoblink_core_ui::config`. NVS keeps them as JSON under the key `box`. The firmware writes them 2 s after the last change.
-- "DMX Mode" (110) is Off, Box only, Merge (the default) or Pass. The outside source is DMX IN. Without a DMX IN signal, the outside source is a live Art-Net frame. Without an outside source, Merge and Pass send the output of the box.
-- In Merge, a show with lights uses the HTP and LTP rules of `autoblink_core_dmx::Merge` (see "Art-Net in on the box"). A show without lights uses HTP for each channel.
-- The OLED DMX page shows the DMX IN frames each second and the Art-Net state: "live", "no signal", or "ignored" while DMX IN has a signal. The Main page shows "Art-Net live" when DMX IN has no signal and Art-Net is live. The line "Out" shows the channel and the value of the last change in the DMX output. When one frame changes more than one channel, it shows the lowest channel.
+- "DMX Mode" (110) is Off, Box only, Merge (the default) or Pass. The outside source is DMX IN, Art-Net or sACN (see "Network DMX in on the box"). Without an outside source, Merge and Pass send the output of the box.
+- In Merge, a show with lights uses the HTP and LTP rules of `autoblink_core_dmx::Merge` (see "Network DMX in on the box"). A show without lights uses HTP for each channel.
+- The OLED DMX page shows the DMX IN frames each second and the network state in the row "Net DMX" (Art-Net or sACN). The state is "live", "no signal", or "ignored" while DMX IN has a signal. The Main page shows "Net DMX live" when DMX IN has no signal and a network sender is live. The line "Out" shows the channel and the value of the last change in the DMX output. When one frame changes more than one channel, it shows the lowest channel.
 - The status field `dmx` has `mode`, `in_fps` and `signal`, and the fields of the show engine (`layers`, `master`, `strobe_hold`, `artnet`). The firmware without the feature `dmx` sends no field `dmx`.
-- The status field `dmx` also has `in_recent` and `out_recent` (since 1.34.0). Each holds up to 5 changed channels as (channel, value, age in ms), newest first, for 3 s (`autoblink_core_dmx::Changes`). One channel has one entry. In one frame, the lowest changed channel comes first. `in_recent` shows DMX IN, or live Art-Net when DMX IN has no signal.
+- The status field `dmx` also has `in_recent` and `out_recent` (since 1.34.0). Each holds up to 5 changed channels as (channel, value, age in ms), newest first, for 3 s (`autoblink_core_dmx::Changes`). One channel has one entry. In one frame, the lowest changed channel comes first. `in_recent` shows the frame of the outside source.
 - The Sync tab shows `in_recent` and `out_recent` under DMX in and DMX out. The host sends no such fields, so its page hides the columns.
 - The `ui` thread always starts. It has priority 3 on core 0. It looks for the OLED at address 0x3C and 0x3D every 5 s. The first failure logs the I2C addresses that answer. When the OLED answers, the thread draws 5 frames each second. After a write error, it initializes the OLED again before each frame, so that a display that lost its power comes back.
 - The joystick is optional. Without it, the OLED shows the Main page.
@@ -251,7 +252,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Do not use the subtype `0x40` for the partition. It panics espflash 4.6.0. The table uses the named subtype `undefined`.
 - `GET /show` serializes the running show. `POST /show` is a CORS simple request with an Origin check. It answers 413 when the body is larger than 60 000 bytes. It answers 503 when the body is larger than half of the largest free heap block. The reader bounds the lists of the show while it reads them.
 - The firmware sends the capability `dmx` and the status field `dmx`. The page sends the WebSocket commands `dmx_live`, `dmx_fog` and `dmx_aim`.
-- The `dmx` thread has priority 6 on core 1. Its stack is 6.5 KB. On 1.32.3, it used 4096 bytes with DMX IN. The Art-Net reads and the ArtPoll reply add about 0.7 KB. Measure it with `/mem` on a box that gets ArtPoll from a desk.
+- The `dmx` thread has priority 6 on core 1. Its stack is 6.5 KB. On 1.32.3, it used 4096 bytes with DMX IN. The Art-Net reads and the ArtPoll reply add about 0.7 KB. The sACN reads and the source add more in 1.39.0. Measure it with `/mem` on a box that gets ArtPoll and sACN from a desk.
 - Three senders use one queue of depth 32 to the `dmx` thread: `midi`, `prolink-rx` and the HTTP task (`dmx_fog`). A full queue drops a message. A dropped Off keeps its layer on until the next Off of that preset. An On does not remove the layer. A stop only hides it.
 - The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
 - The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
@@ -287,7 +288,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - A pin (`PIN_MS`, 30 minutes) holds a tier. A pin to Calm or Groove turns the drop sequence off. A pin to Peak keeps it on. The tier changes at the next phrase change. The pin `auto` clears it.
 - One driver at a time drives the lights. While `show.auto.on` is true, the scene engine sends no note to the console and no message to the `dmx` thread. When the autopilot turns on, the `midi` thread and the host mapper call `Scenes::release_all` once (the take-over edge). Without it, the held presets stay on.
 - The pilot ticks all the time, also while `auto.on` is false. Thus the night memory learns while the autopilot is off. The actions go out only while `auto.on` is true. At the turn-on, the thread sends the last picks (program, moves, tier) again.
-- The `dmx` thread applies the room level after the merge (`apply_room`). Thus the dip and the blackout also reach the light of DMX IN and Art-Net. A fixture with `console: true` gets the console level multiplied by the level of the room. Other fixtures get the room level.
+- The `dmx` thread applies the room level after the merge (`apply_room`). Thus the dip and the blackout also reach the light of DMX IN, Art-Net and sACN. Pass with an outside source is the exception: only the blackout of the page dims it. A fixture with `console: true` gets the console level multiplied by the level of the room. Other fixtures get the room level.
 - A light channel is the Dimmer. A fixture without a Dimmer uses its colour channels (Red, Green, Blue, White, Amber and Uv). The Strobe channel goes to 0 only at level 0, because its value is a rate. Pan, Tilt, Fog and Fixed channels never change.
 - A console fixture needs its real channels in the show. The box scales its light channels in the merged frame, so a wrong map dims the wrong channel. The pilot sends the program with `Out::Program` (MIDI program change on the channel `auto.channel`).
 - The WebSocket commands are `auto_pin` (`tier`: `auto`, `calm`, `groove` or `peak`), `dmx_blackout` (`on`) and `auto_try`. The field `move` of `auto_try` is an index below `MAX_MOVES` (24). `auto_try` shows one move for 8 bars, also while the autopilot is off. The engine then shows the base and the move, and after that the manual frame again. The `dmx` queue drops it when full.
@@ -333,19 +334,46 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The page maps the OFL channels to the kinds of the show. A pixel channel gets the kind of its template channel, so each pixel shows the same colour. A channel that no template describes becomes a fixed placeholder channel, so that the footprint stays right. A Pan or Tilt channel maps to `pan` or `tilt`, and its fine alias maps to `pan_fine` or `tilt_fine`. A mode with an unknown pixel count, or with more than 32 channels, the page does not add.
 - Nobody has measured the heap after many fetches on a box. Run `/mem` after ten fetches.
 
-### Art-Net in on the box
+### Network DMX in on the box (Art-Net and sACN)
 
-- The box receives Art-Net on UDP port 6454 on all interfaces (`esp32/src/artnet.rs`). It keeps universe 0 only and ignores a frame of another universe. Art-Net has no thread. The `dmx` thread reads the socket without a wait on each loop pass (`artnet::drain`, at most 16 packets).
-- `main` opens the socket after the network and the Pro DJ Link threads start, and puts it into `State::artnet`. The OTA maintenance start does not reach that line, so it has no Art-Net.
-- The permanent heap for Art-Net is about 1.5 KB: the receive buffer, the frame copy and the socket.
-- The box answers an ArtPoll with one ArtPollReply (since 1.30.3). The reply gives the address of the interface in the subnet of the desk: the Ethernet port first, then the joined WiFi network, then the own WiFi network. Without such an interface, the box does not reply.
+- The box receives Art-Net on UDP port 6454 and sACN (E1.31) on UDP port 5568, on all interfaces (`esp32/src/artnet.rs`, `esp32/src/sacn.rs`). Neither has a thread. The `dmx` thread reads the two sockets without a wait on each loop pass (at most 16 packets each).
+- The setting "Art-Net Universe" (117, default 0) is the port-address that the box receives. The setting "sACN Universe" (118, default 1) is the sACN universe. The box ignores a frame of another universe. The log counts them.
+- sACN comes as multicast to 239.255.hi.lo of the universe, or as unicast. On WiFi, set the desk to unicast. A WiFi access point sends multicast only after a DTIM beacon and without a retry. Once a second, the `dmx` thread joins the group on each interface with an address (`sacn::Groups`). A change of an address or of the universe changes the joins.
+- The sACN reader accepts only start code 0 (`autoblink_core_dmx::parse_sacn`). It ignores preview data, the sync packets and the 0xDD priority packets. A packet with Stream_Terminated starts the loss action at once.
+- `main` opens the sockets after the network and the Pro DJ Link threads start. It puts them into `State::artnet` and `State::sacn`. The OTA maintenance start does not reach that line, so it has no network DMX.
+- The permanent heap for network DMX is about 3 KB: the receive buffers, the source frame and the two sockets.
+
+#### The outside source
+
+- `autoblink_core_dmx::Source` holds the outside frame of DMX IN, Art-Net and sACN. It follows one sender at a time, so two desks cannot fight.
+- A sender is the protocol, the IPv4 address and the sACN CID. Another sender takes over when the current sender is silent for 2.5 s (`SWITCH_MS`, the loss timeout of E1.31). A sender with a higher priority takes over at once.
+- The priorities are: DMX IN 201, the sACN priority of the packet (0 to 200), and Art-Net 100. Thus DMX IN wins over the network while it has a signal.
+- The source drops a frame that is up to 19 steps behind the last sequence number (E1.31 6.7.2). An Art-Net sequence of 0 is off. After 2.5 s without a frame or after the end of a stream, the next frame starts a new sequence.
+- When the sender stops, the source holds the last frame for "Signal Loss Time" (116, 5 to 60 s, default 10). A desk with a static look can send a frame only each 4 s. A shorter time then makes the light pulse. Then "Signal Loss" (115) decides. Hold (the default) keeps the frame for ever. Fade out fades the light to 0 in 2 s (`FADE_MS`).
+- The fade dims the light channels and the Fog channels of the lights of the show. It also dims each channel that no light patches. The pan, tilt and fixed channels of the lights keep their value (`autoblink_core_dmx::dim`).
+- Before the first frame, the box has no outside source. Then Merge and Pass send the output of the box. After the first frame, the source stays until a restart. A restart loses the held frame.
+- A change of "DMX Mode" clears the source. "DMX IN" off clears it while DMX IN is the source. Thus a noise frame on IO36 does not stay.
+- In Merge, the source claims its non-zero LTP channels again after the loss time (`Merge::rearm`). A new sender also claims them.
+- The status field `dmx.source` is `dmx_in`, `artnet`, `sacn` or null. The status field `dmx.hold` is `live`, `held`, `fading` or `black`. The field `dmx.artnet` is true while a network sender is live. The source is live for 2.5 s after its last frame (`LIVE_MS`).
+- The log shows each change to fading or black, and each new live sender. Once a minute while a source sends, the log shows its counters. The counters are the frames, the late frames and the frames of other senders and universes. They also give the switches, the holds and the longest gap.
+
+#### Discovery
+
+- The box answers an ArtPoll with an Art-Net 4 ArtPollReply (`autoblink_core_dmx::build_artpoll_reply`). The reply gives the address of the interface in the subnet of the desk. The Ethernet port comes first, then the joined WiFi network, then the own WiFi network.
+- A desk can be in no subnet of the box, for example at 2.x.x.x. Then each interface with an address sends a broadcast reply.
+- The short name is `AUTOBLINK-XXXX`, the same suffix as the WiFi network. The reply gives the universe in Net, Sub and SwOut. GoodOutputA shows that the output sends (bit 7), merges (bit 3) or takes sACN (bit 0). Status1 says that the web page sets the port-address. GoodOutputB shows On change or 40 Hz. Status3 shows the failsafe: hold, or zero for Fade out.
+- A targeted ArtPoll (flags bit 5) gets a reply only when the universe of the box is in its range. When a desk sets flags bit 1, the box sends it a reply after each change of the reply fields.
+- The node report counts the replies (`#0001 [nnnn] AUTOBLINK OK`).
+- The box does not take ArtAddress. A desk cannot rename the box or set its universe.
 - The reply goes from port 6454 to port 6454 of the desk. For the send, the receive socket is bound to the interface. A desk or a firewall can drop a reply from another source port.
 - When the joined WiFi network uses 192.168.1.x, a desk on the own WiFi network gets the address of the joined network. Such a desk must send to 192.168.1.1 by hand.
-- The log shows the first ArtPoll and the address of the reply.
-- Art-Net counts as live for 3 s after its last frame (`ARTNET_TIMEOUT_MS`). Without a live frame, the output is the engine alone.
-- DMX IN wins over Art-Net. While DMX IN has a signal, the box ignores Art-Net. "DMX Mode" sets the merge (see "DMX IN, OLED and joystick").
-- The merge rule is in `autoblink_core_dmx::merge`. The channels of kind Dimmer, Red, Green, Blue, White, Amber, Uv and Strobe use HTP (the higher value wins). All other channels use LTP (the source that changed the channel last wins). The channels that no light patches and the Fog channel are LTP too. After a timeout, the first live frame claims every non-zero channel.
-- The `dmx` thread also sends the ArtPollReply. The status field `dmx.artnet` is true while Art-Net is live.
+- The log shows the first reply and its address.
+
+#### Merge
+
+- "DMX Mode" sets the merge (see "DMX IN, OLED and joystick").
+- The merge rule is in `autoblink_core_dmx::merge`. The channels of kind Dimmer, Red, Green, Blue, White, Amber, Uv and Strobe use HTP (the higher value wins). All other channels use LTP (the source that changed the channel last wins). The channels that no light patches and the Fog channel are LTP too. When the first frame of a source comes, it claims every non-zero channel.
+- Pass sends the outside source without the effects and the room level of the box. Only the blackout of the page dims it.
 
 ### DMX engine on the host
 
@@ -366,7 +394,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - `GET /dmxtune` changes the timing of the DMX output at runtime (since 1.36.3), for example `/dmxtune?break=44&idle=25&period=0&slots=64`. `break` and `idle` are in bit times of 4 µs. `period` is the time between two writes in µs, and 0 sends the frames back to back. `slots` is the number of channels in a frame (1 to 512), and 0 uses the setting "DMX Channels". `gap` is the idle time between two slots in µs. `baud` is the baud rate, 240 000 to 260 000. A restart sets the defaults again.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
-- `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
+- `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it, the `midi` thread and the `dmx` thread (since 1.39.0). The loop of the `dmx` thread waits at most 1 s, also with a long `/dmxtune` period. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
 - `prolink-rx` also runs the virtual CDJ (`VirtualCdj` in `prolink.rs`). Between two receives, it does the due step. A join sends a packet every 300 ms. After the join, the virtual CDJ sends the keepalive and the status packets every 1.5 s. The poll waits until the next step, and at most 1 s. The virtual CDJ has no thread.
 - Each stack comes from the heap. Each size keeps 1.5 KB or more above the low point of `/mem`. Measure with `/mem` again after a change that adds work to a thread. The memory trim after 1.32.3 sets the sizes in `sdkconfig.defaults` and in the `spawn` calls. The sizes in bytes are `ui` 6656, `dbserver` 5120, `dmx` 6656, `prolink-rx` 5632, `main` 6144, `mdns` 3072 and IDLE 2176.
 - The LEDs have no thread. An esp_timer of 5 ms in the `esp_timer` task sets IO32 and IO33 (`led.rs`). The `prolink-rx` thread writes the beat into atomics, and the main loop writes the blink code each second. The `esp_timer` task has 2560 bytes of stack. Measure it with `/mem` after an hour of beats.
@@ -394,6 +422,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 - The release workflow puts the ELF into `esp32-firmware.tar.gz`. Use that ELF for a box with a release firmware.
 - A task watchdog timeout also gives the reset reason "panic", because `CONFIG_ESP_TASK_WDT_PANIC` is on.
+- The brownout detector restarts the box below 2.43 V (`CONFIG_ESP_BROWNOUT_DET`, level 0). The setting is app-only, so OTA can change it.
 
 ### WT32-ETH01 pins
 
@@ -467,7 +496,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - The ESP32 MIDI output follows the host rules (`autoblink-core-midi`), with the phrase notes and CCs. It has no No Bass note, no MTC and no OSC.
 - The ESP32 page has no mixer section. The XDJ-AZ sends the EQ and fader positions only as USB MIDI, and the classic ESP32 has no USB host.
 - The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
-- The DMX output (feature `dmx`, on by default) renders the looks of the show (see "DMX show"). A show without lights keeps the beat flash of "DMX Beat Channel" (index 111). "DMX Mode" (index 110) merges the output with DMX IN, or with Art-Net when DMX IN has no signal. The two rows are firmware settings (`autoblink_core_ui::config`), and NVS keeps them under the key `box`.
+- The DMX output (feature `dmx`, on by default) renders the looks of the show (see "DMX show"). A show without lights keeps the beat flash of "DMX Beat Channel" (index 111). "DMX Mode" (index 110) merges the output with DMX IN, Art-Net or sACN. The two rows are firmware settings (`autoblink_core_ui::config`), and NVS keeps them under the key `box`.
 - The emulator has no `scenes` capability. The page hides the Scenes panel there.
 - The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `autoblink-core-midi` yet.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`

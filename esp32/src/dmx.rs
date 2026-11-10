@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use autoblink_core_dmx::{
-    apply_room, Action, BeatClock, Changes, Lights, Live, Merge, PilotStatus, Show, Tier, Universe,
-    ARTNET_TIMEOUT_MS, UNIVERSE,
+    apply_room, dim, Action, BeatClock, Changes, Lights, Live, Loss, Merge, PilotStatus, Proto,
+    Sender, Show, Source, SourceState, Tier, Universe, DMX_IN_PRIORITY, UNIVERSE,
 };
 use autoblink_core_midi::scenes::Event;
 use autoblink_core_ui::{frame_channels, merge, BoxConfig, DmxMode};
@@ -65,6 +65,15 @@ const IDLE_BITS: u32 = 25;
 /// 1 s from break to break.
 const REPEAT: Duration = Duration::from_millis(250);
 
+/// With "DMX Refresh" On change, the frames after a change also go out at once, this many. A
+/// light that reads a value only from a few frames in a row then shows a change at once, not
+/// after a second of repeats.
+const BURST: u8 = 3;
+
+/// The longest wait of the loop. The thread resets the task watchdog (5 s) on each pass, also
+/// when `GET /dmxtune` sets a long period.
+const MAX_WAIT: Duration = Duration::from_secs(1);
+
 /// The start code and the 512 channels.
 const FRAME_LEN: usize = 513;
 
@@ -106,7 +115,15 @@ const SIGNAL_TIMEOUT: Duration = Duration::from_secs(1);
 /// data event cannot shift the channels for a long time.
 const RESYNC_AFTER: u32 = 8;
 
-/// The outside source when DMX IN and Art-Net are both silent.
+/// The DMX IN sender for `Source`. It wins over each network sender.
+const DMX_IN: Sender = Sender {
+    proto: Proto::DmxIn,
+    addr: [0; 4],
+    priority: DMX_IN_PRIORITY,
+    cid: [0; 16],
+};
+
+/// The outside source before the first frame of DMX IN, Art-Net or sACN.
 static NO_SOURCE: Universe = [0; UNIVERSE];
 
 /// The number of messages that the queue to the `dmx` thread holds. A full queue drops a message.
@@ -197,8 +214,13 @@ pub struct DmxStatus {
     pub strobe_hold: bool,
     /// `true` while the page holds the whole room dark.
     pub blackout: bool,
-    /// `true` while Art-Net is live: the last frame is not older than `ARTNET_TIMEOUT_MS`.
+    /// `true` while a network sender (Art-Net or sACN) is live: its last frame is less than 1 s
+    /// old.
     pub artnet: bool,
+    /// The protocol of the outside source, or `None` before its first frame.
+    pub source: Option<Proto>,
+    /// The state of the outside source: live, held, fading or black.
+    pub hold: Option<SourceState>,
     /// The key of the setting "DMX Mode", for example "merge".
     pub mode: &'static str,
     /// The good DMX IN frames in the last second.
@@ -287,18 +309,35 @@ fn run(
     let mut prev_in: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut out_log = Changes::default();
     let mut in_log = Changes::default();
-    let mut input: Box<Universe> = Box::new([0; UNIVERSE]);
-    let mut art: Box<Universe> = Box::new([0; UNIVERSE]);
+    // The outside source, its output frame and the sent slots for the change log.
+    let mut src = Box::<Source>::default();
+    let mut src_out: Box<Universe> = Box::new([0; UNIVERSE]);
+    let mut shown: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut art_buf: Box<[u8; crate::artnet::PACKET_LEN]> =
         Box::new([0; crate::artnet::PACKET_LEN]);
+    let mut sacn_buf: Box<[u8; crate::sacn::PACKET_LEN]> = Box::new([0; crate::sacn::PACKET_LEN]);
+    let mut groups = crate::sacn::Groups::default();
+    // The state of the output for the ArtPollReply, from the last frame.
+    let mut node = crate::artnet::Node::default();
+    let mut sacn_universe = 1u16;
+    // The frames of other universes since the last report.
+    let mut other = 0u32;
+    // The changes from live to held since the last report.
+    let mut holds = 0u32;
+    let mut prev_state: Option<SourceState> = None;
+    let mut next_stats_log = Instant::now() + Duration::from_secs(60);
+    let mut next_groups = Instant::now();
+    let mut burst = 0u8;
+    // The mode and the sender of the last frame, and the last time that the source was live.
+    let mut prev_mode: Option<DmxMode> = None;
+    let mut prev_sender: Option<Sender> = None;
+    let mut live_at = 0u64;
     let mut rx: Box<[u8; FRAME_LEN + 3]> = Box::new([0; FRAME_LEN + 3]);
     let mut lts = Box::<Merge>::default();
     let mut lights = Lights::default();
     let mut clock = BeatClock::default();
     let mut playing = None;
     let mut last_beat_ms: Option<u64> = None;
-    // The time of the Art-Net frame in `art`.
-    let mut art_at: Option<u64> = None;
     let mut rx_len = 0;
     let mut rx_bad = false;
     // The break events since the last frame end.
@@ -323,8 +362,24 @@ fn run(
     let mut baud_set = 250_000u32;
     // The setting "DMX IN". The thread reads it with the other settings before each frame.
     let mut dmx_in = false;
+    // The task watchdog restarts the box when this loop stops for 5 s.
+    let watched = match esp_idf_svc::sys::esp!(unsafe {
+        esp_idf_svc::sys::esp_task_wdt_add(std::ptr::null_mut())
+    }) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("DMX: the task watchdog does not watch the thread: {e}");
+            false
+        }
+    };
     loop {
-        let wait = next_send.saturating_duration_since(Instant::now());
+        if watched {
+            // SAFETY: the thread is a subscriber of the watchdog.
+            unsafe { esp_idf_svc::sys::esp_task_wdt_reset() };
+        }
+        let wait = next_send
+            .saturating_duration_since(Instant::now())
+            .min(MAX_WAIT);
         if let Some((event, _)) = events.recv_front(TickType::from(wait).ticks()) {
             match event.payload() {
                 UartEventPayload::Data { size, timeout } => {
@@ -357,9 +412,7 @@ fn run(
                             // While DMX IN is off, a frame is noise on the open pin.
                             Some(_) if !dmx_in => {}
                             Some(channels) => {
-                                input[..channels.len()].copy_from_slice(channels);
-                                // A shorter frame does not keep the old values of the other channels.
-                                input[channels.len()..].fill(0);
+                                src.accept(DMX_IN, None, channels, state.now_ms());
                                 last_good = Some(Instant::now());
                                 frames = frames.saturating_add(1);
                                 bad_in_row = 0;
@@ -390,17 +443,22 @@ fn run(
             }
         }
 
-        // `main` gives the socket after the network starts. Before that, there is no Art-Net.
+        // `main` gives the sockets after the network starts. Before that, there is no Art-Net and
+        // no sACN.
+        let now_ms = state.now_ms();
         if let Some(sock) = state.artnet.get() {
-            if crate::artnet::drain(sock, state, &mut art_buf, &mut art) {
-                art_at = Some(state.now_ms());
+            other += crate::artnet::drain(sock, state, &mut art_buf, &mut src, &node, now_ms);
+        }
+        if let Some(sock) = state.sacn.get() {
+            other += crate::sacn::drain(sock, &mut sacn_buf, &mut src, sacn_universe, now_ms);
+            if Instant::now() >= next_groups {
+                next_groups = Instant::now() + Duration::from_secs(1);
+                let ifaces = *state.artnet_ifaces.lock().unwrap();
+                groups.update(sock, &ifaces, sacn_universe);
             }
         }
 
         let signal = last_good.is_some_and(|t| t.elapsed() < SIGNAL_TIMEOUT);
-        if !signal {
-            input.fill(0);
-        }
         if Instant::now() >= next_count {
             next_count += Duration::from_secs(1);
             if signal != was_signal {
@@ -474,7 +532,6 @@ fn run(
             strobe_hold: state.dmx_live.strobe_hold.load(Ordering::Relaxed),
             blackout: state.dmx_live.blackout.load(Ordering::Relaxed),
         };
-        let art_live = art_at.is_some_and(|t| now_ms.saturating_sub(t) <= ARTNET_TIMEOUT_MS);
         let (mode, beat_channel, frame_cfg) = {
             let cfg = cfg.lock().unwrap();
             dmx_in = cfg.dmx_in;
@@ -484,8 +541,22 @@ fn run(
                 cfg.clone(),
             )
         };
-        // The channels of this frame. The setting "DMX Channels" gives them from the show.
+        sacn_universe = frame_cfg.sacn_universe;
+        // A change of the mode, or "DMX IN" off while DMX IN is the source, forgets the held
+        // frame. Thus a frame of noise on IO36 or an old desk look does not stay for ever.
+        let dmx_in_off = !dmx_in && src.sender().is_some_and(|s| s.proto == Proto::DmxIn);
+        if dmx_in_off || prev_mode.is_some_and(|m| m != mode) {
+            src.clear();
+        }
+        prev_mode = Some(mode);
+        let loss = Loss {
+            black: frame_cfg.loss_black,
+            after_ms: u64::from(frame_cfg.loss_s) * 1000,
+        };
+        // The channels of this frame. The setting "DMX Channels" gives them from the show and the
+        // outside source.
         let slots;
+        let src_state;
         let send = {
             let show = show.lock().unwrap();
             while let Some((msg, _)) = msgs.recv_front(0) {
@@ -514,7 +585,14 @@ fn run(
             let mut effect = [0u8; UNIVERSE];
             lights.frame(&show, beat.as_ref(), &live, now_ms, &mut effect);
             let lit = !show.fixtures.is_empty();
-            slots = frame_cfg.frame_channels(show.last_channel());
+            src_state = src.frame(&show, loss, now_ms, &mut src_out);
+            // Only Merge and Pass send the outside frame. After the fade out, its length does
+            // not count.
+            let src_slots = (matches!(mode, DmxMode::Merge | DmxMode::Pass)
+                && src_state.is_some_and(|s| s != SourceState::Black))
+            .then(|| src.slots())
+            .flatten();
+            slots = frame_cfg.frame_channels(show.last_channel(), src_slots);
             if !lit {
                 // A show without lights keeps the beat flash of the older firmware.
                 let level = last_beat_ms.map_or(0, |t| {
@@ -522,21 +600,27 @@ fn run(
                 });
                 effect[beat_channel - 1] = level as u8;
             }
-            // DMX IN is the outside source. Without its signal, the last live Art-Net frame is.
-            let outside: Option<&Universe> = if signal {
-                Some(&input)
-            } else if art_live {
-                Some(&art)
-            } else {
-                None
-            };
+            // The source follows DMX IN while it has a signal, else one network sender. After the
+            // sender stops, it holds or fades the last frame (settings "Signal Loss").
+            let outside: Option<&Universe> = src_state.map(|_| &*src_out);
             // Without a source, the next source shows each of its channels that is not 0.
             match outside {
                 Some(o) => in_log.frame(&mut prev_in, o, now_ms),
                 None => prev_in.fill(0),
             }
+            // A source that comes back after the loss time, or a new sender, claims each of its
+            // channels that is not 0 again.
+            if src_state == Some(SourceState::Live) {
+                let back = prev_state != Some(SourceState::Live)
+                    && now_ms.saturating_sub(live_at) >= loss.after_ms;
+                if back || src.sender() != prev_sender {
+                    lts.rearm();
+                }
+                live_at = now_ms;
+            }
+            prev_sender = src.sender();
             let send = if mode == DmxMode::Merge && lit {
-                lts.apply(&show, outside.map(|o| (o, now_ms)), now_ms, &mut effect);
+                lts.apply(&show, outside, &mut effect);
                 channels.copy_from_slice(&effect);
                 true
             } else {
@@ -548,16 +632,66 @@ fn run(
                     channels,
                 )
             };
-            // The room level comes after the merge. Thus the dip and the blackout also apply
-            // to the light of the outside source.
-            // A trial move of the page acts also while the autopilot is off.
-            let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
-            apply_room(&show, console, all, channels);
+            if mode == DmxMode::Pass && outside.is_some() {
+                // Pass sends the outside source without the effects of the box. Only the
+                // blackout of the page acts on it.
+                if live.blackout {
+                    dim(&show, 0, channels);
+                }
+            } else {
+                // The room level comes after the merge. Thus the dip and the blackout also apply
+                // to the light of the outside source.
+                // A trial move of the page acts also while the autopilot is off.
+                let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
+                apply_room(&show, console, all, channels);
+            }
             send
         };
+        // The UART sends the frame, then the break. The break before the next frame and the idle
+        // time after it make the reset sequence of DMX512.
+        let len = 1 + match TUNE.slots.load(Ordering::Relaxed) as usize {
+            0 => slots,
+            n => n.clamp(1, 512),
+        };
         if send {
-            let channels: &Universe = (&out[1..]).try_into().expect("512 channels");
-            out_log.frame(&mut prev, channels, now_ms);
+            // The change log shows only the channels on the wire.
+            shown[..len - 1].copy_from_slice(&out[1..len]);
+            shown[len - 1..].fill(0);
+            out_log.frame(&mut prev, &shown, now_ms);
+        }
+        let net_live = src_state == Some(SourceState::Live)
+            && src.sender().is_some_and(|s| s.proto != Proto::DmxIn);
+        log_source(&src, src_state, &mut prev_state, &mut holds);
+        if Instant::now() >= next_stats_log {
+            next_stats_log = Instant::now() + Duration::from_secs(60);
+            let st = src.take_stats();
+            if st.frames > 0 || st.ignored > 0 || other > 0 {
+                log::info!(
+                    "DMX source in 60 s: {} frames, {} late, {} of other senders, {} switches, {} of other universes, {holds} holds, gap up to {} ms",
+                    st.frames,
+                    st.late,
+                    st.ignored,
+                    st.switches,
+                    other,
+                    st.max_gap_ms
+                );
+            }
+            other = 0;
+            holds = 0;
+        }
+        let now_node = crate::artnet::Node {
+            port_address: frame_cfg.artnet_universe,
+            sending: mode != DmxMode::Off,
+            sacn: src_state.is_some() && src.sender().is_some_and(|s| s.proto == Proto::Sacn),
+            merging: mode == DmxMode::Merge && src_state.is_some(),
+            continuous: frame_cfg.dmx_refresh_always,
+            failsafe_zero: frame_cfg.loss_black,
+        };
+        if now_node != node {
+            node = now_node;
+            if let Some(sock) = state.artnet.get() {
+                crate::artnet::changed(sock, state, &node);
+            }
         }
         // The page and the display read the status. The thread does not wait for the lock, and
         // it writes the layers only after a change. The next frame tries again.
@@ -569,7 +703,9 @@ fn run(
             s.master = live.master;
             s.strobe_hold = live.strobe_hold;
             s.blackout = live.blackout;
-            s.artnet = art_live;
+            s.artnet = net_live;
+            s.source = src_state.and(src.sender()).map(|s| s.proto);
+            s.hold = src_state;
             s.mode = mode.key();
             s.in_fps = in_fps;
             s.signal = signal;
@@ -580,18 +716,20 @@ fn run(
         // The next write comes one period after this write. Thus the UART has sent this frame and
         // its break before the next frame comes.
         next_send = Instant::now() + Duration::from_micros(u64::from(period_us));
-        // The UART sends the frame, then the break. The break before the next frame and the idle
-        // time after it make the reset sequence of DMX512.
-        let len = 1 + match TUNE.slots.load(Ordering::Relaxed) as usize {
-            0 => slots,
-            n => n.clamp(1, 512),
-        };
         // With "DMX Refresh" On change, a frame without a change waits until `REPEAT` is over.
+        // The `BURST` frames after a change go out at once.
+        let changed = len != sent_len || out[..len] != sent[..len];
+        if changed {
+            burst = BURST;
+        }
         let due = frame_cfg.dmx_refresh_always
-            || len != sent_len
-            || out[..len] != sent[..len]
+            || changed
+            || burst > 0
             || sent_at.is_none_or(|t| t.elapsed() >= REPEAT);
         if send && due {
+            if !changed {
+                burst = burst.saturating_sub(1);
+            }
             sent[..len].copy_from_slice(&out[..len]);
             sent_len = len;
             sent_at = Some(Instant::now());
@@ -610,6 +748,36 @@ fn run(
             };
             if let Err(e) = result {
                 log::warn!("DMX frame not sent: {e}");
+            }
+        }
+    }
+}
+
+/// Logs a change of the state of the outside source. A change between live and held only adds 1
+/// to `holds`. A desk that sends only on a change gives such a change each few seconds.
+fn log_source(
+    src: &Source,
+    state: Option<SourceState>,
+    prev: &mut Option<SourceState>,
+    holds: &mut u32,
+) {
+    if state == *prev {
+        return;
+    }
+    let was = std::mem::replace(prev, state);
+    let Some(state) = state else {
+        return;
+    };
+    match (was, state) {
+        (Some(SourceState::Live), SourceState::Held) => *holds += 1,
+        (Some(SourceState::Held), SourceState::Live) => {}
+        _ => {
+            if let Some(s) = src.sender() {
+                let [a, b, c, d] = s.addr;
+                log::info!(
+                    "DMX source: {:?} from {a}.{b}.{c}.{d} is {state:?}",
+                    s.proto
+                );
             }
         }
     }

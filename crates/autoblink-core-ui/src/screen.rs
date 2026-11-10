@@ -23,7 +23,7 @@ pub struct Snapshot {
     pub blinks: Option<u64>,
     /// The address of the Pro DJ Link interface.
     pub ip: Option<String>,
-    /// The DMX input: (signal, good frames each second, Art-Net live). `None` without DMX.
+    /// The DMX input: (signal, good frames each second, Art-Net or sACN live). `None` without DMX.
     pub dmx: Option<(bool, u16, bool)>,
 }
 
@@ -73,7 +73,7 @@ pub fn lines(s: &Snapshot) -> Lines {
     };
     let dmx = match s.dmx {
         Some((true, fps, _)) => format!("DMX IN {fps} fps"),
-        Some((false, _, true)) => "Art-Net live".into(),
+        Some((false, _, true)) => "Net DMX live".into(),
         Some((false, _, false)) => "DMX IN: no signal".into(),
         None => String::new(),
     };
@@ -203,7 +203,7 @@ pub fn track_lines(master: Option<u8>, t: Option<&TrackInfo>) -> Vec<String> {
 pub struct DmxInfo {
     pub mode: &'static str,
     pub beat_channel: u16,
-    /// The DMX IN signal, the DMX IN frames each second and the Art-Net state. `None` in a
+    /// The DMX IN signal, the DMX IN frames each second and the Art-Net or sACN state. `None` in a
     /// build without DMX.
     pub input: Option<(bool, u16, bool)>,
     /// The channel and the value of the last change in the DMX output.
@@ -222,7 +222,7 @@ pub fn dmx_lines(d: &DmxInfo) -> Vec<String> {
     } else {
         "no signal".into()
     };
-    // DMX IN wins over Art-Net. The box then ignores the Art-Net frames.
+    // DMX IN wins over Art-Net and sACN. The box then ignores the network frames.
     let artnet = match (artnet, signal) {
         (false, _) => "no signal",
         (true, false) => "live",
@@ -232,7 +232,7 @@ pub fn dmx_lines(d: &DmxInfo) -> Vec<String> {
         pair("Mode", d.mode, COLS),
         pair("Beat channel", &d.beat_channel.to_string(), COLS),
         pair("DMX IN", &input, COLS),
-        pair("Art-Net", artnet, COLS),
+        pair("Net DMX", artnet, COLS),
         match d.last_change {
             Some((ch, v)) => pair("Out", &format!("ch {ch} = {v}"), COLS),
             None => pair("Out", "no change", COLS),
@@ -433,7 +433,7 @@ mod tests {
         });
         assert_eq!(l[1], "Mode            Merge");
         assert_eq!(l[3], "DMX IN         41 fps");
-        assert_eq!(l[4], "Art-Net       ignored");
+        assert_eq!(l[4], "Net DMX       ignored");
         assert_eq!(l[5], "Out       ch 12 = 255");
         let l = dmx_lines(&DmxInfo {
             mode: "Merge",
@@ -442,7 +442,7 @@ mod tests {
             last_change: None,
         });
         assert_eq!(l[3], "DMX IN      no signal");
-        assert_eq!(l[4], "Art-Net          live");
+        assert_eq!(l[4], "Net DMX          live");
         assert_eq!(l[5], "Out         no change");
     }
 
