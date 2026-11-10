@@ -54,25 +54,26 @@ pub fn report() -> String {
     out
 }
 
-/// Writes the configuration of GPIO4, the DMX output. Signal 17 of the GPIO matrix is UART1 TX.
+/// Writes the configuration of GPIO4 (the DMX output) and IO36 (DMX IN). Signal 17 of the GPIO
+/// matrix is UART1 TX. The last line gives the raw pad registers of IO36.
 #[cfg(feature = "dmx")]
 fn dmx_pin(out: &mut String) {
-    const PIN: sys::gpio_num_t = 4;
-    let mut buf = [0u8; 768];
+    let mut buf = [0u8; 1280];
     // SAFETY: the stream writes only into `buf`. fclose ends the stream before the code reads
     // `buf`.
     unsafe {
         let f = sys::fmemopen(buf.as_mut_ptr().cast(), buf.len(), c"w".as_ptr());
         if !f.is_null() {
-            sys::gpio_dump_io_configuration(f, 1 << PIN);
+            sys::gpio_dump_io_configuration(f, (1 << 4) | (1 << 36));
             sys::fclose(f);
         }
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     let _ = write!(
         out,
-        "\nDMX output pin:\n{}",
-        String::from_utf8_lossy(&buf[..end])
+        "\nDMX pins:\n{}{}\n",
+        String::from_utf8_lossy(&buf[..end]),
+        crate::dmx::rx_pad_state()
     );
 }
 

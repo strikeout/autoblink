@@ -279,7 +279,10 @@ pub fn start(
         6,
         Some(Core::Core1),
         move || match UartDriver::new(uart, tx, rx, None::<Gpio36>, None::<Gpio4>, &cfg) {
-            Ok(uart) => run(&uart, &state, &show, &box_cfg, &msgs),
+            Ok(uart) => {
+                digital_rx_pad();
+                run(&uart, &state, &show, &box_cfg, &msgs)
+            }
             Err(e) => log::error!("DMX: the UART driver does not start: {e}"),
         },
     )?;
@@ -818,6 +821,9 @@ fn start_frame(
 /// "DMX IN" is off, an open or low IO36 then gives no receive interrupts on core 1. Without the
 /// RS485 module, IO36 reads low, and the UART can see one break after the other.
 fn route_rx(on: bool) {
+    if on {
+        digital_rx_pad();
+    }
     use esp_idf_svc::sys::{
         esp_rom_gpio_connect_in_signal, GPIO_MATRIX_CONST_ONE_INPUT, U1RXD_IN_IDX,
     };
@@ -825,6 +831,35 @@ fn route_rx(on: bool) {
     // SAFETY: the call sets the source of the UART1 RX signal in the GPIO matrix. The pad of
     // IO36 keeps its input buffer, so `GET /scope?pin=36` still reads it.
     unsafe { esp_rom_gpio_connect_in_signal(src, U1RXD_IN_IDX, false) };
+}
+
+/// The RTC register of the sensor pads. Bit 27 routes IO36 (SENSE1) to the RTC side, and bit 19
+/// is its RTC input enable.
+const RTC_SENSOR_PADS: u32 = esp_idf_svc::sys::DR_REG_RTCIO_BASE + 0x7c;
+
+/// The pad registers and the level of IO36, for `/mem`.
+pub fn rx_pad_state() -> String {
+    // SAFETY: the two addresses are registers of the IO MUX and the RTC IO peripherals.
+    let read = |a: u32| unsafe { std::ptr::read_volatile(a as *const u32) };
+    let level = (read(esp_idf_svc::sys::GPIO_IN1_REG) >> 4) & 1;
+    format!(
+        "IO36: IO_MUX {:#010x}, RTC sensor pads {:#010x}, level {level}",
+        read(esp_idf_svc::sys::IO_MUX_GPIO36_REG),
+        read(RTC_SENSOR_PADS)
+    )
+}
+
+/// Puts IO36 into the digital input mode. ESP-IDF 5.5 only sets the input enable of a receive
+/// pin. On the owner's box, IO36 read 0 all the time, also with a console on DMX IN and 1.25 V
+/// on the pin. The log shows the pad registers before and after.
+fn digital_rx_pad() {
+    let before = rx_pad_state();
+    // SAFETY: IO36 is the receive pin of UART1. The calls only change its pad mode.
+    unsafe {
+        esp_idf_svc::sys::rtc_gpio_deinit(36);
+        esp_idf_svc::sys::gpio_input_enable(36);
+    }
+    log::info!("DMX IN pad: {before}; now {}", rx_pad_state());
 }
 
 /// Sends the break and the mark after break of a frame. The TX line is inverted for the break.
