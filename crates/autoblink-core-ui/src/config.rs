@@ -8,11 +8,18 @@ use crate::DmxMode;
 
 pub const IDX_DMX_MODE: usize = 110;
 pub const IDX_BEAT_CHANNEL: usize = 111;
+pub const IDX_DMX_IN: usize = 112;
 pub const IDX_ROTATE: usize = 120;
 pub const IDX_BRIGHTNESS: usize = 121;
 
 /// The indices of the rows that `BoxConfig` has.
-pub const INDICES: [usize; 4] = [IDX_DMX_MODE, IDX_BEAT_CHANNEL, IDX_ROTATE, IDX_BRIGHTNESS];
+pub const INDICES: [usize; 5] = [
+    IDX_DMX_MODE,
+    IDX_BEAT_CHANNEL,
+    IDX_DMX_IN,
+    IDX_ROTATE,
+    IDX_BRIGHTNESS,
+];
 
 /// One step of the brightness for the arrows of the page.
 const BRIGHTNESS_STEP: u8 = 16;
@@ -26,6 +33,9 @@ pub struct BoxConfig {
     pub dmx_mode: DmxMode,
     /// The channel of the beat flash, 1 to 512.
     pub beat_channel: u16,
+    /// Reads the frames of DMX IN on IO36. IO36 has no pull resistor, so without the RS485 module
+    /// its noise can look like a frame. Thus the input is off until the user turns it on.
+    pub dmx_in: bool,
     /// Turns the OLED by 180°, for a display that is upside down on the front panel.
     pub rotate: bool,
     /// The contrast of the OLED, 1 to 255.
@@ -37,6 +47,7 @@ impl Default for BoxConfig {
         Self {
             dmx_mode: DmxMode::Merge,
             beat_channel: 1,
+            dmx_in: false,
             rotate: false,
             brightness: 128,
         }
@@ -76,6 +87,16 @@ impl BoxConfig {
                 on: None,
             },
             SettingItem {
+                idx: IDX_DMX_IN,
+                label: "DMX IN",
+                section: Some("DMX"),
+                kind: "toggle",
+                value: if self.dmx_in { "✓" } else { "✗" }.into(),
+                raw: None,
+                step: false,
+                on: None,
+            },
+            SettingItem {
                 idx: IDX_ROTATE,
                 label: "Display Rotate 180°",
                 section: Some("Display"),
@@ -101,6 +122,11 @@ impl BoxConfig {
     /// Stores a typed value. Returns the error text when the value is not valid.
     pub fn set(&mut self, idx: usize, value: &str) -> Result<(), String> {
         let range = || format!("Value \"{value}\" is out of range for setting {idx}");
+        let flag = || match value.trim() {
+            "0" => Ok(false),
+            "1" => Ok(true),
+            _ => Err(range()),
+        };
         match idx {
             IDX_BEAT_CHANNEL => {
                 self.beat_channel = value
@@ -130,12 +156,12 @@ impl BoxConfig {
                     .ok_or_else(range)?;
                 Ok(())
             }
+            IDX_DMX_IN => {
+                self.dmx_in = flag()?;
+                Ok(())
+            }
             IDX_ROTATE => {
-                self.rotate = match value.trim() {
-                    "0" => false,
-                    "1" => true,
-                    _ => return Err(range()),
-                };
+                self.rotate = flag()?;
                 Ok(())
             }
             _ => Err(format!("Setting {idx} does not take a value")),
@@ -152,6 +178,7 @@ impl BoxConfig {
                     .saturating_add_signed(dir.into())
                     .clamp(1, 512)
             }
+            IDX_DMX_IN => self.dmx_in = !self.dmx_in,
             IDX_ROTATE => self.rotate = !self.rotate,
             IDX_BRIGHTNESS => {
                 self.brightness = if dir < 0 {
@@ -221,5 +248,16 @@ mod tests {
         let cfg: BoxConfig = serde_json::from_str(r#"{"beat_channel":5}"#).unwrap();
         assert_eq!(cfg.dmx_mode, DmxMode::Merge);
         assert_eq!(cfg.beat_channel, 5);
+        assert!(!cfg.dmx_in);
+    }
+
+    #[test]
+    fn dmx_in_flips() {
+        let mut cfg = BoxConfig::default();
+        cfg.cycle(IDX_DMX_IN, 1).unwrap();
+        assert!(cfg.dmx_in);
+        cfg.set(IDX_DMX_IN, "0").unwrap();
+        assert!(!cfg.dmx_in);
+        assert!(cfg.set(IDX_DMX_IN, "2").is_err());
     }
 }

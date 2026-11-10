@@ -254,6 +254,8 @@ fn run(
     let mut was_signal = false;
     let mut next_count = Instant::now() + Duration::from_secs(1);
     let mut next_send = Instant::now();
+    // The setting "DMX IN". The thread reads it with the other settings before each frame.
+    let mut dmx_in = false;
     loop {
         let wait = next_send.saturating_duration_since(Instant::now());
         if let Some((event, _)) = events.recv_front(TickType::from(wait).ticks()) {
@@ -285,6 +287,8 @@ fn run(
                             .then(|| frame_channels(&rx[..rx_len], breaks))
                             .flatten();
                         match good {
+                            // While DMX IN is off, a frame is noise on the open pin.
+                            Some(_) if !dmx_in => {}
                             Some(channels) => {
                                 input[..channels.len()].copy_from_slice(channels);
                                 // A shorter frame does not keep the old values of the other channels.
@@ -373,6 +377,7 @@ fn run(
         let art_live = art_at.is_some_and(|t| now_ms.saturating_sub(t) <= ARTNET_TIMEOUT_MS);
         let (mode, beat_channel) = {
             let cfg = cfg.lock().unwrap();
+            dmx_in = cfg.dmx_in;
             (
                 cfg.dmx_mode,
                 usize::from(cfg.beat_channel).clamp(1, UNIVERSE),

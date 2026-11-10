@@ -191,8 +191,9 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - A frame ends at the data event with a receive timeout after a break event (`receive_timeout` of 1 character time). The thread reads exactly the bytes of each data event.
 - The thread accepts only start code 0. Without a good frame for 1 s, the input has no signal and is all 0.
 - The ESP32 UART stores a 0x00 byte for a break. `autoblink_core_ui::frame_channels` removes up to one 0x00 byte for each break event from the end of the frame. A frame must have 24 to 512 channels. After 8 rejected frames in a row, the thread clears the receive buffer.
-- To examine DMX IN, connect DMX OUT to DMX IN. `curl http://autoblink.local/log` must show "DMX input: signal" with about 41 frames each second. The OLED and the Sync tab of the page show the same rate.
+- To examine DMX IN, turn on the setting "DMX IN", then connect DMX OUT to DMX IN. `curl http://autoblink.local/log` must show "DMX input: signal" with about 41 frames each second. The OLED and the Sync tab of the page show the same rate.
 - IO36 has no internal pull resistor. Without the RS-485 module, noise on IO36 can look like a frame. Connect the module or a pull-up resistor.
+- The setting "DMX IN" (112, default off, since 1.36.0) turns on the input. While it is off, the `dmx` thread ignores each frame on IO36. Thus an open IO36 cannot block Art-Net. The OLED menu has no row for it.
 - The settings 110 to 121 are firmware settings in `autoblink_core_ui::config`. NVS keeps them as JSON under the key `box`. The firmware writes them 2 s after the last change.
 - "DMX Mode" (110) is Off, Box only, Merge (the default) or Pass. The outside source is DMX IN. Without a DMX IN signal, the outside source is a live Art-Net frame. Without an outside source, Merge and Pass send the output of the box.
 - In Merge, a show with lights uses the HTP and LTP rules of `autoblink_core_dmx::Merge` (see "Art-Net in on the box"). A show without lights uses HTP for each channel.
@@ -353,6 +354,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 - Run `curl http://autoblink.local/log` to read the log over WiFi. The buttons Log and Memory in the System tab of the page show `/log` and `/mem`.
 - Run `curl http://autoblink.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
+- `/mem` also shows the configuration of GPIO4 (DMX OUT) (since 1.35.1). `GPIO Matrix SigOut ID: 17` is UART1 TX.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
@@ -397,8 +399,8 @@ The wiring diagram is `docs/wiring.svg`. It gives the board label first and the 
 | IO33 | Status LED, with the label 485_EN on the board. While the master deck plays, it pulses for 120 ms on beat 1 and for 25 ms on the other beats. When no beat arrives for 2 s, it shows a blink code (see below). |
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
 | IO2 | UART2 RX. It has no wire, but the UART driver needs a receive pin. |
-| IO4 | DMX out (UART1 TX, 250 kbaud) to an RS-485 module. The feature `dmx` is on by default. |
-| IO36 | DMX IN (UART1 RX, 250 kbaud) from the RO pin of a second RS-485 module. |
+| IO4 | DMX out (UART1 TX, 250 kbaud) to TXD of an RS485 module (V2.03). EN of that module goes to 3V3, so that it always sends. The feature `dmx` is on by default. |
+| IO36 | DMX IN (UART1 RX, 250 kbaud) from RXD of a second RS485 module. EN of that module goes to GND, so that it always receives. |
 | IO14, IO15 | I2C0 SCL and SDA for an SSD1306 or SSD1315 OLED (address 0x3C, 400 kHz). The OLED module has the pull-up resistors. |
 | IO39 | Joystick VRx (ADC1 channel 3). |
 | IO35 | Joystick VRy (ADC1 channel 7). |
