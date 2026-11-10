@@ -54,8 +54,8 @@ const LATE_LIMIT: Duration = Duration::from_micros(1300);
 /// break of most consoles. DMX512 needs at least 88 µs.
 const BREAK_BITS: u32 = 44;
 
-/// The mark after break in µs. DMX512-A needs at least 12 µs from a transmitter. The UART write
-/// adds about 140 to 200 µs: the scope shows a mark of 155 to 227 µs.
+/// The mark after break in µs. DMX512-A needs at least 12 µs from a transmitter. The first slot
+/// goes straight into the TX FIFO (`start_frame`), so the write adds only some µs.
 const MAB_US: u32 = 20;
 
 /// The UART idle time after its FIFO is empty, in bit times. With 0, the slots of a long frame
@@ -365,6 +365,8 @@ fn run(
     let mut baud_set = 250_000u32;
     // The setting "DMX IN". The thread reads it with the other settings before each frame.
     let mut dmx_in = false;
+    // The input of the UART: IO36, or a constant high level while "DMX IN" is off.
+    let mut rx_on: Option<bool> = None;
     // The task watchdog restarts the box when this loop stops for 5 s.
     let watched = match esp_idf_svc::sys::esp!(unsafe {
         esp_idf_svc::sys::esp_task_wdt_add(std::ptr::null_mut())
@@ -538,6 +540,10 @@ fn run(
         let (mode, beat_channel, frame_cfg) = {
             let cfg = cfg.lock().unwrap();
             dmx_in = cfg.dmx_in;
+            if rx_on != Some(dmx_in) {
+                route_rx(dmx_in);
+                rx_on = Some(dmx_in);
+            }
             (
                 cfg.dmx_mode,
                 usize::from(cfg.beat_channel).clamp(1, UNIVERSE),
@@ -741,10 +747,14 @@ fn run(
                 .wait_tx_done(TickType::from(Duration::from_millis(30)).ticks())
                 .and_then(|()| uart.wait_tx_done(0));
             let result = done.and_then(|()| {
-                send_break(uart.port(), brk_us, mab_us);
                 if gap == 0 {
-                    uart.write(&out[..len]).map(|_| ())
+                    let n = start_frame(uart.port(), brk_us, mab_us, &out[..len]);
+                    if n < len {
+                        uart.write(&out[n..len])?;
+                    }
+                    Ok(())
                 } else {
+                    start_frame(uart.port(), brk_us, mab_us, &[]);
                     // One slot takes 11 bits. The wait after each write is the slot and the gap.
                     for &b in &out[..len] {
                         uart.write(&[b])?;
@@ -773,6 +783,48 @@ fn run(
         // values that make a pass long.
         next_send = next_send.max(Instant::now() + Duration::from_millis(1));
     }
+}
+
+/// Sends the break, the mark after break and the first slots of a frame. Returns the number of
+/// bytes of `data` in the TX FIFO. The caller writes the rest.
+///
+/// The task runs at priority 23 for this time. Thus no other task on core 1 makes the break or
+/// the mark longer, and the first slot follows the mark after about 10 µs. The TX FIFO and the
+/// ring buffer of the UART must be empty, so the FIFO bytes go out before the rest.
+fn start_frame(
+    port: esp_idf_svc::sys::uart_port_t,
+    break_us: u32,
+    mab_us: u32,
+    data: &[u8],
+) -> usize {
+    use esp_idf_svc::sys::{uart_tx_chars, uxTaskPriorityGet, vTaskPrioritySet};
+    let me = std::ptr::null_mut();
+    // SAFETY: a null handle is the calling task.
+    let old = unsafe { uxTaskPriorityGet(me) };
+    unsafe { vTaskPrioritySet(me, 23) };
+    send_break(port, break_us, mab_us);
+    let n = if data.is_empty() {
+        0
+    } else {
+        // SAFETY: `data` is valid for its length. The call writes only what the FIFO takes.
+        unsafe { uart_tx_chars(port, data.as_ptr().cast(), data.len() as u32) }
+    };
+    // SAFETY: as above.
+    unsafe { vTaskPrioritySet(me, old) };
+    usize::try_from(n).unwrap_or(0)
+}
+
+/// Connects the receive input of UART1 to IO36 (`on`), or to a constant high level. While
+/// "DMX IN" is off, an open or low IO36 then gives no receive interrupts on core 1. Without the
+/// RS485 module, IO36 reads low, and the UART can see one break after the other.
+fn route_rx(on: bool) {
+    use esp_idf_svc::sys::{
+        esp_rom_gpio_connect_in_signal, GPIO_MATRIX_CONST_ONE_INPUT, U1RXD_IN_IDX,
+    };
+    let src = if on { 36 } else { GPIO_MATRIX_CONST_ONE_INPUT };
+    // SAFETY: the call sets the source of the UART1 RX signal in the GPIO matrix. The pad of
+    // IO36 keeps its input buffer, so `GET /scope?pin=36` still reads it.
+    unsafe { esp_rom_gpio_connect_in_signal(src, U1RXD_IN_IDX, false) };
 }
 
 /// Sends the break and the mark after break of a frame. The TX line is inverted for the break.
