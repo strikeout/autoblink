@@ -157,7 +157,8 @@ input.num.text{width:150px;text-align:left}
 .scfg{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;color:var(--muted);margin-bottom:12px}
 .scfg label{display:flex;gap:6px;align-items:center}
 .scfg .hint{color:var(--dim);font-size:11px;margin-left:auto}
-#p-scenes>.hint,#drvnote{color:var(--muted);font-size:12px;margin-bottom:8px}
+#p-scenes>.hint{color:var(--muted);font-size:12px;margin-bottom:8px}
+#drvnote{color:var(--muted);font-size:12px}
 #scpaused{color:var(--warn)}
 #p-scenes select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
 .scfg input.num{width:52px}
@@ -173,7 +174,7 @@ input.num.text{width:150px;text-align:left}
 .live .now{display:flex;flex-wrap:wrap;gap:6px;align-items:center;color:var(--muted);font-size:11px}
 .live .now .chip{cursor:default}
 /* look editor */
-#lookedit select,#p-setup select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
+#lookedit select,#p-dmx select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
 .editor{margin:-4px 0 14px;padding:12px;border:1px solid var(--accent);border-radius:8px;background:#0b1820}
 .editor h3{font-size:12px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center}
 .editor h3 .seg{margin-left:auto}
@@ -193,38 +194,36 @@ input.num.text{width:150px;text-align:left}
 .card input[type=color]{width:28px;height:22px;padding:0;border:1px solid var(--border);border-radius:4px;background:none}
 .card input.num{width:52px}
 /* lights setup */
-#p-setup>summary h2 .sum{text-transform:none;letter-spacing:0;color:var(--dim);font-size:12px}
-#p-setup .cardrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:flex-start}
-#p-setup .fxc{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
-#p-setup .oflbox{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
-#p-setup .oflbox[hidden],#p-setup .ofldet[hidden]{display:none}
-#p-setup .oflbox .line,#p-setup .ofldet .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
-#p-setup #oflq{width:240px;text-align:left}
-#p-setup .oflres{display:flex;flex-direction:column;max-height:180px;overflow:auto}
-#p-setup .oflres button{text-align:left;border:0;background:none;color:var(--text);padding:2px 4px}
-#p-setup .oflres button:hover{background:#1c1c2a}
-#p-setup .ofldet{display:flex;flex-direction:column;gap:6px}
-#p-setup .ofldet .chs{color:var(--text);word-break:break-word}
-#p-setup button:disabled{opacity:.4;cursor:default}
-#p-setup .fxc.bad{border-color:var(--danger)}
-#p-setup .fxc .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
-#p-setup .fxc .rng.bad{color:var(--danger);font-weight:700}
-#p-setup input.name{width:110px;text-align:left}
-#p-setup input.num{width:52px}
-#p-setup .posrow{display:flex;flex-direction:column;gap:2px}
-#p-setup .posrow label{display:flex;gap:6px;align-items:center}
-#p-setup .posrow input[type=range]{width:150px}
-#p-setup .posrow b{color:var(--text);font-weight:600}
-#p-setup .hint{color:var(--dim);font-size:11px}
-#p-setup .section button,#p-setup .section select{margin-left:6px}
+#p-dmx>summary h2 .sum{text-transform:none;letter-spacing:0;color:var(--dim);font-size:12px}
+#p-dmx .cardrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:flex-start}
+#p-dmx .fxc{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
+#p-dmx .oflbox{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;padding:8px 10px;border-radius:8px;background:#10101a;border:1px solid var(--border);color:var(--muted);font-size:11px}
+#p-dmx .oflbox[hidden],#p-dmx .ofldet[hidden]{display:none}
+#p-dmx .oflbox .line,#p-dmx .ofldet .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+#p-dmx #oflq{width:240px;text-align:left}
+#p-dmx .oflres{display:flex;flex-direction:column;max-height:180px;overflow:auto}
+#p-dmx .oflres button{text-align:left;border:0;background:none;color:var(--text);padding:2px 4px}
+#p-dmx .oflres button:hover{background:#1c1c2a}
+#p-dmx .ofldet{display:flex;flex-direction:column;gap:6px}
+#p-dmx .ofldet .chs{color:var(--text);word-break:break-word}
+#p-dmx button:disabled{opacity:.4;cursor:default}
+#p-dmx .fxc.bad{border-color:var(--danger)}
+#p-dmx .fxc .line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+#p-dmx .fxc .rng.bad{color:var(--danger);font-weight:700}
+#p-dmx input.name{width:110px;text-align:left}
+#p-dmx input.num{width:52px}
+#p-dmx .posrow{display:flex;flex-direction:column;gap:2px}
+#p-dmx .posrow label{display:flex;gap:6px;align-items:center}
+#p-dmx .posrow input[type=range]{width:150px}
+#p-dmx .posrow b{color:var(--text);font-weight:600}
+#p-dmx .hint{color:var(--dim);font-size:11px}
+#p-dmx .section button,#p-dmx .section select{margin-left:6px}
 /* autopilot */
 #p-auto{--tc0:#ffaa44;--tc1:#00e0ff;--tc2:#ff3d7f}
 #p-auto .aphd{margin-left:auto;display:flex;gap:8px;text-transform:none;letter-spacing:0}
 #drv button{min-height:44px;padding:0 18px;font-size:14px;font-weight:600}
-.flow{display:grid;gap:6px;margin:12px 0 14px;color:var(--muted)}
-.flow b{color:var(--text);font-weight:600;margin-right:4px}
-.flow button{background:none;border:0;padding:0 2px;min-height:0;color:var(--accent);text-decoration:underline dotted}
-.flow .off{color:var(--danger)}
+.drvbar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:2px 4px}
+.drvbar>b{font-size:11px;text-transform:uppercase;letter-spacing:1.4px;color:var(--muted);font-weight:600}
 #deskin{text-transform:none;letter-spacing:0;margin-left:8px}
 #set-dmx .section{display:none}
 #phonelink{font-size:12px;color:var(--accent)}
@@ -495,38 +494,19 @@ body.busy #lvs{display:none!important}
     <div id="decks" class="decks"></div>
   </details>
 
-  <details id="p-flow" class="panel wide" data-mode="lights" hidden open>
-    <summary><h2>Who drives the lights</h2></summary>
+  <div id="p-drv" class="drvbar wide" data-mode="lights" hidden>
+    <b>Who drives the lights</b>
     <div id="drv" class="seg"></div>
-    <div id="drvnote" class="hint" hidden>Off and Manual rules switch the scenes of this computer. The box keeps its own scenes.</div>
-    <div id="flow" class="flow"></div>
-    <div class="section" title="The scene notes and the program changes go out on the MIDI port to a lighting console.">MIDI to the console</div>
-    <div class="scfg">
-      <label title="The MIDI channel of the scene notes, 1 to 16.">Scene notes channel <input id="scch" class="num" inputmode="numeric"></label>
-      <label title="The note of preset 1. Preset 2 is the next note.">Note of preset 1 <input id="scfirst" class="num" inputmode="numeric"></label>
-      <label id="pcrow" title="The MIDI channel of the program changes of the autopilot, 1 to 16." hidden>Program change channel <span id="pcch"></span></label>
-    </div>
-  </details>
+    <span id="drvnote" class="hint" hidden>Off and Manual rules switch the scenes of this computer. The box keeps its own scenes.</span>
+  </div>
 
-  <details id="p-setup" class="panel wide" data-cap="dmx" data-mode="lights" hidden open>
-    <summary><h2>Box DMX <span id="stsum" class="sum"></span></h2></summary>
-    <div id="ltsrc" class="hint"></div>
-    <div id="deskhead" class="section" title="A lighting desk can send DMX IN or Art-Net to the box. DMX Mode sets how the box merges it with its own light.">Desk in <span id="deskin" class="hint"></span></div>
-    <div id="set-dmx" class="sgrid"></div>
-    <div class="section" title="A file with the show and the scenes. Load a file to replace them.">Show file <button id="shbak">Download</button> <button id="shres">Load</button><input id="shfile" type="file" accept=".json,application/json" hidden></div>
-    <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button> <button id="ltpack" title="Give the lights addresses one after the other, in their order on the DMX line." hidden>Pack addresses</button></div>
-    <div id="ltofl" class="oflbox" hidden>
-      <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span><button id="oflx" class="x" aria-label="Close the library">✕</button></div>
-      <div id="oflres" class="oflres"></div>
-      <div id="ofldet" class="ofldet" hidden></div>
-    </div>
-    <div id="ltpatch" class="cardrow"></div>
-    <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
-    <div id="ltgroups" class="cardrow"></div>
-    <div class="section" title="A position is a pan and a tilt for each moving head. A row of a look can use one. The first position is the home of the autopilot.">Positions <button id="ltaddpos">+ Position</button></div>
-    <div id="ltpos" class="cardrow"></div>
-    <div class="section">Idle look</div>
-    <div id="ltidle" class="cardrow"></div>
+  <details id="p-auto" class="panel wide" data-cap="auto" data-mode="lights" hidden open>
+    <summary><h2>Autopilot <span class="aphd"><span id="apviews" class="seg"></span><button id="lvlink" title="Big buttons for a phone: tier, blackout, strobe and fog.">Phone screen</button></span></h2></summary>
+    <div id="aplive" class="aplive"></div>
+    <div id="apview"></div>
+    <div id="apform"></div>
+    <div id="apdrop"></div>
+    <div id="apset" class="apset"></div>
   </details>
 
   <details id="p-scenes" class="panel wide" data-cap="scenes" data-mode="lights" open>
@@ -534,6 +514,8 @@ body.busy #lvs{display:none!important}
     <div class="hint">A preset sends one MIDI note to the console. A preset with 💡 also plays its box look.</div>
     <div id="scpaused" class="hint" hidden>The autopilot drives the lights. These rows are paused.</div>
     <div class="scfg">
+      <label title="The MIDI channel of the scene notes, 1 to 16.">Channel <input id="scch" class="num" inputmode="numeric"></label>
+      <label title="The note of preset 1. Preset 2 is the next note.">First note <input id="scfirst" class="num" inputmode="numeric"></label>
       <label title="The number of presets, 1 to 32.">Presets <input id="sccount" class="num" inputmode="numeric"></label>
       <label title="On: the controller shows one preset at a time, and a note off can end the preset that shows. A flash then ends before the next note, and the held scene comes back after a flash or a pulse. Off: the presets are layers, and each flash keeps its full decay.">One preset at a time <button id="scone" class="sw"></button></label>
       <span class="hint">Drag a preset onto an event · Shift-click for a range · Click a preset to test it · Double-click to rename · Add a note outside the range at the end of the presets<span data-cap="dmx" hidden> · 💡 has a DMX look · ✎ opens the look</span></span>
@@ -552,13 +534,25 @@ body.busy #lvs{display:none!important}
     </div>
   </details>
 
-  <details id="p-auto" class="panel wide" data-cap="auto" data-mode="lights" hidden open>
-    <summary><h2>Autopilot <span class="aphd"><span id="apviews" class="seg"></span><button id="lvlink" title="Big buttons for a phone: tier, blackout, strobe and fog.">Phone screen</button></span></h2></summary>
-    <div id="aplive" class="aplive"></div>
-    <div id="apview"></div>
-    <div id="apform"></div>
-    <div id="apdrop"></div>
-    <div id="apset" class="apset"></div>
+  <details id="p-dmx" class="panel wide" data-cap="dmx" data-mode="lights" hidden>
+    <summary><h2>Box DMX <span id="stsum" class="sum"></span></h2></summary>
+    <div id="ltsrc" class="hint"></div>
+    <div id="deskhead" class="section" title="A lighting desk can send DMX IN or Art-Net to the box. DMX Mode sets how the box merges it with its own light.">Desk in <span id="deskin" class="hint"></span></div>
+    <div id="set-dmx" class="sgrid"></div>
+    <div class="section" title="A file with the show and the scenes. Load a file to replace them.">Show file <button id="shbak">Download</button> <button id="shres">Load</button><input id="shfile" type="file" accept=".json,application/json" hidden></div>
+    <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button> <button id="ltpack" title="Give the lights addresses one after the other, in their order on the DMX line." hidden>Pack addresses</button></div>
+    <div id="ltofl" class="oflbox" hidden>
+      <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span><button id="oflx" class="x" aria-label="Close the library">✕</button></div>
+      <div id="oflres" class="oflres"></div>
+      <div id="ofldet" class="ofldet" hidden></div>
+    </div>
+    <div id="ltpatch" class="cardrow"></div>
+    <div class="section" title="A group is a set of lights that share one row of a look.">Groups <button id="ltaddgr">+ Group</button></div>
+    <div id="ltgroups" class="cardrow"></div>
+    <div class="section" title="A position is a pan and a tilt for each moving head. A row of a look can use one. The first position is the home of the autopilot.">Positions <button id="ltaddpos">+ Position</button></div>
+    <div id="ltpos" class="cardrow"></div>
+    <div class="section">Idle look</div>
+    <div id="ltidle" class="cardrow"></div>
   </details>
 
   <details id="p-settings" class="panel wide" data-cap="settings" data-mode="sync" open>
@@ -681,9 +675,9 @@ function syncDmx() {
   if (!caps) return;
   const box = boxIp(), own = caps.has('dmx');
   const avail = own || !!box;
-  $('p-setup').hidden = !avail;
+  $('p-dmx').hidden = !avail;
   $('p-auto').hidden = !(caps.has('auto') || !!box);
-  $('p-flow').hidden = !(caps.has('scenes') || avail);
+  $('p-drv').hidden = !(caps.has('scenes') || avail);
   $('live').hidden = !own || !!box || !$('takeover').hidden;
   $('boxbar').hidden = !box;
   // The live screen sends to this server. Without the capability, its buttons do nothing.
@@ -697,7 +691,7 @@ function syncDmx() {
     + (lan ? ' Open this page at http://127.0.0.1:' + location.port + ' to save to the box.' : '')
     : 'Editing the show of ' + (BOX ? 'the box at ' + BOX : 'this computer (Art-Net)'));
   navSync();
-  renderFlow();
+  renderDrv();
   // The first status decides the endpoint, so that the page loads one show only.
   if (!status) return;
   const from = avail ? showBase() : null;
@@ -749,7 +743,7 @@ function onStatus(s) {
   if (dmxLast && document.activeElement !== ms && !ms.matches(':active')) { ms.value = dmxLast.master; masterPct(); }
   renderLayers();
   renderLive(s);
-  renderFlow();
+  renderDrv();
   if (show) {
     const a = s.auto, k = a ? [a.on, a.tier, a.program, a.moves].join() : '';
     if (k !== apKey && !apDragging) { apKey = k; renderAutoView(); }
@@ -1395,7 +1389,7 @@ function onScenes(m) {
   const typing = document.activeElement && document.activeElement.tagName === 'INPUT';
   if ($('p-scenes').contains(document.activeElement) && typing) scenePending = true;
   else renderScenes();
-  if (!(typing && $('p-setup').contains(document.activeElement))) renderLights();
+  if (!(typing && $('p-dmx').contains(document.activeElement))) renderLights();
 }
 
 function sceneChip(i, mini) {
@@ -1524,7 +1518,7 @@ function renderScenes() {
   }
   $('slots').replaceChildren(...out);
   if (status) renderSceneLive(status.scene);
-  renderFlow();
+  renderDrv();
 }
 
 function sceneClosed() {
@@ -1861,7 +1855,6 @@ async function loadShow() {
     lookOpen = null;
     $('lookedit').hidden = true;
     for (const id of ['ltpatch', 'ltgroups', 'ltpos', 'ltidle', 'apview', 'apform', 'apdrop', 'apset', 'aplive']) $(id).replaceChildren();
-    $('pcrow').hidden = true;
     renderScenes();
     toast('The show did not load: ' + e.message);
   }
@@ -2050,7 +2043,7 @@ function renderAuto() {
   renderAutoDrop();
   renderAutoSet();
   renderAutoLive();
-  renderFlow();
+  renderDrv();
 }
 
 /** The live line: one status message, no show edit. */
@@ -2285,9 +2278,8 @@ function renderAutoSet() {
     c.addEventListener('change', renderAutoView);
     return h('label', null, n + ' ', c);
   });
-  $('pcch').replaceChildren(numIn(1, 16, a.channel + 1, 'The MIDI channel of the program changes, 1 to 16.', (v) => { a.channel = v - 1; renderFlow(); }));
-  $('pcrow').hidden = false;
-  $('apset').replaceChildren(h('span', null, 'Tier colours ', ...colours));
+  const pc = numIn(1, 16, a.channel + 1, 'The MIDI channel of the program changes, 1 to 16.', (v) => { a.channel = v - 1; });
+  $('apset').replaceChildren(h('label', null, 'Program change channel ', pc), h('span', null, 'Tier colours ', ...colours));
 }
 
 const CENTER = 32768;
@@ -3020,13 +3012,6 @@ function closeBtn(label, f) {
 
 function lookClose() { lookOpen = null; renderScenes(); renderLights(); }
 
-/** Opens the panel of an element and scrolls to it. */
-function goTo(id) {
-  const e = $(id), d = e.closest('details');
-  if (d) d.open = true;
-  e.scrollIntoView({ block: 'center', behavior: 'smooth' });
-}
-
 const drvNow = () => (show && show.auto && show.auto.on ? 'auto' : scenes && scenes.enabled ? 'manual' : 'off');
 
 /** Sets the driver of the lights: Off, Manual rules (the scene rows) or Autopilot. */
@@ -3047,45 +3032,23 @@ function deskText() {
   return (d.signal ? 'DMX IN ' + d.in_fps + ' fps' : 'no DMX IN') + ' · ' + art + ' ▶ ' + d.mode + ' ▶ DMX out';
 }
 
-let flowKey = '', flowDesk = null;
-/** Draws the driver switch and the lines of the Lights overview. Each line links to its control. */
-function renderFlow() {
-  if (!caps || $('p-flow').hidden) return;
-  const a = show && show.auto, desk = deskText(), port = status && status.output && status.output.port;
-  const d = status && status.dmx, drv = drvNow();
+let drvKey = '';
+/** Draws the driver switch, the pause note of Scenes and the desk input of Box DMX. */
+function renderDrv() {
+  if (!caps || $('p-drv').hidden) return;
+  const a = show && show.auto, desk = deskText(), drv = drvNow();
   set('deskin', desk);
   $('deskhead').hidden = !desk && !$('set-dmx').childElementCount;
   $('drvnote').hidden = !boxIp();
   $('scpaused').hidden = drv !== 'auto';
-  const idle = show && (show.idle == null ? 'none' : (scenes && scenes.labels[show.idle]) || 'preset ' + (show.idle + 1));
-  // The frame rate of DMX IN changes each second. It is not in the key, so that the buttons
-  // stay under a finger. Only the text of the Desk link follows it.
-  const key = [drv, !!a, scenes && [scenes.channel, scenes.first_note, scenes.count].join(), a && a.channel,
-    show && show.fixtures.length, idle, d && d.mode && [d.mode, d.signal, d.artnet].join(), port].join('|');
-  if (key === flowKey) {
-    if (flowDesk && flowDesk.textContent !== desk) flowDesk.textContent = desk;
-    return;
-  }
-  flowKey = key;
+  // A new switch only after a change, so that the buttons stay under a finger.
+  const key = drv + '|' + !!a;
+  if (key === drvKey) return;
+  drvKey = key;
   const opts = [['off', 'Off', 'No scene note and no look. The clock, the CCs and the idle look keep running.'],
     ['manual', 'Manual rules', 'The event rows of Scenes fire the presets.']];
   if (a) opts.push(['auto', 'Autopilot', 'The tiers pick the console programs and the box moves. The rows are paused.']);
   apSeg('drv', opts, drv, drvPick);
-  const link = (text, id) => { const b = h('button', null, text); b.addEventListener('click', () => goTo(id)); return b; };
-  const lines = [];
-  if (scenes) {
-    lines.push(h('div', null, h('b', null, 'MIDI to the console'),
-      link('scene notes ch' + (scenes.channel + 1) + ' · n' + scenes.first_note + '–' + (scenes.first_note + scenes.count - 1), 'scch'),
-      a && ' · ', a && link('programs ch' + (a.channel + 1), 'pcrow'), port ? ' · port ' + port : null,
-      drv === 'off' && h('span', 'off', ' · off'), drv === 'auto' && h('span', 'off', ' · scene rows paused')));
-  }
-  if (show) {
-    lines.push(h('div', null, h('b', null, 'Box DMX'),
-      link(show.fixtures.length + (show.fixtures.length === 1 ? ' light' : ' lights'), 'ltpatch'), ' · ', link('idle look ' + idle, 'ltidle')));
-  }
-  flowDesk = desk ? link(desk, 'set-dmx') : null;
-  if (flowDesk) lines.push(h('div', null, h('b', null, 'Desk'), flowDesk));
-  $('flow').replaceChildren(...lines);
 }
 
 // ---- The tabs: #live, #lights, #sync and #system in the URL. A tab shows only its panels. ----
