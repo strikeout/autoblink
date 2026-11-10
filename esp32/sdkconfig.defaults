@@ -1,11 +1,14 @@
 # Rust needs more stack than C. The default main task stack is 3 KB. Each stack comes from the
 # heap. GET /mem shows the stack that each task used (2026-10-23, with 1 track loaded): main
 # 4.3 KB, system event 1.5 KB, idle 0.6 KB, esp_timer 0.4 KB. Each size keeps a margin of 1.5 KB
-# or more. The OTA download has its own thread, so the main task needs 7 KB.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=7168
+# or more. The OTA download has its own thread. On 1.32.3, main used 3.6 KB, so the main task
+# has 6 KB. The esp_timer task also runs the LED timer (led.rs).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3072
-CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=2560
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=2176
 CONFIG_ESP_TIMER_TASK_STACK_SIZE=2560
+# On 1.32.3, the mDNS task used 1416 bytes of its 4 KB.
+CONFIG_MDNS_TASK_STACK_SIZE=3072
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
 
 # The internal EMAC drives the LAN8720 PHY of the WT32-ETH01.
@@ -29,6 +32,9 @@ CONFIG_ESP_WIFI_NVS_ENABLED=n
 # A WPA2-Enterprise network is not a use case of the box. WPA3 stays on, so that a WPA3 network
 # of a venue stays available.
 CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+# The own WiFi network uses WPA2 (net.rs), so the access point needs no WPA3 (SAE). The station
+# keeps WPA3 for the joined network.
+CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
 
 # Without A-MPDU, the WiFi driver keeps no reorder window. This uses less RAM, and a beat packet
 # does not wait for a missing frame of an aggregate.
@@ -78,6 +84,10 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # start, the firmware logs the task and the backtrace, and GET /log shows them.
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# A failed C assertion aborts without the file name, the line and the expression text. The core
+# dump still has the task and the backtrace. The image is smaller by the text of all assertions.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 
 # The OTA download uses TLS. mbedTLS frees its record buffers after the handshake, so that the
 # heap keeps space for the web server and the track data. It also frees the certificate data

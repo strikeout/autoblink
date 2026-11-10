@@ -64,8 +64,6 @@ pub struct State {
     /// The interface of Pro DJ Link: the Ethernet port, or the joined WiFi network when the port
     /// has no address or has no player. `None` while the two interfaces have no address.
     pub link: Mutex<Option<LinkInfo>>,
-    /// The device number of the last conflict packet. The virtual CDJ reads it while it claims.
-    pub conflict: AtomicU8,
     /// The device number of the virtual CDJ. 0 while it is not on the network.
     pub own_device: AtomicU8,
     /// `true` while the settings have a join network and the firmware is not connected to it.
@@ -88,9 +86,10 @@ pub struct State {
     /// The flash partition of the show. `None` when the partition table has no show partition.
     #[cfg(feature = "dmx")]
     pub show_store: Mutex<Option<show::ShowStore>>,
-    /// The last Art-Net frame. The `artnet` thread writes it, and the `dmx` thread reads it.
+    /// The Art-Net socket. `main` sets it after the network starts, and the `dmx` thread reads
+    /// it. The OTA maintenance start does not set it.
     #[cfg(feature = "dmx")]
-    pub artnet: Mutex<artnet::ArtIn>,
+    pub artnet: std::sync::OnceLock<std::net::UdpSocket>,
     /// The tier that the page pins for the autopilot: 0 is Auto, 1 is Calm, 2 is Groove and 3
     /// is Peak. `AUTO_PIN_NONE` is no request. The `midi` thread takes the value.
     #[cfg(feature = "dmx")]
@@ -107,7 +106,7 @@ pub struct State {
     #[cfg(feature = "dmx")]
     pub night: Mutex<Option<[u8; autoblink_core_dmx::NIGHT_BYTES]>>,
     /// The Ethernet port, the joined WiFi network and the own WiFi network, in this order. The
-    /// `artnet` thread replies to an ArtPoll on the interface in the subnet of the desk.
+    /// `dmx` thread replies to an ArtPoll on the interface in the subnet of the desk.
     #[cfg(feature = "dmx")]
     pub artnet_ifaces: Mutex<[Option<artnet::Iface>; 3]>,
     start: Instant,
@@ -152,7 +151,7 @@ fn run() -> anyhow::Result<()> {
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
     let (install, ota_error) = ota::take_request(&nvs)?;
-    // IO33 stays on until the LED thread starts. Then it shows the state of the box.
+    // IO33 stays on until the LED timer starts. Then it shows the state of the box.
     let mut status_led = PinDriver::output(p.pins.gpio33)?;
     status_led.set_high()?;
 
@@ -177,7 +176,6 @@ fn run() -> anyhow::Result<()> {
         midi: Mutex::new(MidiStatus::default()),
         tracks: Tracks::default(),
         link: Mutex::new(None),
-        conflict: AtomicU8::new(0),
         own_device: AtomicU8::new(0),
         wifi_join_down: AtomicBool::new(false),
         reset_reason,
@@ -196,7 +194,7 @@ fn run() -> anyhow::Result<()> {
         #[cfg(feature = "dmx")]
         show_store: Mutex::new(show_store),
         #[cfg(feature = "dmx")]
-        artnet: Mutex::new(artnet::ArtIn::default()),
+        artnet: std::sync::OnceLock::new(),
         #[cfg(feature = "dmx")]
         auto_pin: AtomicU8::new(AUTO_PIN_NONE),
         #[cfg(feature = "dmx")]
@@ -296,7 +294,7 @@ fn run() -> anyhow::Result<()> {
     )?;
     let track_changes = tracks::start(state.clone())?;
 
-    let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
+    let _leds = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
 
     ui::start(
         p.i2c0,
@@ -316,8 +314,7 @@ fn run() -> anyhow::Result<()> {
         state.clone(),
         device_number,
         move |beat| {
-            // A full queue drops the LED pulse. The receive thread does not wait for the LEDs.
-            let _ = beat_tx.try_send(beat.beat_in_bar);
+            led::beat(beat.beat_in_bar, beat.at_us / 1000);
             // A full queue drops the beat. The receive thread does not wait for the DMX thread.
             #[cfg(feature = "dmx")]
             let _ = dmx_q.send_back(
@@ -341,7 +338,7 @@ fn run() -> anyhow::Result<()> {
 
     // Art-Net needs the network. The maintenance start does not get to this line.
     #[cfg(feature = "dmx")]
-    artnet::start(state.clone());
+    artnet::start(&state);
 
     // The web server and the receive threads run. A restart before this line makes the
     // bootloader start the previous app.
@@ -514,6 +511,7 @@ fn run() -> anyhow::Result<()> {
         state
             .wifi_join_down
             .store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);
+        led::update_code(&state);
         let now = (eth_ip.map(|(ip, _)| ip), sta_ip);
         if now != last {
             if now.0 != last.0 {

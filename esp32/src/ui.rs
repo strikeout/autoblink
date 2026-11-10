@@ -142,7 +142,8 @@ pub fn start(
         }
         (values, network)
     };
-    crate::spawn_rt(c"ui", 8 * 1024, 3, Some(Core::Core0), move || {
+    // 1.32.3 used 4876 bytes of the stack (/mem). 6.5 KB keeps a margin of 1.5 KB.
+    crate::spawn_rt(c"ui", 6656, 3, Some(Core::Core0), move || {
         let ui = Ui {
             state: &state,
             settings: &settings,

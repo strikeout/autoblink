@@ -12,82 +12,95 @@
 //!
 //! After a panic, a watchdog or a brownout restart, an 800 ms flash comes before each code for
 //! 10 minutes.
+//!
+//! One esp_timer of 5 ms sets the two pins. It has no thread and no stack of its own. The receive
+//! thread writes the beat into atomics, and the main loop writes the blink code.
 
-use std::sync::atomic::Ordering;
-use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use esp_idf_svc::hal::gpio::{Output, PinDriver};
+use esp_idf_svc::timer::{EspTaskTimerService, EspTimer};
 
 use crate::State;
 
-/// The time without a beat after which IO33 shows the blink code.
-const IDLE_AFTER: Duration = Duration::from_secs(2);
+/// The time without a beat after which IO33 shows the blink code, in milliseconds.
+const IDLE_AFTER_MS: u32 = 2000;
 /// The time after an abnormal restart during which the 800 ms flash comes before the code.
 const SHOW_RESTART_MS: u64 = 10 * 60 * 1000;
 /// The time of one repetition of a blink code, in milliseconds.
-const CODE_MS: u64 = 2000;
+const CODE_MS: u32 = 2000;
+/// The period of the LED timer.
+const TICK: Duration = Duration::from_millis(5);
 
-/// Starts the LED thread. Send the beat in the bar (1 to 4) to the returned channel with
-/// `try_send`. The queue holds 4 beats.
+/// The time of the last master beat in milliseconds, with the clock of `State::now_ms`.
+static BEAT_AT: AtomicU32 = AtomicU32::new(0);
+/// The beat in the bar (1 to 4) of the last master beat. 0 before the first beat.
+static BEAT_KIND: AtomicU8 = AtomicU8::new(0);
+/// The number of blinks from `blinks`. 0 is the code of a box that is ready.
+static CODE: AtomicU8 = AtomicU8::new(1);
+
+/// Starts the pulse of a master beat. `beat_in_bar` is 1 to 4, and `at_ms` uses the clock of
+/// `State::now_ms`. The receive thread calls this function. It does not wait.
+pub fn beat(beat_in_bar: u8, at_ms: u64) {
+    BEAT_AT.store(at_ms as u32, Ordering::Relaxed);
+    BEAT_KIND.store(beat_in_bar.max(1), Ordering::Release);
+}
+
+/// Sets the blink code from the state of the box. The main loop calls this function each second.
+pub fn update_code(state: &State) {
+    CODE.store(blinks(state).map_or(0, |n| n as u8), Ordering::Relaxed);
+}
+
+/// Starts the LED timer. Keep the returned timer, because the LEDs stop when it drops.
+///
+/// The callback runs every 5 ms in the esp_timer task. It reads only atomics, so it does not wait
+/// for a lock.
 pub fn start(
     mut beat_led: PinDriver<'static, Output>,
     mut status_led: PinDriver<'static, Output>,
     state: Arc<State>,
-) -> anyhow::Result<SyncSender<u8>> {
+) -> anyhow::Result<EspTimer<'static>> {
     let abnormal = matches!(
         state.reset_reason,
         "panic" | "interrupt watchdog" | "task watchdog" | "other watchdog" | "brownout"
     );
-    let (tx, rx) = mpsc::sync_channel::<u8>(4);
-    crate::spawn(c"leds", 3 * 1024, move || {
-        let mut last_beat: Option<Instant> = None;
-        let mut code = Vec::new();
-        let mut step = 0;
-        loop {
-            let since = last_beat.map_or(IDLE_AFTER, |t| t.elapsed());
-            let idle = since >= IDLE_AFTER;
-            let timeout = if idle {
-                // Read the state again at the start of each repetition of the code.
-                if step == 0 {
-                    let restart = abnormal && state.now_ms() < SHOW_RESTART_MS;
-                    code = pattern(blinks(&state), restart);
-                }
-                let (on, ms) = code[step];
-                let _ = status_led.set_level(on.into());
-                Duration::from_millis(ms)
-            } else {
-                IDLE_AFTER - since
-            };
-            let beat = match rx.recv_timeout(timeout) {
-                Ok(beat) => beat,
-                Err(RecvTimeoutError::Timeout) => {
-                    if idle {
-                        step = (step + 1) % code.len();
-                    }
-                    continue;
-                }
-                Err(RecvTimeoutError::Disconnected) => break,
-            };
-            last_beat = Some(Instant::now());
-            step = 0;
-            let _ = beat_led.set_high();
-            let _ = status_led.set_high();
-            thread::sleep(Duration::from_millis(25));
-            if beat != 1 {
-                let _ = status_led.set_low();
-            }
-            thread::sleep(Duration::from_millis(5));
-            let _ = beat_led.set_low();
-            if beat == 1 {
-                thread::sleep(Duration::from_millis(90));
-                let _ = status_led.set_low();
-            }
+    update_code(&state);
+    // The start time of the current repetition of the code, the code and the restart flash.
+    let mut rep: Option<(u32, u8, bool)> = None;
+    let timer = EspTaskTimerService::new()?.timer(move || {
+        // Read the beat before the clock. A beat that arrives between the two reads then has a
+        // time before `now`, and `since` cannot wrap.
+        let kind = BEAT_KIND.load(Ordering::Acquire);
+        let at = BEAT_AT.load(Ordering::Relaxed);
+        let now_ms = state.now_ms();
+        let now = now_ms as u32;
+        let since = now.wrapping_sub(at);
+        if kind != 0 && since < IDLE_AFTER_MS {
+            // The beat LED pulses for 30 ms. IO33 pulses for 120 ms on beat 1 and for 25 ms on
+            // the other beats. The code starts again after the beats.
+            rep = None;
+            let _ = beat_led.set_level((since < 30).into());
+            let pulse = if kind == 1 { 120 } else { 25 };
+            let _ = status_led.set_level((since < pulse).into());
+            return;
         }
+        let _ = beat_led.set_low();
+        // The callback reads the code again at the start of each repetition.
+        let level = loop {
+            if let Some((start, code, restart)) = rep {
+                if let Some(on) = code_level(code, restart, now.wrapping_sub(start)) {
+                    break on;
+                }
+            }
+            let restart = abnormal && now_ms < SHOW_RESTART_MS;
+            rep = Some((now, CODE.load(Ordering::Relaxed), restart));
+        };
+        let _ = status_led.set_level(level.into());
     })?;
-    Ok(tx)
+    timer.every(TICK)?;
+    Ok(timer)
 }
 
 /// Returns the number of blinks for the first check that fails. Returns `None` when the box is
@@ -108,23 +121,23 @@ pub fn blinks(state: &State) -> Option<u64> {
     None
 }
 
-/// Returns one repetition of the code: the level of IO33 and its time in milliseconds.
-fn pattern(blinks: Option<u64>, restart: bool) -> Vec<(bool, u64)> {
-    let mut p = Vec::new();
+/// Returns the level of IO33 at `t` milliseconds into one repetition of the code. Returns `None`
+/// after the end of the repetition. A `code` of 0 is the code of a box that is ready.
+fn code_level(code: u8, restart: bool, mut t: u32) -> Option<bool> {
     if restart {
-        p.extend([(true, 800), (false, 400)]);
-    }
-    match blinks {
-        Some(n) => {
-            for _ in 0..n {
-                p.extend([(true, 100), (false, 150)]);
-            }
-            // The last pause fills the code to CODE_MS.
-            if let Some(last) = p.last_mut() {
-                last.1 += CODE_MS - n * 250;
-            }
+        // The 800 ms flash and a pause of 400 ms come first.
+        if t < 1200 {
+            return Some(t < 800);
         }
-        None => p.extend([(true, 1000), (false, 1000)]),
+        t -= 1200;
     }
-    p
+    if t >= CODE_MS {
+        return None;
+    }
+    Some(match u32::from(code) {
+        // 1 s on, 1 s off.
+        0 => t < 1000,
+        // Each blink is 100 ms on and 150 ms off. The last pause fills the code to CODE_MS.
+        n => t < n * 250 && t % 250 < 100,
+    })
 }
