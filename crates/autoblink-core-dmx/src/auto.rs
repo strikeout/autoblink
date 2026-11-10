@@ -18,8 +18,6 @@ pub const CALM_BELOW: u8 = 34;
 pub const PEAK_FROM: u8 = 80;
 /// The allowed move periods in half beats: 1/2, 1, 2, 4, 8, 16 and 32 beats.
 pub const HALF_BEATS: [u8; 7] = [1, 2, 4, 8, 16, 32, 64];
-/// The longest PIN, in digits.
-const MAX_PIN: usize = 8;
 
 fn yes() -> bool {
     true
@@ -191,8 +189,6 @@ pub struct Auto {
     pub drop: DropCfg,
     /// The colours of the tiers Calm, Groove and Peak.
     pub colors: [[u8; 3]; 3],
-    /// Zero to eight digits. An empty PIN means no PIN.
-    pub pin: String,
 }
 
 impl Default for Auto {
@@ -204,7 +200,6 @@ impl Default for Auto {
             moves: Vec::new(),
             drop: DropCfg::default(),
             colors: [[255, 140, 40], [0, 224, 255], [255, 40, 140]],
-            pin: String::new(),
         }
     }
 }
@@ -244,9 +239,6 @@ impl Auto {
             m.half_beats = snap(m.half_beats);
             m.size = m.size.min(100);
             m.spot = m.spot.min(100);
-        }
-        if self.pin.len() > MAX_PIN || !self.pin.bytes().all(|b| b.is_ascii_digit()) {
-            self.pin.clear();
         }
     }
 }
@@ -315,7 +307,6 @@ mod tests {
         let mut m = mv(Target::Group(0));
         m.color = Some([9, 8, 7]);
         s.auto.moves = vec![m, mv(Target::Room)];
-        s.auto.pin = "1234".into();
         let j = serde_json::to_vec(&s).unwrap();
         assert_eq!(Show::from_json(&j), s);
     }
@@ -331,7 +322,6 @@ mod tests {
                 mv(Target::Group(1)),
                 mv(Target::Fixture(0)),
             ],
-            pin: "12a4567890".into(),
             ..Auto::default()
         };
         a.programs[0].pc = 200;
@@ -348,7 +338,6 @@ mod tests {
         assert_eq!(a.moves.len(), 2);
         assert_eq!(a.moves[0].half_beats, 4);
         assert_eq!(a.moves[0].size, 100);
-        assert_eq!(a.pin, "");
     }
 
     #[test]
@@ -361,16 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn pin_rules() {
-        let mut a = Auto {
-            pin: "12345678".into(),
-            ..Auto::default()
-        };
-        a.sanitize(0, 0);
-        assert_eq!(a.pin, "12345678");
-        a.pin = "123456789".into();
-        a.sanitize(0, 0);
-        assert_eq!(a.pin, "");
+    fn old_show_with_a_pin_loads() {
+        // Firmware 1.32 and older stored a PIN. The field is gone, and serde ignores it.
+        let s = Show::from_json(br#"{"fixtures":[],"auto":{"on":true,"pin":"1234"}}"#);
+        assert!(s.auto.on);
     }
 
     #[test]

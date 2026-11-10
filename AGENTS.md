@@ -281,9 +281,14 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The WebSocket commands are `auto_pin` (`tier`: `auto`, `calm`, `groove` or `peak`), `dmx_blackout` (`on`) and `auto_try`. The field `move` of `auto_try` is an index below `MAX_MOVES` (24). `auto_try` shows one move for 8 bars, also while the autopilot is off. The engine then shows the base and the move, and after that the manual frame again. The `dmx` queue drops it when full.
 - The status field `auto` has `on`, `tier`, `spot`, `pinned`, `program`, `moves` (a bit mask) and `drop_in_beats`. The field `dmx.blackout` is true while the blackout runs. The firmware sends the capability `auto`. The firmware without the feature `dmx` sends none of them.
 - `dmx_blackout` is a flag in `DmxLive`, like the strobe hold. The release of the strobe hold also releases the blackout (`release_strobe` in `webui.rs`, `StrobeGuard` on the host). A take-over of another page and a failed send do the same.
-- The page has three modes: `#live`, `#setup` and `#system` in the URL. The default is `#live`. A panel names its mode in `data-mode`, and the page hides the panels of the other modes.
-- The Live mode has the tier buttons, the blackout button, the Master panel and the decks. The sticky strip with MASTER, STROBE and FOG shows in each mode.
-- The Setup mode has the lights, the scenes and the autopilot. The System mode has the input, the firmware, the WiFi, the settings and the output status.
+- The page has four tabs: `#live`, `#lights`, `#sync` and `#system` in the URL. The default is `#live`. The old `#setup` opens Lights. A panel names its tab in `data-mode`, and the page hides the panels of the other tabs. `navSync` hides a tab without a visible panel.
+- Live has the Master panel and the decks. The sticky strip with MASTER, STROBE and FOG shows in each tab.
+- Lights has "Who drives the lights", Box DMX, Scenes and Autopilot. Sync has the input, the output port, the MIDI clock, notes, CC and timecode, OSC, and the output status. System has the firmware, the WiFi, Diagnostics and the Display rows.
+- `onSettings` puts a settings group into a tab by its section (`SECTION_HOME`). The group `DMX` goes to Box DMX › Desk in. The group `Display` goes to System. The other groups go to Sync.
+- "Who drives the lights" has one switch: Off, Manual rules or Autopilot. Off sets `scenes.enabled` and `show.auto.on` to false. Manual rules sets `scenes.enabled` to true and `show.auto.on` to false. Autopilot sets `show.auto.on` to true and keeps `scenes.enabled`. Below the switch, one line each shows the MIDI to the console, the box DMX and the desk input (`status.dmx`). A tap on a line opens its control.
+- `#phone` shows the phone screen alone: the tier buttons, BLACKOUT, STROBE and FOG. The link "Phone" in the header and the button in the Autopilot header open it. Escape or Exit closes it.
+- Each panel is a `<details>`. The page keeps its open state in `localStorage` (`autoblink.open.<id>`). A button in a panel header does not open or close the panel. Escape closes the top open item. The order is the hold popover, the look editor and the autopilot form. Then come the library box, the Diagnostics output and the phone screen.
+- The autopilot has no PIN since 1.33.0. A stored show with the old field `pin` still loads, because serde ignores an unknown field.
 - On a computer, hold B for the blackout and hold S for the strobe. F starts the fog, and 1 to 4 pin a tier.
 - The blackout runs while the user holds the button. The page releases it on pointer up, pointer cancel and pointer leave. It also releases it on `pagehide` and when the page hides. It releases only a blackout that it holds.
 - After a reconnect, the page sends a held blackout again. The server released the old blackout with the old socket.
@@ -341,7 +346,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 ### Debug logs
 
-- Run `curl http://autoblink.local/log` to read the log over WiFi. The buttons Log and Memory in the System mode of the page show `/log` and `/mem`.
+- Run `curl http://autoblink.local/log` to read the log over WiFi. The buttons Log and Memory in the System tab of the page show `/log` and `/mem`.
 - Run `curl http://autoblink.local/mem` to read the heap and the free stack of each task. The free stack is the low point since the start. Set a stack size from it, and keep a margin.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
@@ -428,7 +433,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - The `espressif/mdns` component comes from `[package.metadata.esp-idf-sys.extra_components]` in `esp32/Cargo.toml`. After a change to that table, run `cargo clean --release -p esp-idf-sys`. If you do not, the build uses the old ESP-IDF build and `esp_idf_svc::mdns` does not exist.
 - The WebSocket handshake completes before the firmware can read the `Origin` header. When the Origin check fails, the firmware closes the connection and sends no data. It cannot reply with 403.
 - The firmware sends the status and the beats to one page at a time. Another page gets `busy` and shows the button "Use this screen". The button sends `take_over`, and the firmware closes the connection of the old page with `httpd_sess_trigger_close`. The old page then connects again and gets `busy`.
-- Only the active page controls the box. The firmware answers `busy` to each command from another page, except `take_over`. The firmware releases a blackout or a strobe hold only when the active page closes. Thus a hold from another page could stay on. The page hides the live screen while it is busy.
+- Only the active page controls the box. The firmware answers `busy` to each command from another page, except `take_over`. The firmware releases a blackout or a strobe hold only when the active page closes. Thus a hold from another page could stay on. The page hides the phone screen while it is busy.
 - TCP keepalive (5 s idle, 3 probes at 5 s) closes the connection of a page that left the network in about 20 s. Without it, lwIP keeps the connection for minutes, and each status send to it waits up to 5 s.
 - The web server has 6 sockets. When all are open, a new connection closes the socket that received data least recently. That socket is the live WebSocket. The page loads the waveforms of all decks at the same time. Do not set fewer sockets.
 - The firmware serves the page with gzip, also to a client that does not ask for it. `esp32/build.rs` compresses `webui/index.html` at build time. Use `curl --compressed` to read the page.
@@ -443,7 +448,7 @@ Do not connect a load to IO12 at power-on. If IO12 is high, the ESP32 sets the f
 - The ESP32 page has no mixer section. The XDJ-AZ sends the EQ and fader positions only as USB MIDI, and the classic ESP32 has no USB host.
 - The ESP32 sends the Phrase 16 CC as the page help says (0 at each block start). The host never sends it, because its dedupe starts at 0.
 - The DMX output (feature `dmx`, on by default) renders the looks of the show (see "DMX show"). A show without lights keeps the beat flash of "DMX Beat Channel" (index 111). "DMX Mode" (index 110) merges the output with DMX IN, or with Art-Net when DMX IN has no signal. The two rows are firmware settings (`autoblink_core_ui::config`), and NVS keeps them under the key `box`.
-- The emulator has no `scenes` capability. The page hides the DMX Scenes panel there.
+- The emulator has no `scenes` capability. The page hides the Scenes panel there.
 - The emulator uses old setting indices (for example 8 for Note Channel, which the host has at 9). It does not use `autoblink-core-midi` yet.
 - A refactor plan exists at `.sisyphus/plans/multi-architecture-refactor-plan.md`
 - `host/src/state.rs` and `host/src/main.rs` are the highest-coupling files in the host crate

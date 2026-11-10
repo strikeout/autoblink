@@ -43,6 +43,8 @@ details.panel>summary h2{justify-content:flex-start;gap:6px}
 details.panel>summary h2::before{content:'▸';color:var(--dim);font-size:14px;letter-spacing:0}
 details.panel[open]>summary h2::before{content:'▾'}
 details.panel:not([open])>summary h2{margin-bottom:0}
+details.panel>summary h2 .kv{margin-left:auto}
+@media(pointer:coarse){details.panel>summary h2{min-height:44px}}
 [hidden],.offmode{display:none!important}
 #modes{display:flex;gap:6px;margin-left:auto}
 #modes a{padding:8px 16px;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;font-weight:600}
@@ -152,11 +154,13 @@ input.num.text{width:150px;text-align:left}
 .port.active{border-color:var(--play)}
 .port .mark{width:10px;color:var(--play)}
 /* DMX scenes */
-#p-scenes .scfg{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;color:var(--muted);margin-bottom:12px}
-#p-scenes .scfg label{display:flex;gap:6px;align-items:center}
-#p-scenes .hint{color:var(--dim);font-size:11px;margin-left:auto}
+.scfg{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;color:var(--muted);margin-bottom:12px}
+.scfg label{display:flex;gap:6px;align-items:center}
+.scfg .hint{color:var(--dim);font-size:11px;margin-left:auto}
+#p-scenes>.hint,#drvnote{color:var(--muted);font-size:12px;margin-bottom:8px}
+#scpaused{color:var(--warn)}
 #p-scenes select{background:#1c1c2c;color:var(--text);border:1px solid var(--border);border-radius:5px;padding:1px 4px;font:inherit;font-size:12px}
-#p-scenes input.num{width:52px}
+.scfg input.num{width:52px}
 /* DMX live strip */
 .live{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:8px 16px;background:#151524;border-bottom:1px solid var(--border)}
 #boxlink{color:var(--accent)}
@@ -216,8 +220,14 @@ input.num.text{width:150px;text-align:left}
 /* autopilot */
 #p-auto{--tc0:#ffaa44;--tc1:#00e0ff;--tc2:#ff3d7f}
 #p-auto .aphd{margin-left:auto;display:flex;gap:8px;text-transform:none;letter-spacing:0}
-#apdrv{margin-bottom:10px}
-#apdrv button{min-height:44px;padding:0 18px;font-size:14px;font-weight:600}
+#drv button{min-height:44px;padding:0 18px;font-size:14px;font-weight:600}
+.flow{display:grid;gap:6px;margin:12px 0 14px;color:var(--muted)}
+.flow b{color:var(--text);font-weight:600;margin-right:4px}
+.flow button{background:none;border:0;padding:0 2px;min-height:0;color:var(--accent);text-decoration:underline dotted}
+.flow .off{color:var(--danger)}
+#deskin{text-transform:none;letter-spacing:0;margin-left:8px}
+#set-dmx .section{display:none}
+#phonelink{font-size:12px;color:var(--accent)}
 #p-auto .lbl{font-size:10px;text-transform:uppercase;letter-spacing:1.3px;color:var(--muted);margin:10px 0 6px}
 #p-auto b{font-weight:500;color:var(--text)}
 .aplive{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;background:#151524;border:1px solid var(--border);border-radius:10px;padding:10px 14px 18px;margin-bottom:12px;color:var(--muted)}
@@ -275,7 +285,6 @@ input.num.text{width:150px;text-align:left}
 .apset{display:flex;flex-wrap:wrap;gap:8px 24px;align-items:center}
 .apset input[type=color]{width:26px;height:20px;padding:0;border:0;background:none;vertical-align:middle}
 .apf{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:10px 12px;margin-top:12px;background:#10101a;border:1px solid var(--border);border-radius:8px;color:var(--muted)}
-#p-setup.locked>:not(summary):not(#ltlock){display:none}
 .palette{display:flex;flex-wrap:wrap;gap:6px;padding:10px;background:#0d0d16;border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
 .chip{display:inline-flex;flex-direction:column;align-items:flex-start;min-width:64px;padding:4px 8px 5px;border-radius:6px;background:#10303a;border:1px solid #0f5866;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;position:relative}
 .chip b{font-size:15px;color:var(--accent);line-height:1.1}
@@ -402,14 +411,18 @@ button{padding:4px 10px}
 .mfoot{display:flex;flex-wrap:wrap;gap:10px;padding:10px 14px;align-items:center}
 .mfoot .note{color:var(--muted);font-size:12px;margin-right:auto}
 .mfoot .go{border-color:var(--play);color:var(--play)}
-#lvs{display:flex;flex-direction:column;gap:14px}
+#lvs{display:none}
+body.lv>*:not(#lvs):not(#takeover):not(#toast):not(#offbar):not(#boxbar){display:none!important}
+body.lv #lvs{display:flex;flex-direction:column;gap:14px;padding:14px;max-width:560px;margin:0 auto;min-height:100vh;min-height:100dvh}
+body.busy #lvs{display:none!important}
+#lvs .lvh a{margin-left:auto;font-size:14px;color:var(--muted)}
 #lvs .lvh{display:flex;align-items:baseline;gap:14px;font-size:20px}
 #lvs .lvh b{font-size:26px}
 #lvs button{font-size:20px;font-weight:700;padding:22px 8px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #lvs .lvt{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 #lvs button.on{border-color:var(--accent);color:var(--accent);background:rgba(0,224,255,.14)}
-#lvs #lvb{min-height:120px;font-size:30px;border-color:var(--danger);color:var(--danger)}
-#lvs #lvb.on{background:var(--danger);color:#000}
+#lvs #lvb{min-height:150px;font-size:30px;border-color:var(--danger);color:var(--danger)}
+#lvs #lvb.on,#lvs #lvs2.on{background:var(--danger);border-color:var(--danger);color:#000}
 /* logs */
 .log{background:#08080d;border-radius:6px;padding:8px;height:200px;overflow-y:auto;font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-all}
 .log .ERROR{color:var(--danger)}.log .WARN{color:var(--warn)}.log .DEBUG,.log .TRACE{color:var(--dim)}
@@ -420,11 +433,12 @@ button{padding:4px 10px}
   <h1>AUTOBLINK</h1>
   <span class="kv"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   <span class="kv">source <b id="source">—</b></span>
-  <span class="kv">mode <b id="mode">—</b></span>
+  <span class="kv">sync <b id="mode">—</b></span>
   <span class="kv">iface <b id="iface">—</b></span>
   <span class="kv" id="uptimekv" hidden>uptime <b id="uptime" class="num">—</b></span>
   <b id="state" class="stop">■ STOP</b>
-  <nav id="modes"><a href="#live">Live</a><a href="#setup">Setup</a><a href="#system">System</a></nav>
+  <a id="phonelink" href="#phone" title="Big buttons for a phone: tier, blackout, strobe and fog." hidden>Phone</a>
+  <nav id="modes"><a href="#live">Live</a><a href="#lights">Lights</a><a href="#sync">Sync</a><a href="#system">System</a></nav>
 </header>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="offbar">Offline · reconnecting…</div>
@@ -435,21 +449,21 @@ button{padding:4px 10px}
   <button id="ltfog" class="big" title="Run the fog machine once.">FOG</button>
   <div id="ltlayers" class="now" title="The looks that play now."></div>
 </div>
+<div id="lvs">
+  <div class="lvh"><b id="lvtier">-</b><span><span id="lvbpm" class="mono">-</span> BPM</span><a href="#live">Exit</a></div>
+  <div class="lvt" id="lvt"></div>
+  <button id="lvb">BLACKOUT</button>
+  <div class="lvt"><button id="lvs2">STROBE</button><button id="lvf">FOG</button></div>
+</div>
 <section id="takeover" class="panel" hidden>
   <h2>Another screen is connected</h2>
   <p>The box sends its status to one screen at a time.</p>
   <div class="row"><button id="takeoverbtn">Use this screen</button></div>
 </section>
 <main>
-  <section id="lvs" class="panel" data-mode="live">
-    <div class="lvh"><b id="lvtier">-</b><span><span id="lvbpm" class="mono">-</span> BPM</span></div>
-    <div class="lvt" id="lvt"></div>
-    <button id="lvb">BLACKOUT</button>
-  </section>
-
-  <section class="panel" data-mode="live">
-    <h2>Master <span class="kv">deck <b id="mdeck">—</b></span></h2>
-    <div id="nomaster" class="empty" hidden>No player is on the Pro DJ Link network.<br>Connect the players and this device to the same network. Each device needs its own Device Number, 7 or higher (System).</div>
+  <details id="p-master" class="panel" data-mode="live" open>
+    <summary><h2>Master <span class="kv">deck <b id="mdeck">—</b></span></h2></summary>
+    <div id="nomaster" class="empty" hidden>No player is on the Pro DJ Link network.<br>Connect the players and this device to the same network. Each device needs its own Device Number, 7 or higher (Sync).</div>
     <div id="mgrid" class="mgrid">
       <div>
         <div id="bpm" class="num">---.-</div>
@@ -474,21 +488,35 @@ button{padding:4px 10px}
         <div id="s16" class="s16"></div>
       </div>
     </div>
-  </section>
+  </details>
 
-  <section class="panel wide" data-cap="decks" data-mode="live">
-    <h2>Deck Information <span id="link" class="kv"></span></h2>
+  <details id="p-decks" class="panel wide" data-cap="decks" data-mode="live" open>
+    <summary><h2>Deck Information <span id="link" class="kv"></span></h2></summary>
     <div id="decks" class="decks"></div>
-  </section>
+  </details>
 
-  <details id="p-setup" class="panel wide" data-cap="dmx" data-mode="setup" hidden open>
-    <summary><h2>Lights setup <span id="stsum" class="sum"></span></h2></summary>
-    <div id="ltlock"></div>
+  <details id="p-flow" class="panel wide" data-mode="lights" hidden open>
+    <summary><h2>Who drives the lights</h2></summary>
+    <div id="drv" class="seg"></div>
+    <div id="drvnote" class="hint" hidden>Off and Manual rules switch the scenes of this computer. The box keeps its own scenes.</div>
+    <div id="flow" class="flow"></div>
+    <div class="section" title="The scene notes and the program changes go out on the MIDI port to a lighting console.">MIDI to the console</div>
+    <div class="scfg">
+      <label title="The MIDI channel of the scene notes, 1 to 16.">Scene notes channel <input id="scch" class="num" inputmode="numeric"></label>
+      <label title="The note of preset 1. Preset 2 is the next note.">Note of preset 1 <input id="scfirst" class="num" inputmode="numeric"></label>
+      <label id="pcrow" title="The MIDI channel of the program changes of the autopilot, 1 to 16." hidden>Program change channel <span id="pcch"></span></label>
+    </div>
+  </details>
+
+  <details id="p-setup" class="panel wide" data-cap="dmx" data-mode="lights" hidden open>
+    <summary><h2>Box DMX <span id="stsum" class="sum"></span></h2></summary>
     <div id="ltsrc" class="hint"></div>
+    <div id="deskhead" class="section" title="A lighting desk can send DMX IN or Art-Net to the box. DMX Mode sets how the box merges it with its own light.">Desk in <span id="deskin" class="hint"></span></div>
+    <div id="set-dmx" class="sgrid"></div>
     <div class="section" title="A file with the show and the scenes. Load a file to replace them.">Show file <button id="shbak">Download</button> <button id="shres">Load</button><input id="shfile" type="file" accept=".json,application/json" hidden></div>
     <div class="section" title="The lights on the DMX line. The address is the first channel.">Lights <button id="ltaddfx">+ Light</button> <button id="ltlib" title="Add a light from the Open Fixture Library. The box needs internet.">+ From library</button> <button id="ltpack" title="Give the lights addresses one after the other, in their order on the DMX line." hidden>Pack addresses</button></div>
     <div id="ltofl" class="oflbox" hidden>
-      <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span></div>
+      <div class="line"><input id="oflq" class="num text" type="text" maxlength="64" placeholder="Search a light (3 letters)" autocomplete="off"><span id="oflst"></span><button id="oflx" class="x" aria-label="Close the library">✕</button></div>
       <div id="oflres" class="oflres"></div>
       <div id="ofldet" class="ofldet" hidden></div>
     </div>
@@ -501,13 +529,11 @@ button{padding:4px 10px}
     <div id="ltidle" class="cardrow"></div>
   </details>
 
-  <details id="p-scenes" class="panel wide" data-cap="scenes" data-mode="setup" open>
-    <summary><h2 id="sctitle">DMX Scenes</h2></summary>
-    <div id="apnote" class="hint" hidden>The autopilot drives the lights. Manual rules are paused.</div>
+  <details id="p-scenes" class="panel wide" data-cap="scenes" data-mode="lights" open>
+    <summary><h2>Scenes</h2></summary>
+    <div class="hint">A preset sends one MIDI note to the console. A preset with 💡 also plays its box look.</div>
+    <div id="scpaused" class="hint" hidden>The autopilot drives the lights. These rows are paused.</div>
     <div class="scfg">
-      <label>Scenes <button id="scon" class="sw"></button></label>
-      <label title="The MIDI channel of the DMX controller.">Channel <input id="scch" class="num" inputmode="numeric"></label>
-      <label title="The note of preset 1. Preset 2 is the next note.">First note <input id="scfirst" class="num" inputmode="numeric"></label>
       <label title="The number of presets, 1 to 32.">Presets <input id="sccount" class="num" inputmode="numeric"></label>
       <label title="On: the controller shows one preset at a time, and a note off can end the preset that shows. A flash then ends before the next note, and the held scene comes back after a flash or a pulse. Off: the presets are layers, and each flash keeps its full decay.">One preset at a time <button id="scone" class="sw"></button></label>
       <span class="hint">Drag a preset onto an event · Shift-click for a range · Click a preset to test it · Double-click to rename · Add a note outside the range at the end of the presets<span data-cap="dmx" hidden> · 💡 has a DMX look · ✎ opens the look</span></span>
@@ -522,12 +548,12 @@ button{padding:4px 10px}
       <span><b>pulse</b> note on and off at once</span>
       <span><b>hold</b> note stays on until the next scene</span>
       <span><b>flash</b> note goes off after the decay</span>
+      <span><b>pulse · hold · flash</b> apply to the box look of the preset too</span>
     </div>
   </details>
 
-  <details id="p-auto" class="panel wide" data-cap="auto" data-mode="setup" hidden open>
-    <summary><h2>Autopilot <span class="aphd"><span id="aphd"><span id="apviews" class="seg"></span></span><button id="lvlink" title="Big buttons for the tier, the blackout and the fog.">Live screen</button></span></h2></summary>
-    <div id="apdrv" class="seg"></div>
+  <details id="p-auto" class="panel wide" data-cap="auto" data-mode="lights" hidden open>
+    <summary><h2>Autopilot <span class="aphd"><span id="apviews" class="seg"></span><button id="lvlink" title="Big buttons for a phone: tier, blackout, strobe and fog.">Phone screen</button></span></h2></summary>
     <div id="aplive" class="aplive"></div>
     <div id="apview"></div>
     <div id="apform"></div>
@@ -535,10 +561,32 @@ button{padding:4px 10px}
     <div id="apset" class="apset"></div>
   </details>
 
-  <section class="panel wide" data-mode="system">
-    <h2>System</h2>
-    <div class="sgrid">
+  <details id="p-settings" class="panel wide" data-cap="settings" data-mode="sync" open>
+    <summary><h2>Sync</h2></summary>
+    <div id="sgrid" class="sgrid">
       <div id="set-input" class="group"><div class="section" title="Where the app gets the tempo and the beat.">Input</div></div>
+      <div class="group" data-cap="ports">
+        <div class="section" title="The MIDI port that gets all MIDI output. Click a port to use it.">Output Port <button id="rescan" title="Find the MIDI ports again.">Rescan</button></div>
+        <div id="ports" class="ports"></div>
+      </div>
+    </div>
+  </details>
+
+  <details id="p-output" class="panel wide" data-cap="output" data-mode="sync" open>
+    <summary><h2>Output Status</h2></summary>
+    <div class="row"><span>port <b id="oport">—</b> <span id="oconn"></span></span><span>clock <b id="oclock">—</b></span><span class="num">pulses <b id="opulses">0</b></span></div>
+    <div class="row num"><span>notes <b id="onotes">0</b></span><span>CCs <b id="occs">0</b></span><span id="odropped"></span><span>MTC <b id="omtc">—</b></span></div>
+    <div class="row" id="oscrow" hidden><span>OSC <b id="oosc">—</b> <span id="oosctg" class="num"></span></span><span class="num" id="ooscn">sent <b id="oosent">0</b> <span id="ooerr"></span></span></div>
+    <div class="hist num">
+      <div><h3>Notes</h3><ol id="hnote" class="note"></ol></div>
+      <div><h3>CC</h3><ol id="hcc" class="cc"></ol></div>
+      <div id="hoscc" hidden><h3>OSC</h3><ol id="hosc" class="osc"></ol></div>
+    </div>
+  </details>
+
+  <details id="p-system" class="panel wide" data-mode="system" open>
+    <summary><h2>System</h2></summary>
+    <div id="sysgrid" class="sgrid">
       <div class="group" data-cap="ota">
         <div class="section">Firmware</div>
         <div class="row">installed <b id="fwcur">—</b> <span id="fwstate" class="num"></span></div>
@@ -550,33 +598,11 @@ button{padding:4px 10px}
       <div id="set-wifi" class="group" data-cap="ota"><div class="section">WiFi</div></div>
       <div class="group" data-cap="ota">
         <div class="section" title="The log of the box and the free memory of each task.">Diagnostics</div>
-        <div class="row"><button id="dglog">Log</button> <button id="dgmem">Memory</button></div>
+        <div class="row"><button id="dglog">Log</button> <button id="dgmem">Memory</button> <button id="dgx" class="x" aria-label="Close the output" hidden>✕</button></div>
         <pre id="dg" class="log" hidden></pre>
       </div>
     </div>
-  </section>
-
-  <details id="p-settings" class="panel wide" data-cap="settings" data-mode="system" open>
-    <summary><h2>Settings</h2></summary>
-    <div id="sgrid" class="sgrid">
-      <div class="group" data-cap="ports">
-        <div class="section" title="The MIDI port that gets all MIDI output. Click a port to use it.">Output Port <button id="rescan" title="Find the MIDI ports again.">Rescan</button></div>
-        <div id="ports" class="ports"></div>
-      </div>
-    </div>
   </details>
-
-  <section class="panel wide" data-cap="output" data-mode="system">
-    <h2>Output Status</h2>
-    <div class="row"><span>port <b id="oport">—</b> <span id="oconn"></span></span><span>clock <b id="oclock">—</b></span><span class="num">pulses <b id="opulses">0</b></span></div>
-    <div class="row num"><span>notes <b id="onotes">0</b></span><span>CCs <b id="occs">0</b></span><span id="odropped"></span><span>MTC <b id="omtc">—</b></span></div>
-    <div class="row" id="oscrow" hidden><span>OSC <b id="oosc">—</b> <span id="oosctg" class="num"></span></span><span class="num" id="ooscn">sent <b id="oosent">0</b> <span id="ooerr"></span></span></div>
-    <div class="hist num">
-      <div><h3>Notes</h3><ol id="hnote" class="note"></ol></div>
-      <div><h3>CC</h3><ol id="hcc" class="cc"></ol></div>
-      <div id="hoscc" hidden><h3>OSC</h3><ol id="hosc" class="osc"></ol></div>
-    </div>
-  </section>
 
   <details id="p-logs" class="panel wide" data-cap="logs" data-mode="system" open>
     <summary><h2>Logs</h2></summary>
@@ -657,19 +683,21 @@ function syncDmx() {
   const avail = own || !!box;
   $('p-setup').hidden = !avail;
   $('p-auto').hidden = !(caps.has('auto') || !!box);
+  $('p-flow').hidden = !(caps.has('scenes') || avail);
   $('live').hidden = !own || !!box || !$('takeover').hidden;
   $('boxbar').hidden = !box;
   // The live screen sends to this server. Without the capability, its buttons do nothing.
   $('lvt').hidden = !caps.has('auto') || !!box;
-  $('lvb').hidden = !own || !!box;
-  $('lvs').hidden = $('lvt').hidden && $('lvb').hidden;
+  $('lvb').hidden = $('lvs2').hidden = $('lvf').hidden = !own || !!box;
+  $('phonelink').hidden = $('lvt').hidden && $('lvb').hidden;
   if (box) $('boxlink').href = 'http://' + box + '/';
-  set('sctitle', avail ? 'DMX Scenes & Looks' : 'DMX Scenes');
   const lan = !['127.0.0.1', 'localhost'].includes(location.hostname) && !BOX;
   set('ltsrc', box ? 'Editing the show of the box at ' + box
     + '. The preset numbers and names are those of this computer. The box fires its own presets.'
     + (lan ? ' Open this page at http://127.0.0.1:' + location.port + ' to save to the box.' : '')
     : 'Editing the show of ' + (BOX ? 'the box at ' + BOX : 'this computer (Art-Net)'));
+  navSync();
+  renderFlow();
   // The first status decides the endpoint, so that the page loads one show only.
   if (!status) return;
   const from = avail ? showBase() : null;
@@ -721,6 +749,7 @@ function onStatus(s) {
   if (dmxLast && document.activeElement !== ms && !ms.matches(':active')) { ms.value = dmxLast.master; masterPct(); }
   renderLayers();
   renderLive(s);
+  renderFlow();
   if (show) {
     const a = s.auto, k = a ? [a.on, a.tier, a.program, a.moves].join() : '';
     if (k !== apKey && !apDragging) { apKey = k; renderAutoView(); }
@@ -1115,6 +1144,9 @@ const setRows = new Map();
 // the end of its table (index 33) can join an earlier group.
 const setGroups = new Map();
 let group = null, groupName = null;
+// The firmware groups that do not belong to the Sync tab. The rest goes to #sgrid.
+const SECTION_HOME = { DMX: 'set-dmx', Display: 'sysgrid' };
+
 function onSettings(m) {
   if (releaseLost) { releaseLost = false; liveSend(false); } // only the active page gets this message
   for (const it of m.items) {
@@ -1132,7 +1164,9 @@ function onSettings(m) {
             head.title = HELP[groupName] || '';
             group = h('div', 'group', head);
             setGroups.set(groupName, group);
-            $('sgrid').append(group);
+            // Without the capability dmx, Box DMX is hidden, so its rows stay in Sync.
+            const home = groupName === 'DMX' && !caps.has('dmx') ? null : SECTION_HOME[groupName];
+            $(home || 'sgrid').append(group);
           }
         }
         parent = group;
@@ -1247,7 +1281,8 @@ function onBusy() {
   document.querySelector('main').hidden = true;
   $('live').hidden = true;
   $('takeover').hidden = false;
-  // The box ignores the commands of this page, so the live screen must not show its buttons.
+  // The box ignores the commands of this page, so the phone screen must not show its buttons.
+  document.body.classList.add('busy');
   $('dot').classList.remove('on');
   set('conn', 'waiting');
 }
@@ -1427,8 +1462,6 @@ function seg(options, value, onPick) {
 function renderScenes() {
   if (!scenes) return;
   scenePending = false;
-  set('scon', scenes.enabled ? 'ON' : 'OFF');
-  $('scon').style.color = scenes.enabled ? 'var(--play)' : 'var(--danger)';
   set('scone', scenes.one_at_a_time ? 'ON' : 'OFF');
   $('scone').style.color = scenes.one_at_a_time ? 'var(--play)' : 'var(--muted)';
   for (const [id, v] of [['scch', scenes.channel + 1], ['scfirst', scenes.first_note], ['sccount', scenes.count]]) {
@@ -1448,7 +1481,7 @@ function renderScenes() {
       const ed = h('span', 'edit', '✎');
       ed.title = lookOpen === i ? 'Close the look of this preset.' : 'Edit the DMX look of this preset.';
       ed.addEventListener('pointerdown', (e) => e.stopPropagation());
-      ed.addEventListener('click', () => { lookOpen = lookOpen === i ? null : i; renderScenes(); renderLights(); });
+      ed.addEventListener('click', () => { lookOpen = lookOpen === i ? null : i; renderScenes(); renderLights(); if (lookOpen !== null) seeIt('lookedit'); });
       c.append(ed);
     }
     sceneDrag(c, { from: 'palette', idx: i });
@@ -1476,6 +1509,10 @@ function renderScenes() {
   for (const [name, note, cap, events] of SCENE_GROUPS) {
     if (cap && caps && !caps.has(cap)) continue;
     const head = h('div', 'grp' + (closed.has(name) ? ' closed' : ''), name, h('span', null, note));
+    head.role = 'button';
+    head.tabIndex = 0;
+    head.ariaExpanded = String(!closed.has(name));
+    head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); head.click(); } });
     head.addEventListener('click', () => {
       closed.has(name) ? closed.delete(name) : closed.add(name);
       try { localStorage.setItem('autoblink.scenes.closed', JSON.stringify([...closed])); } catch { /* ignore */ }
@@ -1487,6 +1524,7 @@ function renderScenes() {
   }
   $('slots').replaceChildren(...out);
   if (status) renderSceneLive(status.scene);
+  renderFlow();
 }
 
 function sceneClosed() {
@@ -1576,7 +1614,7 @@ function holdPopover(ev, r, pos) {
     b.addEventListener('click', () => sceneEdit(ev, (row) => { row.holds[pos] = v; }));
     return b;
   });
-  return h('div', 'holdpop', h('b', null, name + ' · hold'), h('div', 'pills', ...pills, 'beats'),
+  return h('div', 'holdpop', closeBtn('Close', () => { holdPop = null; renderScenes(); }), h('b', null, name + ' · hold'), h('div', 'pills', ...pills, 'beats'),
     h('p', null, 'While ' + name + ' holds, the row waits. The next trigger starts the next preset when ' + name + ' ends.'));
 }
 
@@ -1753,11 +1791,7 @@ function sceneDrop(src, target, e) {
 document.addEventListener('pointerdown', (e) => {
   if (holdPop && !e.target.closest('.holdpop, .drop .chip')) { holdPop = null; renderScenes(); }
 });
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && holdPop) { holdPop = null; renderScenes(); }
-});
 
-$('scon').addEventListener('click', () => { if (scenes) { scenes.enabled = !scenes.enabled; sceneSave(); } });
 $('scone').addEventListener('click', () => { if (scenes) { scenes.one_at_a_time = !scenes.one_at_a_time; sceneSave(); } });
 // The page draws one chip for each preset, so a large count must not reach renderScenes.
 for (const [id, min, max, apply] of [
@@ -1827,9 +1861,7 @@ async function loadShow() {
     lookOpen = null;
     $('lookedit').hidden = true;
     for (const id of ['ltpatch', 'ltgroups', 'ltpos', 'ltidle', 'apview', 'apform', 'apdrop', 'apset', 'aplive']) $(id).replaceChildren();
-    $('apnote').hidden = true;
-    $('p-setup').classList.remove('locked');
-    $('ltlock').replaceChildren();
+    $('pcrow').hidden = true;
     renderScenes();
     toast('The show did not load: ' + e.message);
   }
@@ -1987,8 +2019,6 @@ if (!['cols', 'tabs', 'curve'].includes(autoView)) autoView = 'cols';
 let apTab = null, apKey = '', apDragging = false, apFormState = null;
 
 const apTier = (v) => (v < 34 ? 0 : v >= 80 ? 2 : 1); // the borders of auto.rs: Calm below 34, Peak from 80
-const apPin = () => (show && show.auto && show.auto.pin) || '';
-const apLocked = () => !!apPin() && sessionStorage.getItem('apPin') !== apPin();
 const apMove = (m) => MOVES[m.shape] || ['?', m.shape];
 const hexRgb = (s) => {
   if (s.length === 4) s = '#' + [1, 2, 3].map((i) => s[i] + s[i]).join('');
@@ -1999,21 +2029,7 @@ const dur = (s) => (s >= 60 ? s / 60 + ' min' : s + ' s');
 /** Fills the fields that an old show lacks. */
 function apFix(s) {
   const a = s.auto || {};
-  s.auto = { on: false, channel: 0, programs: [], moves: [], colors: [[255, 140, 40], [0, 224, 255], [255, 40, 140]], pin: '', ...a, drop: { ...AP_DROP, ...a.drop } };
-}
-
-function pinField() {
-  const i = h('input', 'num');
-  i.type = 'password';
-  i.inputMode = 'numeric';
-  i.maxLength = 8;
-  i.placeholder = 'PIN';
-  i.addEventListener('input', () => {
-    if (i.value !== apPin()) return;
-    sessionStorage.setItem('apPin', i.value);
-    renderAuto();
-  });
-  return h('div', 'apf', 'PIN ', i, h('span', null, 'The PIN is an accident guard, not security.'));
+  s.auto = { on: false, channel: 0, programs: [], moves: [], colors: [[255, 140, 40], [0, 224, 255], [255, 40, 140]], ...a, drop: { ...AP_DROP, ...a.drop } };
 }
 
 function apSeg(id, opts, cur, onPick) {
@@ -2027,21 +2043,6 @@ function apSeg(id, opts, cur, onPick) {
 
 function renderAuto() {
   if (!show) return;
-  const a = show.auto, locked = apLocked();
-  $('apnote').hidden = !a.on;
-  $('p-setup').classList.toggle('locked', locked);
-  $('ltlock').replaceChildren(...(locked ? [pinField()] : []));
-  $('aphd').hidden = locked;
-  $('apdrv').hidden = locked;
-  if (locked) {
-    $('apview').replaceChildren(pinField());
-    for (const id of ['apform', 'apdrop', 'apset']) $(id).replaceChildren();
-    return renderAutoLive();
-  }
-  apSeg('apdrv', [[true, 'Autopilot'], [false, 'Manual rules']], a.on, (v) => {
-    if (v === a.on || (status && status.master.playing && !confirm(v ? 'A deck plays. Let the autopilot drive the lights now?' : 'A deck plays. Give the lights back to the manual rules now?'))) return;
-    showEdit(() => { a.on = v; });
-  });
   apSeg('apviews', [['cols', 'A', 'Three tier columns'], ['tabs', 'B', 'Tier tabs'], ['curve', 'C', 'Energy curve']], autoView,
     (v) => { autoView = v; localStorage.setItem('autoView', v); renderAuto(); });
   renderAutoView();
@@ -2049,12 +2050,13 @@ function renderAuto() {
   renderAutoDrop();
   renderAutoSet();
   renderAutoLive();
+  renderFlow();
 }
 
 /** The live line: one status message, no show edit. */
 function renderAutoLive() {
   const a = show && show.auto, el = $('aplive');
-  if (!a || apLocked() || $('p-auto').hidden) return el.replaceChildren();
+  if (!a || $('p-auto').hidden) return el.replaceChildren();
   const s = status && status.auto;
   if (!s) return el.replaceChildren(h('span', 'on', a.on ? '● AUTOPILOT' : '○ MANUAL RULES'));
   const ti = ['calm', 'groove', 'peak'].indexOf(s.tier), p = a.programs[s.program], bpm = status.master.bpm;
@@ -2113,7 +2115,7 @@ function apDrag(el, item, onTap) {
 function apChip(p, i, now) {
   const c = h('span', 'ac' + (now ? ' now' : ''), p.name || 'Program', h('small', null, 'P' + (p.pc + 1)));
   c.style.setProperty('--c', rgbHex(p.color));
-  apDrag(c, p, () => { apFormState = { obj: p, idx: i }; renderAutoForm(); });
+  apDrag(c, p, () => { apFormState = { obj: p, idx: i }; renderAutoForm(); seeIt('apform'); });
   return c;
 }
 
@@ -2139,6 +2141,7 @@ function apNewProgram(spot) {
   while (a.programs.some((p) => p.pc === pc)) pc++;
   apFormState = { obj: { pc, name: 'Program ' + (pc + 1), color: a.colors[apTier(spot)].slice(), spot }, isNew: true };
   renderAutoForm();
+  seeIt('apform');
 }
 
 function apNewMove(spot) {
@@ -2152,6 +2155,7 @@ function apNewMove(spot) {
 function openMove(i) {
   apFormState = { move: i };
   renderAutoForm();
+  seeIt('apform');
 }
 
 /** The programs and the moves of one tier. */
@@ -2193,7 +2197,7 @@ function apRetarget(kind, gone) {
 
 function renderAutoView() {
   apDragging = false;
-  if (!show || apLocked()) return;
+  if (!show) return;
   const a = show.auto, s = (status && status.auto) || {}, cur = ['calm', 'groove', 'peak'].indexOf(s.tier), v = $('apview');
   a.colors.forEach((c, i) => $('p-auto').style.setProperty('--tc' + i, rgbHex(c)));
   const tc = (e, i) => { e.style.setProperty('--tc', 'var(--tc' + i + ')'); e.dataset.spot = TIERS[i][2]; return e; };
@@ -2273,16 +2277,6 @@ function renderAutoDrop() {
 
 function renderAutoSet() {
   const a = show.auto;
-  const pin = h('input', 'num');
-  pin.inputMode = 'numeric';
-  pin.maxLength = 8;
-  pin.value = a.pin;
-  pin.title = 'Zero to eight digits. With a PIN, this panel and the Lights setup ask for it.';
-  pin.addEventListener('input', () => {
-    pin.value = pin.value.replace(/\D/g, '');
-    showEdit(() => { a.pin = pin.value; }, false);
-    if (pin.value) sessionStorage.setItem('apPin', pin.value); else sessionStorage.removeItem('apPin');
-  });
   const colours = TIERS.map(([n], i) => {
     const c = h('input');
     c.type = 'color';
@@ -2291,9 +2285,9 @@ function renderAutoSet() {
     c.addEventListener('change', renderAutoView);
     return h('label', null, n + ' ', c);
   });
-  $('apset').replaceChildren(
-    h('label', null, 'MIDI channel ', numIn(1, 16, a.channel + 1, 'The MIDI channel of the program changes, 1 to 16.', (v) => { a.channel = v - 1; })),
-    h('span', null, 'Tier colours ', ...colours), h('label', null, 'PIN ', pin));
+  $('pcch').replaceChildren(numIn(1, 16, a.channel + 1, 'The MIDI channel of the program changes, 1 to 16.', (v) => { a.channel = v - 1; renderFlow(); }));
+  $('pcrow').hidden = false;
+  $('apset').replaceChildren(h('span', null, 'Tier colours ', ...colours));
 }
 
 const CENTER = 32768;
@@ -2393,7 +2387,7 @@ function renderLook() {
   const head = h('h3', null, mini, 'Look of preset ' + (i + 1),
     seg([['cut', 'cut', 'The look changes at once.'], ['beat', '1 beat', 'The look fades in 1 beat.'], ['bar', '1 bar', 'The look fades in 1 bar.']],
       look ? look.fade : null, (v) => showEdit(() => { own().fade = v; })),
-    test, clear);
+    test, clear, closeBtn('Close the look editor', lookClose));
   const cards = show.groups.map((g, gi) => {
     const r = look && look.rows.find((x) => x.group === gi);
     const on = h('button', 'pill' + (r ? ' on' : ''), r ? 'on' : 'off');
@@ -2512,6 +2506,7 @@ function renderLayers() {
 function strobeClass() {
   const held = strobeHeld || !!(dmxLast && dmxLast.strobe_hold);
   $('ltstrobe').classList.toggle('on', held);
+  $('lvs2').classList.toggle('on', held);
   // A library fetch blocks the web server of the box, so the release of the strobe cannot arrive.
   $('ltlib').disabled = held;
   if (held) { $('ltofl').hidden = true; clearTimeout(oflTimer); }
@@ -2527,8 +2522,12 @@ function liveSend(strobe) {
   send({ type: 'dmx_live', master: +$('ltmaster').value, strobe });
 }
 $('ltmaster').addEventListener('input', () => { masterPct(); liveSend(strobeHeld); });
-$('ltstrobe').addEventListener('pointerdown', (e) => { navigator.vibrate?.(30); strobeDown = true; $('ltstrobe').setPointerCapture(e.pointerId); liveSend(true); });
-for (const t of ['pointerup', 'pointercancel']) $('ltstrobe').addEventListener(t, () => { strobeDown = false; liveSend(false); });
+// The strip and the phone screen each have a STROBE button. Both hold the same strobe.
+for (const b of [$('ltstrobe'), $('lvs2')]) {
+  b.addEventListener('pointerdown', (e) => { navigator.vibrate?.(30); strobeDown = true; b.setPointerCapture(e.pointerId); liveSend(true); });
+  for (const t of ['pointerup', 'pointercancel']) b.addEventListener(t, () => { strobeDown = false; liveSend(false); });
+  b.addEventListener('contextmenu', (e) => e.preventDefault());
+}
 $('ltfog').addEventListener('click', () => send({ type: 'dmx_fog' }));
 $('ltaddfx').addEventListener('click', () => {
   if (!show || show.fixtures.length >= 32) return toast('32 lights is the maximum.');
@@ -2782,8 +2781,9 @@ function oflDetail() {
 $('ltlib').addEventListener('click', () => {
   const box = $('ltofl');
   box.hidden = !box.hidden;
-  if (!box.hidden) $('oflq').focus();
+  if (!box.hidden) { $('oflq').focus(); seeIt('ltofl'); }
 });
+$('oflx').addEventListener('click', () => { $('ltofl').hidden = true; });
 $('oflq').addEventListener('input', () => { clearTimeout(oflTimer); oflTimer = setTimeout(oflSearch, 300); });
 
 const handlers = { scenes: onScenes, hello: onHello, status: onStatus, settings: onSettings, ports: onPorts, log: onLog, beat: onBeat, busy: onBusy, error: (m) => { otaDone(); toast(m.text); } };
@@ -2805,6 +2805,7 @@ function connect() {
     try { m = JSON.parse(e.data); } catch { return; }
     if ((m.type === 'status' || m.type === 'settings') && !$('takeover').hidden) {
       $('takeover').hidden = true;
+      document.body.classList.remove('busy');
       $('dot').classList.add('on');
       document.querySelector('main').hidden = false;
       syncDmx();
@@ -2825,15 +2826,22 @@ function connect() {
 
 $('rescan').addEventListener('click', () => send({ type: 'rescan' }));
 $('takeoverbtn').addEventListener('click', () => send({ type: 'take_over' }));
+// Log and Memory show /log and /mem. A second tap on the same button closes the output.
+let dgPath = '';
+const dgClose = () => { dgPath = ''; $('dg').hidden = $('dgx').hidden = true; };
 for (const [id, path] of [['dglog', '/log'], ['dgmem', '/mem']]) {
   $(id).addEventListener('click', async () => {
+    if (dgPath === path) return dgClose();
     try {
       const r = await fetch(BASE + path);
       $('dg').textContent = await r.text();
-      $('dg').hidden = false;
+      dgPath = path;
+      $('dg').hidden = $('dgx').hidden = false;
+      seeIt('dg');
     } catch { toast('The box did not send ' + path); }
   });
 }
+$('dgx').addEventListener('click', dgClose);
 // A tap shows the help of a row or a heading. A mouse shows it as a tooltip.
 if (matchMedia('(pointer:coarse)').matches) {
   document.addEventListener('click', (e) => {
@@ -2998,16 +3006,113 @@ function moveEditor(m, i, del, done) {
     h('div', 'mfoot', h('span', 'note', '2 bars shown' + (nf > 1 && m.spread !== 'together' ? ' · ' + (nf > 4 ? 'first 4 of ' + nf + ' lights' : nf + ' lights') + ' offset (' + (AP_SPREAD.find(([v]) => v === m.spread) || [])[1] + ')' : '')), del, go, done));
 }
 
-// ---- The modes: #live, #setup and #system in the URL. A mode shows only its panels. ----
-const MODES = ['live', 'setup', 'system'];
+// ---- Lights: who drives the lights, and where the light goes ----
+/** Scrolls an element into view after the page draws it. */
+function seeIt(id) { requestAnimationFrame(() => $(id).scrollIntoView({ block: 'nearest', behavior: 'smooth' })); }
+
+/** A ✕ button that closes an editor or a popover. */
+function closeBtn(label, f) {
+  const b = h('button', 'x', '✕');
+  b.ariaLabel = b.title = label;
+  b.addEventListener('click', f);
+  return b;
+}
+
+function lookClose() { lookOpen = null; renderScenes(); renderLights(); }
+
+/** Opens the panel of an element and scrolls to it. */
+function goTo(id) {
+  const e = $(id), d = e.closest('details');
+  if (d) d.open = true;
+  e.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+const drvNow = () => (show && show.auto && show.auto.on ? 'auto' : scenes && scenes.enabled ? 'manual' : 'off');
+
+/** Sets the driver of the lights: Off, Manual rules (the scene rows) or Autopilot. */
+function drvPick(v) {
+  const a = show && show.auto;
+  if (!scenes || v === drvNow()) return;
+  if (status && status.master.playing && !confirm('A deck plays. Change the driver of the lights now?')) return;
+  if (a && a.on !== (v === 'auto')) showEdit(() => { a.on = v === 'auto'; });
+  // The autopilot pauses the rows, so the rows keep their switch.
+  if (v !== 'auto' && scenes.enabled !== (v === 'manual')) { scenes.enabled = v === 'manual'; sceneSave(); }
+}
+
+/** The desk input of the box, from the status field dmx. Empty without the field (the host). */
+function deskText() {
+  const d = status && status.dmx;
+  if (!d || !d.mode) return '';
+  const art = d.artnet ? (d.signal ? 'Art-Net ignored' : 'Art-Net live') : 'no Art-Net';
+  return (d.signal ? 'DMX IN ' + d.in_fps + ' fps' : 'no DMX IN') + ' · ' + art + ' ▶ ' + d.mode + ' ▶ DMX out';
+}
+
+let flowKey = '', flowDesk = null;
+/** Draws the driver switch and the lines of the Lights overview. Each line links to its control. */
+function renderFlow() {
+  if (!caps || $('p-flow').hidden) return;
+  const a = show && show.auto, desk = deskText(), port = status && status.output && status.output.port;
+  const d = status && status.dmx, drv = drvNow();
+  set('deskin', desk);
+  $('deskhead').hidden = !desk && !$('set-dmx').childElementCount;
+  $('drvnote').hidden = !boxIp();
+  $('scpaused').hidden = drv !== 'auto';
+  const idle = show && (show.idle == null ? 'none' : (scenes && scenes.labels[show.idle]) || 'preset ' + (show.idle + 1));
+  // The frame rate of DMX IN changes each second. It is not in the key, so that the buttons
+  // stay under a finger. Only the text of the Desk link follows it.
+  const key = [drv, !!a, scenes && [scenes.channel, scenes.first_note, scenes.count].join(), a && a.channel,
+    show && show.fixtures.length, idle, d && d.mode && [d.mode, d.signal, d.artnet].join(), port].join('|');
+  if (key === flowKey) {
+    if (flowDesk && flowDesk.textContent !== desk) flowDesk.textContent = desk;
+    return;
+  }
+  flowKey = key;
+  const opts = [['off', 'Off', 'No scene note and no look. The clock, the CCs and the idle look keep running.'],
+    ['manual', 'Manual rules', 'The event rows of Scenes fire the presets.']];
+  if (a) opts.push(['auto', 'Autopilot', 'The tiers pick the console programs and the box moves. The rows are paused.']);
+  apSeg('drv', opts, drv, drvPick);
+  const link = (text, id) => { const b = h('button', null, text); b.addEventListener('click', () => goTo(id)); return b; };
+  const lines = [];
+  if (scenes) {
+    lines.push(h('div', null, h('b', null, 'MIDI to the console'),
+      link('scene notes ch' + (scenes.channel + 1) + ' · n' + scenes.first_note + '–' + (scenes.first_note + scenes.count - 1), 'scch'),
+      a && ' · ', a && link('programs ch' + (a.channel + 1), 'pcrow'), port ? ' · port ' + port : null,
+      drv === 'off' && h('span', 'off', ' · off'), drv === 'auto' && h('span', 'off', ' · scene rows paused')));
+  }
+  if (show) {
+    lines.push(h('div', null, h('b', null, 'Box DMX'),
+      link(show.fixtures.length + (show.fixtures.length === 1 ? ' light' : ' lights'), 'ltpatch'), ' · ', link('idle look ' + idle, 'ltidle')));
+  }
+  flowDesk = desk ? link(desk, 'set-dmx') : null;
+  if (flowDesk) lines.push(h('div', null, h('b', null, 'Desk'), flowDesk));
+  $('flow').replaceChildren(...lines);
+}
+
+// ---- The tabs: #live, #lights, #sync and #system in the URL. A tab shows only its panels. ----
+// #phone shows the phone screen alone. The old #setup opens Lights.
+const MODES = ['live', 'lights', 'sync', 'system'];
 function modeOn() {
-  const m = MODES.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'live';
+  const want = location.hash.slice(1), was = document.body.classList.contains('lv');
+  document.body.classList.toggle('lv', want === 'phone');
+  // The buttons of the phone screen go away, so a hold under the finger must end.
+  if (was && want !== 'phone') releaseHolds();
+  let m = want === 'setup' ? 'lights' : MODES.includes(want) ? want : 'live';
+  if ($('modes').querySelector('a[href="#' + m + '"]').hidden) m = 'live';
   document.querySelectorAll('main>[data-mode]').forEach((e) => e.classList.toggle('offmode', e.dataset.mode !== m));
   for (const a of $('modes').children) a.classList.toggle('on', a.hash === '#' + m);
   scrollTo(0, 0);
 }
 addEventListener('hashchange', modeOn);
 modeOn();
+
+/** Hides a tab that has no visible panel, for example Lights on the emulator. */
+function navSync() {
+  for (const a of $('modes').children) {
+    a.hidden = ![...document.querySelectorAll('main>[data-mode="' + a.hash.slice(1) + '"]')].some((e) => !e.hidden);
+  }
+  const cur = $('modes').querySelector('a.on');
+  if (cur && cur.hidden) location.hash = '#live';
+}
 
 // ---- The live panel ----
 let lvDown = false;
@@ -3035,7 +3140,12 @@ for (const t of ['pointerup', 'pointercancel', 'pointerleave']) $('lvb').addEven
 $('lvb').addEventListener('contextmenu', (e) => e.preventDefault());
 // Only the page that holds the blackout releases it. The flag is global on the host.
 const lvRelease = () => { if (lvDown) { lvDown = false; lvBlack(false); } };
-addEventListener('pagehide', lvRelease);
+/** Ends the blackout and the strobe that this page holds. */
+function releaseHolds() {
+  lvRelease();
+  if (strobeDown) { strobeDown = false; liveSend(false); }
+}
+addEventListener('pagehide', releaseHolds);
 // Keys on a computer: hold B for the blackout, hold S for the strobe, F for the fog, 1 to 4 for the tiers.
 addEventListener('keydown', (e) => {
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.target.closest('input,select,textarea')) return;
@@ -3050,9 +3160,25 @@ addEventListener('keyup', (e) => {
   if (k === 'b') lvRelease();
   if (k === 's' && strobeDown) { strobeDown = false; liveSend(false); }
 });
-addEventListener('blur', () => { lvRelease(); if (strobeDown) { strobeDown = false; liveSend(false); } });
-document.addEventListener('visibilitychange', () => { if (document.hidden) lvRelease(); });
-$('lvlink').addEventListener('click', (e) => { e.preventDefault(); location.hash = '#live'; });
+addEventListener('blur', releaseHolds);
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseHolds(); });
+$('lvlink').addEventListener('click', (e) => { e.preventDefault(); location.hash = '#phone'; });
+$('lvf').addEventListener('click', () => send({ type: 'dmx_fog' }));
+
+// A button in a panel header does its own job. It does not open or close the panel.
+document.addEventListener('click', (e) => { if (e.target.closest('summary button')) e.preventDefault(); });
+
+// Escape closes the top open item: the hold popover, the look editor, the autopilot form, the
+// library box, the Diagnostics output, then the phone screen. An input keeps its own Escape.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || (e.target.closest('input,select,textarea') && e.target.id !== 'oflq')) return;
+  if (holdPop) { holdPop = null; renderScenes(); }
+  else if (lookOpen !== null) lookClose();
+  else if (apFormState) { apFormState = null; renderAuto(); }
+  else if (!$('ltofl').hidden) $('ltofl').hidden = true;
+  else if (!$('dg').hidden) dgClose();
+  else if (document.body.classList.contains('lv')) location.hash = '#live';
+});
 
 connect();
 </script>
