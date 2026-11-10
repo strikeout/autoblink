@@ -16,7 +16,7 @@
 //! lights uses the HTP and LTP rules of `autoblink_core_dmx::Merge`. A show without lights uses
 //! HTP for each channel (`autoblink_core_ui::merge`).
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -58,6 +58,30 @@ const BREAK_BITS: i32 = 25;
 
 /// The start code and the 512 channels.
 const FRAME_LEN: usize = 513;
+
+/// The timing of the DMX output. `GET /dmxtune` changes it at runtime, for tests with a light.
+/// The values are not stored. A restart sets the defaults again.
+pub struct Tune {
+    /// The break length in bit times (4 µs).
+    pub break_bits: AtomicU32,
+    /// The idle time of the UART after its FIFO is empty, in bit times (`uart_set_tx_idle_num`).
+    pub idle_bits: AtomicU32,
+    /// The time from one write to the next, in µs. With 0, the thread writes the next frame when
+    /// the TX buffer has space for it. The frames then go out back to back.
+    pub period_us: AtomicU32,
+    /// The channels in each frame, 24 to 512.
+    pub slots: AtomicU32,
+}
+
+pub static TUNE: Tune = Tune {
+    break_bits: AtomicU32::new(BREAK_BITS as u32),
+    idle_bits: AtomicU32::new(0),
+    period_us: AtomicU32::new(FRAME_PERIOD.as_micros() as u32),
+    slots: AtomicU32::new(512),
+};
+
+/// The space in the TX buffer for one frame: the data and the item headers of the ring buffer.
+const FRAME_ROOM: usize = FRAME_LEN + 64;
 
 /// The input has no signal when no good frame arrives for this time.
 const SIGNAL_TIMEOUT: Duration = Duration::from_secs(1);
@@ -266,6 +290,7 @@ fn run(
     let mut late_count = 0u32;
     let mut late_max = Duration::ZERO;
     let mut next_late_log = Instant::now() + Duration::from_secs(60);
+    let mut idle_set = 0u16;
     // The setting "DMX IN". The thread reads it with the other settings before each frame.
     let mut dmx_in = false;
     loop {
@@ -362,6 +387,22 @@ fn run(
 
         if Instant::now() < next_send {
             continue;
+        }
+        let period_us = TUNE.period_us.load(Ordering::Relaxed);
+        if period_us == 0 {
+            let mut free = 0usize;
+            // SAFETY: `free` is a valid output.
+            unsafe { esp_idf_svc::sys::uart_get_tx_buffer_free_size(uart.port(), &mut free) };
+            if free < FRAME_ROOM {
+                next_send = Instant::now() + Duration::from_millis(1);
+                continue;
+            }
+        }
+        let idle = TUNE.idle_bits.load(Ordering::Relaxed) as u16;
+        if idle != idle_set {
+            // SAFETY: the driver of the port is installed.
+            unsafe { esp_idf_svc::sys::uart_set_tx_idle_num(uart.port(), idle) };
+            idle_set = idle;
         }
         let late = Instant::now() - next_send;
         if late > LATE_LIMIT {
@@ -498,11 +539,13 @@ fn run(
         }
         // The next write comes one period after this write. Thus the UART has sent this frame and
         // its break before the next frame comes.
-        next_send = Instant::now() + FRAME_PERIOD;
+        next_send = Instant::now() + Duration::from_micros(u64::from(period_us));
         // The UART sends the frame, then the break. The break before the next frame and the idle
         // time after it make the reset sequence of DMX512.
         if send {
-            if let Err(e) = uart.write_with_break(&out[..], BREAK_BITS) {
+            let len = 1 + (TUNE.slots.load(Ordering::Relaxed) as usize).clamp(24, 512);
+            let brk = TUNE.break_bits.load(Ordering::Relaxed) as i32;
+            if let Err(e) = uart.write_with_break(&out[..len], brk) {
                 log::warn!("DMX frame not sent: {e}");
             }
         }

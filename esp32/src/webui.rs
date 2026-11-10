@@ -248,6 +248,41 @@ pub fn start(
         Ok(())
     })?;
 
+    // Changes the timing of the DMX output for a test, for example
+    // `/dmxtune?break=44&idle=25&period=0&slots=64`. Without a value, the route only gives the
+    // timing. A restart sets the defaults again.
+    #[cfg(feature = "dmx")]
+    server.fn_handler("/dmxtune", Method::Get, |req| -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let t = &crate::dmx::TUNE;
+        let query = req.uri().split_once('?').map_or("", |(_, q)| q).to_owned();
+        for pair in query.split('&') {
+            let Some((k, v)) = pair.split_once('=') else {
+                continue;
+            };
+            let Ok(v) = v.parse::<u32>() else { continue };
+            match k {
+                "break" => t.break_bits.store(v.clamp(22, 255), Relaxed),
+                "idle" => t.idle_bits.store(v.min(1023), Relaxed),
+                "period" => t
+                    .period_us
+                    .store(if v == 0 { 0 } else { v.clamp(5_000, 1_000_000) }, Relaxed),
+                "slots" => t.slots.store(v.clamp(24, 512), Relaxed),
+                _ => {}
+            }
+        }
+        let text = format!(
+            "break {} bits\nidle {} bits\nperiod {} us\nslots {}\n",
+            t.break_bits.load(Relaxed),
+            t.idle_bits.load(Relaxed),
+            t.period_us.load(Relaxed),
+            t.slots.load(Relaxed)
+        );
+        req.into_response(200, None, &[("Content-Type", "text/plain")])?
+            .write_all(text.as_bytes())?;
+        Ok(())
+    })?;
+
     #[cfg(feature = "dmx")]
     show_routes(&mut server, &state)?;
     #[cfg(feature = "dmx")]

@@ -27,25 +27,35 @@ def uncertain(a, b): return any(g0 < b and g1 > a for g0, g1 in gaps)
 falls = [a for a, b, lv in runs if lv == 0]
 lows = [(a, b) for a, b, lv in runs if lv == 0]
 print(f"capture {end/1000:.1f} ms, {len(ents)} entries, {len(gaps)} sampler stops (max {max([b-a for a,b in gaps]+[0]):.1f} µs)")
-breaks = [(a, b) for a, b in lows if b - a >= 60]
+# A break is a low of 88 µs or more. A sampler stop can make it look longer.
+breaks = [(a, b) for a, b in lows if b - a >= 88]
+def fall_near(t, tol=1.5):
+    return next((a for a in falls if abs(a - t) <= tol), None)
 prev = None
 for i, (ba, bb) in enumerate(breaks):
-    nxt = breaks[i + 1][0] if i + 1 < len(breaks) else None
-    mab_end = next((a for a in falls if a >= bb), None)
-    if mab_end is None: break
-    slots, errs, unc, mtbs, t = [], 0, 0, 0.0, mab_end
-    while t is not None and (nxt is None or t < nxt) and t + 44 <= end:
-        if level(t + BIT * 0.5) != 0: errs += 1
-        v = sum(level(t + BIT * (k + 1.5)) << k for k in range(8))
-        if not (level(t + BIT * 9.5) and level(t + BIT * 10.5)): errs += 1
-        if uncertain(t, t + 44): unc += 1
-        slots.append(v)
-        t2 = next((a for a in falls if a >= t + BIT * 9.6), None)
-        if t2 is not None and (nxt is None or t2 < nxt): mtbs = max(mtbs, t2 - (t + 44))
+    nxt = breaks[i + 1][0] if i + 1 < len(breaks) else end
+    sc = next((a for a in falls if a >= bb), None)
+    if sc is None or sc >= nxt: continue
+    slots, errs, unk, idle, t = [], 0, 0, 0.0, sc
+    while t + 44 <= nxt and t + 44 <= end:
+        if uncertain(t - 1, t + 45):
+            unk += 1; slots.append(None)
+        else:
+            v = sum(level(t + BIT * (k + 1.5)) << k for k in range(8))
+            if level(t + BIT * 0.5) != 0 or not (level(t + BIT * 9.5) and level(t + BIT * 10.5)): errs += 1
+            slots.append(v)
+        # The next start bit follows the two stop bits, or comes later after idle time.
+        t2 = fall_near(t + 44)
+        if t2 is None:
+            if uncertain(t + 40, t + 48): t2 = t + 44
+            else:
+                t2 = next((a for a in falls if a > t + 43), None)
+                if t2 is None or t2 >= nxt: break
+                idle = max(idle, t2 - (t + 44))
         t = t2
-    period = f"{(ba - prev)/1000:7.2f}" if prev is not None else "      -"
+    period = f"{(ba - prev)/1000:6.2f}" if prev is not None else "     -"
     prev = ba
-    full = nxt is not None
-    print(f"frame at {ba/1000:6.2f} ms  period {period} ms  break {bb-ba:6.1f} µs  MAB {mab_end-bb:7.1f} µs  "
-          f"slots {len(slots):3d}{'' if full else '+'}  SC {slots[0] if slots else '-'}  ch1-8 {slots[1:9]}  "
-          f"framing err {errs}  uncertain {unc}  max gap between slots {mtbs:.1f} µs")
+    whole = breaks[i + 1:] != []
+    print(f"frame at {ba/1000:6.2f} ms  period {period} ms  break {bb-ba:6.1f} µs  MAB {sc-bb:7.1f} µs  "
+          f"slots {len(slots):3d}{'' if whole else '+'}  unknown {unk:2d}  framing err {errs}  "
+          f"max idle between slots {idle:5.1f} µs  SC,ch1-8 {slots[:9]}")
