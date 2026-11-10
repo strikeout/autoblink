@@ -238,7 +238,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 ### DMX show
 
 - The `show` partition holds the DMX show (`show, data, undefined, 0x3F0000, 0x10000` in `esp32/partitions.csv`). Its content is JSON. A u32 length comes first. The firmware writes the length last, so a write that stops early leaves no show. The box then starts with an empty show until the page saves again.
-- OTA does not change the partition table. Flash a box once over USB to add the partition.
+- OTA does not change the partition table. A table from 1.18 to 1.23 has no `show` partition, but the flash at 0x3F0000 is free in it. The firmware then adds the partition to the list in RAM at each start (`esp_partition_register_external` in `show.rs`).
+- ESP-IDF refuses the region when it overlaps a partition of the table. The box then has no show storage, and `POST /show` answers 500. Flash such a box over USB.
 - Do not use the subtype `0x40` for the partition. It panics espflash 4.6.0. The table uses the named subtype `undefined`.
 - `GET /show` serializes the running show. `POST /show` is a CORS simple request with an Origin check. It answers 413 when the body is larger than 60 000 bytes. It answers 503 when the body is larger than half of the largest free heap block. The reader bounds the lists of the show while it reads them.
 - The firmware sends the capability `dmx` and the status field `dmx`. The page sends the WebSocket commands `dmx_live`, `dmx_fog` and `dmx_aim`.
