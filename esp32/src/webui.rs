@@ -130,6 +130,16 @@ impl Active {
     fn is_some(&self) -> bool {
         self.0.lock().unwrap().1.is_some()
     }
+
+    /// Returns true when `session` is the active connection.
+    fn is(&self, session: i32) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .1
+            .as_ref()
+            .is_some_and(|a| a.session() == session)
+    }
 }
 
 /// `true` when the settings changed outside the page, for example in the menu of the OLED. The
@@ -296,7 +306,21 @@ pub fn start(
             #[serde(rename = "type", borrow)]
             kind: Cow<'a, str>,
         }
-        if serde_json::from_slice::<Kind>(text).is_ok_and(|k| k.kind == "scenes_set") {
+        let kind = serde_json::from_slice::<Kind>(text).ok();
+        let kind = kind.as_ref().map(|k| k.kind.as_ref());
+        if kind == Some("take_over") {
+            take_over(ws, &ws_active, &ws_state)?;
+            let msg = settings.lock().unwrap().message();
+            ws.send(FrameType::Text(false), msg.as_bytes())?;
+            let msg = settings.lock().unwrap().scenes_message();
+            return ws.send(FrameType::Text(false), msg.as_bytes());
+        }
+        // Only the active page controls the box. The firmware releases a blackout or a strobe
+        // only when the active page closes, so a hold from another page could stay on.
+        if !ws_active.is(ws.session()) {
+            return ws.send(FrameType::Text(false), br#"{"type":"busy"}"#);
+        }
+        if kind == Some("scenes_set") {
             let reply = match serde_json::from_slice::<ScenesConfig>(text) {
                 Ok(scenes) => {
                     let mut settings = settings.lock().unwrap();
@@ -313,13 +337,6 @@ pub fn start(
                 error("The command is not valid JSON").as_bytes(),
             );
         };
-        if cmd["type"] == "take_over" {
-            take_over(ws, &ws_active, &ws_state)?;
-            let msg = settings.lock().unwrap().message();
-            ws.send(FrameType::Text(false), msg.as_bytes())?;
-            let msg = settings.lock().unwrap().scenes_message();
-            return ws.send(FrameType::Text(false), msg.as_bytes());
-        }
         let reply = command(
             &cmd,
             &settings,
