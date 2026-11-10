@@ -249,7 +249,7 @@ pub fn start(
     })?;
 
     // Changes the timing of the DMX output for a test, for example
-    // `/dmxtune?break=44&idle=25&period=0&slots=64&gap=40&baud=250000`. Without a value, the route only gives the
+    // `/dmxtune?break=44&mab=20&idle=0&period=0&slots=64&gap=40&baud=250000`. Without a value, the route only gives the
     // timing. A restart sets the defaults again.
     #[cfg(feature = "dmx")]
     server.fn_handler("/dmxtune", Method::Get, |req| -> anyhow::Result<()> {
@@ -263,6 +263,7 @@ pub fn start(
             let Ok(v) = v.parse::<u32>() else { continue };
             match k {
                 "break" => t.break_bits.store(v.clamp(22, 255), Relaxed),
+                "mab" => t.mab_us.store(v.clamp(12, 100_000), Relaxed),
                 "idle" => t.idle_bits.store(v.min(1023), Relaxed),
                 "period" => t
                     .period_us
@@ -276,8 +277,9 @@ pub fn start(
             }
         }
         let text = format!(
-            "break {} bits\nidle {} bits\nperiod {} us\nslots {}\ngap {} us\nbaud {}\n",
+            "break {} bits\nmab {} us\nidle {} bits\nperiod {} us\nslots {}\ngap {} us\nbaud {}\n",
             t.break_bits.load(Relaxed),
+            t.mab_us.load(Relaxed),
             t.idle_bits.load(Relaxed),
             t.period_us.load(Relaxed),
             t.slots.load(Relaxed),

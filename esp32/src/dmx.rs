@@ -39,13 +39,11 @@ use crate::State;
 /// The fade time of the beat flash of a show without lights.
 const FLASH_MS: u64 = 200;
 
-/// The time from one frame write to the next. The UART sends one frame (512 channels) and the
-/// break in 22.7 ms. The idle time after the break is the mark after break of the next frame. Thus
-/// the rate is about 41 Hz.
+/// The time from one frame write to the next. One frame is the break, the mark after break and
+/// the start code with 512 channels. It takes 22.8 ms. Thus the rate is about 41 Hz.
 ///
-/// The thread measures the time from the last write, not from a fixed grid. With a grid, a late
-/// write and an on-time write can be less than 22.7 ms apart. The driver then starts the queued
-/// frame a few µs after the break (TX idle 0). A fixture can misread such a frame.
+/// The thread measures the time from the last write, not from a fixed grid. Thus the UART has
+/// sent the frame before the next write comes.
 const FRAME_PERIOD: Duration = Duration::from_millis(24);
 
 /// The log counts a write that starts this much after its time. On a fixed grid, such a write
@@ -54,11 +52,15 @@ const LATE_LIMIT: Duration = Duration::from_micros(1300);
 
 /// The break length in bit times. At 250 kbaud, one bit is 4 µs, so 44 bits give 176 µs, the
 /// break of most consoles. DMX512 needs at least 88 µs.
-const BREAK_BITS: i32 = 44;
+const BREAK_BITS: u32 = 44;
 
-/// The UART idle time after its FIFO is empty, in bit times. After a break, it is the shortest
-/// mark after break: 25 bits give 100 µs. DMX512 needs at least 8 µs.
-const IDLE_BITS: u32 = 25;
+/// The mark after break in µs. DMX512-A needs at least 12 µs from a transmitter. The time of the
+/// UART write adds some µs.
+const MAB_US: u32 = 20;
+
+/// The UART idle time after its FIFO is empty, in bit times. With 0, the slots of a long frame
+/// stay back to back when the FIFO runs empty for a moment.
+const IDLE_BITS: u32 = 0;
 
 /// The time after which the thread sends a frame again without a change. The bars of the owner
 /// flickered with 40 frames each second, but they were stable with 4 frames. DMX512 allows up to
@@ -81,6 +83,8 @@ const FRAME_LEN: usize = 513;
 pub struct Tune {
     /// The break length in bit times (4 µs).
     pub break_bits: AtomicU32,
+    /// The mark after break in µs.
+    pub mab_us: AtomicU32,
     /// The idle time of the UART after its FIFO is empty, in bit times (`uart_set_tx_idle_num`).
     pub idle_bits: AtomicU32,
     /// The time from one write to the next, in µs. With 0, the thread writes the next frame when
@@ -96,16 +100,14 @@ pub struct Tune {
 }
 
 pub static TUNE: Tune = Tune {
-    break_bits: AtomicU32::new(BREAK_BITS as u32),
+    break_bits: AtomicU32::new(BREAK_BITS),
+    mab_us: AtomicU32::new(MAB_US),
     idle_bits: AtomicU32::new(IDLE_BITS),
     period_us: AtomicU32::new(FRAME_PERIOD.as_micros() as u32),
     slots: AtomicU32::new(0),
     gap_us: AtomicU32::new(0),
     baud: AtomicU32::new(250_000),
 };
-
-/// The space in the TX buffer for one frame: the data and the item headers of the ring buffer.
-const FRAME_ROOM: usize = FRAME_LEN + 64;
 
 /// The input has no signal when no good frame arrives for this time.
 const SIGNAL_TIMEOUT: Duration = Duration::from_secs(1);
@@ -351,7 +353,8 @@ fn run(
     let mut late_count = 0u32;
     let mut late_max = Duration::ZERO;
     let mut next_late_log = Instant::now() + Duration::from_secs(60);
-    let mut idle_set = 0u16;
+    // No value: the first frame sets the idle time.
+    let mut idle_set = u16::MAX;
     // The bytes of the last frame on the wire, and the time of its write.
     let mut sent: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
     let mut sent_len = 0usize;
@@ -474,14 +477,10 @@ fn run(
             continue;
         }
         let period_us = TUNE.period_us.load(Ordering::Relaxed);
-        if period_us == 0 {
-            let mut free = 0usize;
-            // SAFETY: `free` is a valid output.
-            unsafe { esp_idf_svc::sys::uart_get_tx_buffer_free_size(uart.port(), &mut free) };
-            if free < FRAME_ROOM {
-                next_send = Instant::now() + Duration::from_millis(1);
-                continue;
-            }
+        // With period 0, the next frame starts when the UART has sent the last frame.
+        if period_us == 0 && uart.wait_tx_done(0).is_err() {
+            next_send = Instant::now() + Duration::from_millis(1);
+            continue;
         }
         let baud = TUNE.baud.load(Ordering::Relaxed);
         if baud != baud_set {
@@ -730,24 +729,50 @@ fn run(
             sent[..len].copy_from_slice(&out[..len]);
             sent_len = len;
             sent_at = Some(Instant::now());
-            let brk = TUNE.break_bits.load(Ordering::Relaxed) as i32;
+            let bit_us = 1_000_000 / baud_set.max(1);
+            let brk_us = TUNE.break_bits.load(Ordering::Relaxed) * bit_us;
+            let mab_us = TUNE.mab_us.load(Ordering::Relaxed);
             let gap = TUNE.gap_us.load(Ordering::Relaxed);
-            let result = if gap == 0 {
-                uart.write_with_break(&out[..len], brk)
-            } else {
-                // One slot takes 11 bits. The wait after each write is the slot and the gap.
-                let slot_us = 11_000_000 / baud_set.max(1);
-                for &b in &out[..len - 1] {
-                    let _ = uart.write(&[b]);
-                    esp_idf_svc::hal::delay::Ets::delay_us(slot_us + gap);
+            // The last frame is normally out, because the period is longer than a frame. A late
+            // frame gets 30 ms.
+            let done = uart.wait_tx_done(TickType::from(Duration::from_millis(30)).ticks());
+            let result = done.and_then(|()| {
+                send_break(uart.port(), brk_us, mab_us);
+                if gap == 0 {
+                    uart.write(&out[..len]).map(|_| ())
+                } else {
+                    // One slot takes 11 bits. The wait after each write is the slot and the gap.
+                    for &b in &out[..len] {
+                        uart.write(&[b])?;
+                        esp_idf_svc::hal::delay::Ets::delay_us(11 * bit_us + gap);
+                    }
+                    Ok(())
                 }
-                uart.write_with_break(&out[len - 1..len], brk)
-            };
+            });
             if let Err(e) = result {
                 log::warn!("DMX frame not sent: {e}");
             }
         }
     }
+}
+
+/// Sends the break and the mark after break of a frame. The TX line is inverted for the break.
+/// The TX FIFO of the UART must be empty.
+///
+/// The break comes before the data of its frame, as on a console. The ESP-IDF break comes after
+/// the data, so the time between two frames was the mark after break. That mark was 24 ms at
+/// 40 Hz and up to 250 ms with "DMX Refresh" On change.
+// ponytail: a task with a higher priority can make the break or the mark longer. DMX512 allows
+// both up to 1 s. The upgrade is a hardware timer, as in the esp_dmx library.
+fn send_break(port: esp_idf_svc::sys::uart_port_t, break_us: u32, mab_us: u32) {
+    use esp_idf_svc::hal::delay::Ets;
+    use esp_idf_svc::sys::{uart_set_line_inverse, uart_signal_inv_t_UART_SIGNAL_TXD_INV};
+    // SAFETY: the driver of the port is installed, and the UART sends nothing now.
+    unsafe { uart_set_line_inverse(port, uart_signal_inv_t_UART_SIGNAL_TXD_INV as u32) };
+    Ets::delay_us(break_us);
+    // SAFETY: as above. The mask 0 turns off each inversion.
+    unsafe { uart_set_line_inverse(port, 0) };
+    Ets::delay_us(mab_us);
 }
 
 /// Logs a change of the state of the outside source. A change between live and held only adds 1
