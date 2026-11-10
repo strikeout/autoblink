@@ -263,7 +263,7 @@ pub fn start(
             let Ok(v) = v.parse::<u32>() else { continue };
             match k {
                 "break" => t.break_bits.store(v.clamp(22, 255), Relaxed),
-                "mab" => t.mab_us.store(v.clamp(12, 100_000), Relaxed),
+                "mab" => t.mab_us.store(v.clamp(12, 2_000), Relaxed),
                 "idle" => t.idle_bits.store(v.min(1023), Relaxed),
                 "period" => t
                     .period_us

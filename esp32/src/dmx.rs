@@ -54,8 +54,8 @@ const LATE_LIMIT: Duration = Duration::from_micros(1300);
 /// break of most consoles. DMX512 needs at least 88 µs.
 const BREAK_BITS: u32 = 44;
 
-/// The mark after break in µs. DMX512-A needs at least 12 µs from a transmitter. The time of the
-/// UART write adds some µs.
+/// The mark after break in µs. DMX512-A needs at least 12 µs from a transmitter. The UART write
+/// adds about 140 to 200 µs: the scope shows a mark of 155 to 227 µs.
 const MAB_US: u32 = 20;
 
 /// The UART idle time after its FIFO is empty, in bit times. With 0, the slots of a long frame
@@ -352,6 +352,9 @@ fn run(
     // The late writes since the last report, and the latest one.
     let mut late_count = 0u32;
     let mut late_max = Duration::ZERO;
+    // The frames that the UART did not take since the last report, and the last error.
+    let mut unsent = 0u32;
+    let mut unsent_err = None;
     let mut next_late_log = Instant::now() + Duration::from_secs(60);
     // No value: the first frame sets the idle time.
     let mut idle_set = u16::MAX;
@@ -507,6 +510,10 @@ fn run(
                     late_max.as_micros()
                 );
             }
+            if let Some(e) = unsent_err.take() {
+                log::warn!("DMX output: {unsent} frames not sent in 60 s, the last with: {e}");
+            }
+            unsent = 0;
             late_count = 0;
             late_max = Duration::ZERO;
         }
@@ -709,8 +716,7 @@ fn run(
             in_log.recent(now_ms, &mut s.in_recent);
             out_log.recent(now_ms, &mut s.out_recent);
         }
-        // The next write comes one period after this write. Thus the UART has sent this frame and
-        // its break before the next frame comes.
+        // The next write comes one period after this write.
         next_send = Instant::now() + Duration::from_micros(u64::from(period_us));
         // With "DMX Refresh" On change, a frame without a change waits until `REPEAT` is over.
         // The `BURST` frames after a change go out at once.
@@ -723,19 +729,17 @@ fn run(
             || burst > 0
             || sent_at.is_none_or(|t| t.elapsed() >= REPEAT);
         if send && due {
-            if !changed {
-                burst = burst.saturating_sub(1);
-            }
-            sent[..len].copy_from_slice(&out[..len]);
-            sent_len = len;
-            sent_at = Some(Instant::now());
             let bit_us = 1_000_000 / baud_set.max(1);
             let brk_us = TUNE.break_bits.load(Ordering::Relaxed) * bit_us;
             let mab_us = TUNE.mab_us.load(Ordering::Relaxed);
             let gap = TUNE.gap_us.load(Ordering::Relaxed);
             // The last frame is normally out, because the period is longer than a frame. A late
             // frame gets 30 ms.
-            let done = uart.wait_tx_done(TickType::from(Duration::from_millis(30)).ticks());
+            // ESP-IDF gives the TX done event also when the FIFO runs empty in a frame, for
+            // example during a flash write. The call with 0 ticks reads the state of the UART.
+            let done = uart
+                .wait_tx_done(TickType::from(Duration::from_millis(30)).ticks())
+                .and_then(|()| uart.wait_tx_done(0));
             let result = done.and_then(|()| {
                 send_break(uart.port(), brk_us, mab_us);
                 if gap == 0 {
@@ -749,10 +753,25 @@ fn run(
                     Ok(())
                 }
             });
-            if let Err(e) = result {
-                log::warn!("DMX frame not sent: {e}");
+            match result {
+                Ok(()) => {
+                    if !changed {
+                        burst = burst.saturating_sub(1);
+                    }
+                    sent[..len].copy_from_slice(&out[..len]);
+                    sent_len = len;
+                    sent_at = Some(Instant::now());
+                }
+                // The next pass tries again. The log shows the count once a minute.
+                Err(e) => {
+                    unsent += 1;
+                    unsent_err = Some(e);
+                }
             }
         }
+        // Each pass waits at least 1 ms. Thus the idle task runs, also with `GET /dmxtune`
+        // values that make a pass long.
+        next_send = next_send.max(Instant::now() + Duration::from_millis(1));
     }
 }
 
@@ -760,8 +779,8 @@ fn run(
 /// The TX FIFO of the UART must be empty.
 ///
 /// The break comes before the data of its frame, as on a console. The ESP-IDF break comes after
-/// the data, so the time between two frames was the mark after break. That mark was 24 ms at
-/// 40 Hz and up to 250 ms with "DMX Refresh" On change.
+/// the data, so the time between two frames was the mark after break. With a short frame, that
+/// mark was about 25 ms at 40 Hz and up to 250 ms with "DMX Refresh" On change.
 // ponytail: a task with a higher priority can make the break or the mark longer. DMX512 allows
 // both up to 1 s. The upgrade is a hardware timer, as in the esp_dmx library.
 fn send_break(port: esp_idf_svc::sys::uart_port_t, break_us: u32, mab_us: u32) {
