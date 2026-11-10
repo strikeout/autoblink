@@ -60,14 +60,13 @@ const BREAK_BITS: i32 = 44;
 /// mark after break: 25 bits give 100 µs. DMX512 needs at least 8 µs.
 const IDLE_BITS: u32 = 25;
 
-/// The time after which the thread sends a frame again without a change. A light of the owner
-/// flickered with 40 frames each second, but it was stable with 4 frames. DMX512 allows up to
+/// The time after which the thread sends a frame again without a change. The bars of the owner
+/// flickered with 40 frames each second, but they were stable with 4 frames. DMX512 allows up to
 /// 1 s from break to break.
 const REPEAT: Duration = Duration::from_millis(250);
 
-/// With "DMX Refresh" On change, the frames after a change also go out at once, this many. A
-/// light that reads a value only from a few frames in a row then shows a change at once, not
-/// after a second of repeats.
+/// With "DMX Refresh" On change, the frames after a change also go out at once, this many. When
+/// a light drops a damaged frame, the next frame then comes after 24 ms, not after 250 ms.
 const BURST: u8 = 3;
 
 /// The longest wait of the loop. The thread resets the task watchdog (5 s) on each pass, also

@@ -64,8 +64,8 @@ pub struct BoxConfig {
     /// the slot count of the live outside frame when that is larger. A show without lights gives
     /// 512.
     ///
-    /// A cheap light can flicker and get dim when each frame has all 512 channels. Its chip
-    /// then reads 22 500 bytes each second, and its dimming loses time.
+    /// With all 512 channels, the line carries 22 500 bytes each second. On a line with bit
+    /// errors, more frames are then damaged, and a light can flicker.
     pub dmx_channels: u16,
     /// Sends a frame each 24 ms. When it is false, the box sends a frame after a change of a
     /// channel. It repeats a frame without a change 4 times each second.
