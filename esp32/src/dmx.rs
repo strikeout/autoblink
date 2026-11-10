@@ -52,9 +52,18 @@ const FRAME_PERIOD: Duration = Duration::from_millis(24);
 /// makes the next gap shorter than the wire time.
 const LATE_LIMIT: Duration = Duration::from_micros(1300);
 
-/// The break length in bit times. At 250 kbaud, one bit is 4 µs, so 25 bits give 100 µs.
-/// DMX512 needs at least 88 µs.
-const BREAK_BITS: i32 = 25;
+/// The break length in bit times. At 250 kbaud, one bit is 4 µs, so 44 bits give 176 µs, the
+/// break of most consoles. DMX512 needs at least 88 µs.
+const BREAK_BITS: i32 = 44;
+
+/// The UART idle time after its FIFO is empty, in bit times. After a break, it is the shortest
+/// mark after break: 25 bits give 100 µs. DMX512 needs at least 8 µs.
+const IDLE_BITS: u32 = 25;
+
+/// The time after which the thread sends a frame again without a change. A light of the owner
+/// flickered with 40 frames each second, but it was stable with 4 frames. DMX512 allows up to
+/// 1 s from break to break.
+const REPEAT: Duration = Duration::from_millis(250);
 
 /// The start code and the 512 channels.
 const FRAME_LEN: usize = 513;
@@ -80,7 +89,7 @@ pub struct Tune {
 
 pub static TUNE: Tune = Tune {
     break_bits: AtomicU32::new(BREAK_BITS as u32),
-    idle_bits: AtomicU32::new(0),
+    idle_bits: AtomicU32::new(IDLE_BITS),
     period_us: AtomicU32::new(FRAME_PERIOD.as_micros() as u32),
     slots: AtomicU32::new(0),
     gap_us: AtomicU32::new(0),
@@ -230,7 +239,6 @@ pub fn start(
             .tx_fifo_size(1024)
             .queue_size(32)
     };
-    let uart = UartDriver::new(uart, tx, rx, None::<Gpio36>, None::<Gpio4>, &cfg)?;
     let queue = Arc::new(Queue::<DmxMsg>::new(QUEUE_LEN));
     let msgs = queue.clone();
 
@@ -241,9 +249,19 @@ pub fn start(
     // With the log line of the reply, the path can use about 4.8 KB.
     // ponytail: 6.5 KB is an estimate. Measure with /mem on a box that gets ArtPoll from a desk,
     // and keep 1.5 KB above the low point.
-    crate::spawn_rt(c"dmx", 6656, 6, Some(Core::Core1), move || {
-        run(&uart, &state, &show, &box_cfg, &msgs)
-    })?;
+    //
+    // The thread installs the driver, so the UART interrupt runs on core 1. On core 0, the WiFi
+    // interrupts delayed it, and a long frame had gaps of up to 30 µs between two slots.
+    crate::spawn_rt(
+        c"dmx",
+        6656,
+        6,
+        Some(Core::Core1),
+        move || match UartDriver::new(uart, tx, rx, None::<Gpio36>, None::<Gpio4>, &cfg) {
+            Ok(uart) => run(&uart, &state, &show, &box_cfg, &msgs),
+            Err(e) => log::error!("DMX: the UART driver does not start: {e}"),
+        },
+    )?;
     log::info!("DMX output is on IO4, DMX input is on IO36");
     Ok(queue)
 }
@@ -298,6 +316,10 @@ fn run(
     let mut late_max = Duration::ZERO;
     let mut next_late_log = Instant::now() + Duration::from_secs(60);
     let mut idle_set = 0u16;
+    // The bytes of the last frame on the wire, and the time of its write.
+    let mut sent: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
+    let mut sent_len = 0usize;
+    let mut sent_at: Option<Instant> = None;
     let mut baud_set = 250_000u32;
     // The setting "DMX IN". The thread reads it with the other settings before each frame.
     let mut dmx_in = false;
@@ -463,7 +485,7 @@ fn run(
             )
         };
         // The channels of this frame. The setting "DMX Channels" gives them from the show.
-        let mut slots = 512;
+        let slots;
         let send = {
             let show = show.lock().unwrap();
             while let Some((msg, _)) = msgs.recv_front(0) {
@@ -560,14 +582,22 @@ fn run(
         next_send = Instant::now() + Duration::from_micros(u64::from(period_us));
         // The UART sends the frame, then the break. The break before the next frame and the idle
         // time after it make the reset sequence of DMX512.
-        if send {
-            let len = 1 + match TUNE.slots.load(Ordering::Relaxed) as usize {
-                0 => slots,
-                n => n.clamp(1, 512),
-            };
+        let len = 1 + match TUNE.slots.load(Ordering::Relaxed) as usize {
+            0 => slots,
+            n => n.clamp(1, 512),
+        };
+        // With "DMX Refresh" On change, a frame without a change waits until `REPEAT` is over.
+        let due = frame_cfg.dmx_refresh_always
+            || len != sent_len
+            || out[..len] != sent[..len]
+            || sent_at.is_none_or(|t| t.elapsed() >= REPEAT);
+        if send && due {
+            sent[..len].copy_from_slice(&out[..len]);
+            sent_len = len;
+            sent_at = Some(Instant::now());
             let brk = TUNE.break_bits.load(Ordering::Relaxed) as i32;
             let gap = TUNE.gap_us.load(Ordering::Relaxed);
-            let sent = if gap == 0 {
+            let result = if gap == 0 {
                 uart.write_with_break(&out[..len], brk)
             } else {
                 // One slot takes 11 bits. The wait after each write is the slot and the gap.
@@ -578,7 +608,7 @@ fn run(
                 }
                 uart.write_with_break(&out[len - 1..len], brk)
             };
-            if let Err(e) = sent {
+            if let Err(e) = result {
                 log::warn!("DMX frame not sent: {e}");
             }
         }

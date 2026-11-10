@@ -10,15 +10,17 @@ pub const IDX_DMX_MODE: usize = 110;
 pub const IDX_BEAT_CHANNEL: usize = 111;
 pub const IDX_DMX_IN: usize = 112;
 pub const IDX_DMX_CHANNELS: usize = 113;
+pub const IDX_DMX_REFRESH: usize = 114;
 pub const IDX_ROTATE: usize = 120;
 pub const IDX_BRIGHTNESS: usize = 121;
 
 /// The indices of the rows that `BoxConfig` has.
-pub const INDICES: [usize; 6] = [
+pub const INDICES: [usize; 7] = [
     IDX_DMX_MODE,
     IDX_BEAT_CHANNEL,
     IDX_DMX_IN,
     IDX_DMX_CHANNELS,
+    IDX_DMX_REFRESH,
     IDX_ROTATE,
     IDX_BRIGHTNESS,
 ];
@@ -27,7 +29,7 @@ pub const INDICES: [usize; 6] = [
 const BRIGHTNESS_STEP: u8 = 16;
 
 /// The values of "DMX Channels" for the arrows of the page. 0 is Auto.
-const CHANNEL_STEPS: [u16; 11] = [0, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512];
+const CHANNEL_STEPS: [u16; 13] = [0, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512];
 
 /// The settings of the box hardware. NVS keeps them as JSON.
 ///
@@ -41,12 +43,15 @@ pub struct BoxConfig {
     /// Reads the frames of DMX IN on IO36. IO36 has no pull resistor, so without the RS485 module
     /// its noise can look like a frame. Thus the input is off until the user turns it on.
     pub dmx_in: bool,
-    /// The channels in each output frame, 24 to 512. 0 is Auto: the last channel of the show,
-    /// at least 24, or 512 for a show without lights.
+    /// The channels in each output frame, 1 to 512. 0 is Auto: the last channel of the show, or
+    /// 512 for a show without lights.
     ///
     /// A cheap light can flicker and get dim when each frame has all 512 channels. Its chip
     /// then reads 22 500 bytes each second, and its dimming loses time.
     pub dmx_channels: u16,
+    /// Sends a frame each 24 ms. When it is false, the box sends a frame after a change of a
+    /// channel. It repeats a frame without a change 4 times each second.
+    pub dmx_refresh_always: bool,
     /// Turns the OLED by 180°, for a display that is upside down on the front panel.
     pub rotate: bool,
     /// The contrast of the OLED, 1 to 255.
@@ -60,6 +65,7 @@ impl Default for BoxConfig {
             beat_channel: 1,
             dmx_in: false,
             dmx_channels: 0,
+            dmx_refresh_always: false,
             rotate: false,
             brightness: 128,
         }
@@ -71,7 +77,7 @@ impl BoxConfig {
     pub fn sanitize(&mut self) {
         self.beat_channel = self.beat_channel.clamp(1, 512);
         if self.dmx_channels != 0 {
-            self.dmx_channels = self.dmx_channels.clamp(24, 512);
+            self.dmx_channels = self.dmx_channels.clamp(1, 512);
         }
         self.brightness = self.brightness.max(1);
     }
@@ -80,9 +86,9 @@ impl BoxConfig {
     /// a show without lights.
     pub fn frame_channels(&self, last: Option<usize>) -> usize {
         match (self.dmx_channels, last) {
-            (0, Some(last)) => last.clamp(24, 512),
+            (0, Some(last)) => last.clamp(1, 512),
             (0, None) => 512,
-            (n, _) => usize::from(n).clamp(24, 512),
+            (n, _) => usize::from(n).clamp(1, 512),
         }
     }
 
@@ -134,6 +140,21 @@ impl BoxConfig {
                 },
                 raw: Some(frame),
                 step: true,
+                on: None,
+            },
+            SettingItem {
+                idx: IDX_DMX_REFRESH,
+                label: "DMX Refresh",
+                section: Some("DMX"),
+                kind: "cycle",
+                value: if self.dmx_refresh_always {
+                    "40 Hz"
+                } else {
+                    "On change"
+                }
+                .into(),
+                raw: None,
+                step: false,
                 on: None,
             },
             SettingItem {
@@ -200,12 +221,16 @@ impl BoxConfig {
                 self.dmx_in = flag()?;
                 Ok(())
             }
+            IDX_DMX_REFRESH => {
+                self.dmx_refresh_always = flag()?;
+                Ok(())
+            }
             IDX_DMX_CHANNELS => {
                 self.dmx_channels = value
                     .trim()
                     .parse::<u16>()
                     .ok()
-                    .filter(|v| *v == 0 || (24..=512).contains(v))
+                    .filter(|v| *v <= 512)
                     .ok_or_else(range)?;
                 Ok(())
             }
@@ -228,6 +253,7 @@ impl BoxConfig {
                     .clamp(1, 512)
             }
             IDX_DMX_IN => self.dmx_in = !self.dmx_in,
+            IDX_DMX_REFRESH => self.dmx_refresh_always = !self.dmx_refresh_always,
             IDX_DMX_CHANNELS => {
                 // A value between two steps goes to the next step in the direction.
                 let v = self.dmx_channels;
@@ -321,14 +347,15 @@ mod tests {
     #[test]
     fn dmx_channels_take_auto_or_a_count() {
         let mut cfg = BoxConfig::default();
-        assert_eq!(cfg.frame_channels(Some(5)), 24);
+        assert_eq!(cfg.frame_channels(Some(5)), 5);
         assert_eq!(cfg.frame_channels(Some(100)), 100);
         assert_eq!(cfg.frame_channels(None), 512);
         assert_eq!(cfg.items()[3].value, "Auto");
         cfg.set(IDX_DMX_CHANNELS, "64").unwrap();
         assert_eq!(cfg.frame_channels(Some(5)), 64);
         assert_eq!(cfg.frame_channels(None), 64);
-        assert!(cfg.set(IDX_DMX_CHANNELS, "23").is_err());
+        cfg.set(IDX_DMX_CHANNELS, "5").unwrap();
+        assert_eq!(cfg.frame_channels(None), 5);
         assert!(cfg.set(IDX_DMX_CHANNELS, "513").is_err());
         cfg.set(IDX_DMX_CHANNELS, "0").unwrap();
         assert_eq!(cfg.dmx_channels, 0);
@@ -338,7 +365,7 @@ mod tests {
     fn dmx_channels_step_through_the_list() {
         let mut cfg = BoxConfig::default();
         cfg.cycle(IDX_DMX_CHANNELS, 1).unwrap();
-        assert_eq!(cfg.dmx_channels, 24);
+        assert_eq!(cfg.dmx_channels, 8);
         cfg.cycle(IDX_DMX_CHANNELS, -1).unwrap();
         assert_eq!(cfg.dmx_channels, 0);
         cfg.cycle(IDX_DMX_CHANNELS, -1).unwrap();
@@ -349,6 +376,17 @@ mod tests {
         cfg.set(IDX_DMX_CHANNELS, "512").unwrap();
         cfg.cycle(IDX_DMX_CHANNELS, 1).unwrap();
         assert_eq!(cfg.dmx_channels, 512);
+    }
+
+    #[test]
+    fn dmx_refresh_cycles_and_shows_its_label() {
+        let mut cfg = BoxConfig::default();
+        assert_eq!(cfg.items()[4].value, "On change");
+        cfg.cycle(IDX_DMX_REFRESH, 1).unwrap();
+        assert!(cfg.dmx_refresh_always);
+        assert_eq!(cfg.items()[4].value, "40 Hz");
+        cfg.set(IDX_DMX_REFRESH, "0").unwrap();
+        assert!(!cfg.dmx_refresh_always);
     }
 
     #[test]
