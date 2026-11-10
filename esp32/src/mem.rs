@@ -97,28 +97,34 @@ pub struct Capture {
     pub edges: Vec<u32>,
 }
 
-/// Reads the level of the DMX output pin for `SCOPE_MS` and records each edge.
+/// Reads the level of `pin` for `SCOPE_MS` and records each edge. The pin is 4 (DMX OUT) or 36
+/// (DMX IN, the signal of a console or of the box in a loop).
 ///
 /// A task with priority 24 on core 0 reads the pad in a loop. Interrupts can stop the loop for
 /// some µs, and the capture marks each such stop. The loop blocks the WiFi task for the capture
 /// time. The `dmx` and `midi` threads on core 1 keep running.
 #[cfg(feature = "dmx")]
-pub fn scope() -> std::io::Result<Capture> {
+pub fn scope(pin: u32) -> std::io::Result<Capture> {
     use esp_idf_svc::hal::cpu::Core;
-    crate::spawn_rt(c"scope", 4096, 24, Some(Core::Core0), capture)?
+    crate::spawn_rt(c"scope", 4096, 24, Some(Core::Core0), move || capture(pin))?
         .join()
         .map_err(|_| std::io::Error::other("the capture panicked"))
 }
 
 #[cfg(feature = "dmx")]
-fn capture() -> Capture {
-    const PIN: u32 = 4;
+fn capture(pin: u32) -> Capture {
+    // GPIO0 to GPIO31 are in GPIO_IN_REG, and GPIO32 to GPIO39 are in GPIO_IN1_REG.
+    let (reg, bit) = if pin < 32 {
+        (sys::GPIO_IN_REG, pin)
+    } else {
+        (sys::GPIO_IN1_REG, pin - 32)
+    };
     let mhz = sys::CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
     let span = SCOPE_MS * 1000 * mhz;
     let gap = 2 * mhz;
-    // SAFETY: GPIO_IN_REG is a read-only register of the GPIO peripheral. The UART drives the
-    // pad, and its input buffer is on (`gpio_dump_io_configuration` shows InputEn: 1).
-    let read = || (unsafe { std::ptr::read_volatile(sys::GPIO_IN_REG as *const u32) } >> PIN) & 1;
+    // SAFETY: the two registers are read-only registers of the GPIO peripheral. The input
+    // buffer of IO4 and IO36 is on, because the UART uses the two pins.
+    let read = || (unsafe { std::ptr::read_volatile(reg as *const u32) } >> bit) & 1;
     // SAFETY: xthal_get_ccount reads the cycle counter of the current core.
     let ccount = || unsafe { sys::xthal_get_ccount() };
     let mut edges = Vec::with_capacity(MAX_EDGES);

@@ -229,11 +229,13 @@ pub fn start(
             .write_all(crate::mem::report().as_bytes())
     })?;
 
-    // The edges of the DMX output pin for a decoder on a computer. One line holds the CPU clock
-    // in MHz, the level at the start and the number of edges. Then each edge has one line.
+    // The edges of the DMX output pin for a decoder on a computer. `/scope?pin=36` records DMX
+    // IN instead. One line holds the CPU clock in MHz, the level at the start and the number of
+    // edges. Then each edge has one line.
     #[cfg(feature = "dmx")]
     server.fn_handler("/scope", Method::Get, |req| -> anyhow::Result<()> {
-        let c = crate::mem::scope()?;
+        let pin = if req.uri().contains("pin=36") { 36 } else { 4 };
+        let c = crate::mem::scope(pin)?;
         let mut resp = req.into_response(200, None, &[("Content-Type", "text/plain")])?;
         let mut buf = format!("{} {} {}\n", c.mhz, c.first, c.edges.len());
         for e in &c.edges {
