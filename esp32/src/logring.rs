@@ -1,40 +1,52 @@
 //! A log ring buffer that stays through a restart, and the crash report of the last restart.
 //!
-//! The ring is in RTC slow memory. A panic, a watchdog or a software restart does not clear that
-//! memory. A power-on fills it with random data, and the magic number then does not match.
-//! `GET /log` shows the lines of the previous start and the lines of this start.
+//! The two rings are in RTC slow memory. A panic, a watchdog or a software restart does not clear
+//! that memory. A power-on fills it with random data, and the magic number then does not match.
+//! Each start writes into the other ring, so the ring of the previous start stays as it is, and the
+//! heap keeps no copy of it. `GET /log` shows the lines of the previous start and the lines of this
+//! start.
 
 use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::mem::MaybeUninit;
 use std::ptr::{addr_of, addr_of_mut};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use esp_idf_svc::log::EspIdfLogger;
 use esp_idf_svc::sys;
 use log::{LevelFilter, Log, Metadata, Record};
 
-/// The size of the ring. The ESP32 has 8 KB of RTC slow memory.
-const SIZE: usize = 4096;
+/// The size of each ring. The ESP32 has 8 KB of RTC slow memory, and other components use about
+/// 60 bytes of it. The linker stops when the rings do not fit.
+const SIZE: usize = 4000;
 /// The firmware cuts a longer line, so that one line cannot fill the ring.
 const MAX_LINE: usize = 512;
-/// "XLOG". The ring is valid only when it starts with this number.
-const MAGIC: u32 = 0x584C_4F47;
+/// "XLG2". The rings are valid only when they start with this number. The single ring of the older
+/// firmware used "XLOG", so the first start after an update does not read it as two rings.
+const MAGIC: u32 = 0x584C_4732;
 
 #[repr(C)]
 struct Ring {
-    magic: u32,
     /// The number of bytes written since the start. `total % SIZE` is the next write position.
     total: u32,
     buf: [u8; SIZE],
 }
 
+#[repr(C)]
+struct Rings {
+    magic: u32,
+    /// The index of the ring of this start. The other ring has the lines of the previous start.
+    current: u32,
+    ring: [Ring; 2],
+}
+
 #[link_section = ".rtc_noinit"]
-static mut RING: MaybeUninit<Ring> = MaybeUninit::uninit();
-/// Each access to `RING` holds this lock.
+static mut RINGS: MaybeUninit<Rings> = MaybeUninit::uninit();
+/// Each access to `RINGS` holds this lock.
 static LOCK: Mutex<()> = Mutex::new(());
-/// The lines of the previous start. Empty after a power-on.
-static PREVIOUS: OnceLock<String> = OnceLock::new();
+/// True when the other ring has the lines of the previous start. False after a power-on.
+static PREVIOUS: AtomicBool = AtomicBool::new(false);
 /// The crash report of this start. A flood of log lines cannot push it out of the ring.
 static CRASH: Mutex<String> = Mutex::new(String::new());
 
@@ -78,8 +90,19 @@ impl Log for Logger {
 }
 
 /// Use the pointer only while you hold LOCK.
-fn ring() -> *mut Ring {
-    addr_of_mut!(RING).cast()
+fn rings() -> *mut Rings {
+    addr_of_mut!(RINGS).cast()
+}
+
+/// The ring of this start (`previous` false) or of the previous start (`previous` true). Use the
+/// pointer only while you hold LOCK, and only after init().
+fn ring(previous: bool) -> *mut Ring {
+    // SAFETY: init() made `current` 0 or 1.
+    unsafe {
+        let r = rings();
+        let i = (addr_of!((*r).current).read() as usize & 1) ^ usize::from(previous);
+        addr_of_mut!((*r).ring[i])
+    }
 }
 
 fn push(bytes: &[u8]) {
@@ -88,7 +111,7 @@ fn push(bytes: &[u8]) {
     // this occurs.
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: this function holds LOCK, and init() made the ring valid.
-    let r = unsafe { &mut *ring() };
+    let r = unsafe { &mut *ring(false) };
     for &b in bytes {
         r.buf[r.total as usize % SIZE] = b;
         r.total = r.total.wrapping_add(1);
@@ -108,26 +131,23 @@ fn contents(r: &Ring) -> String {
     String::from_utf8_lossy(&bytes[first..]).into_owned()
 }
 
-/// Keeps the lines of the previous start, clears the ring and installs the logger and the panic
-/// hook. Call this function first in `main`.
+/// Keeps the ring of the previous start, clears the other ring and installs the logger and the
+/// panic hook. Call this function first in `main`.
 pub fn init() {
     {
         let _guard = LOCK.lock().unwrap();
-        let r = ring();
-        // SAFETY: this function holds LOCK. The volatile read accepts the random data after a power-on.
-        let valid = unsafe { addr_of!((*r).magic).read_volatile() } == MAGIC;
-        // SAFETY: a valid magic number shows that the previous start wrote the ring.
-        let previous = if valid {
-            contents(unsafe { &*r })
-        } else {
-            String::new()
-        };
-        // SAFETY: this function holds LOCK.
+        let r = rings();
+        // SAFETY: this function holds LOCK. The volatile reads accept the random data after a
+        // power-on.
         unsafe {
+            let valid = addr_of!((*r).magic).read_volatile() == MAGIC;
+            let previous = addr_of!((*r).current).read_volatile() & 1;
+            // The ring of the previous start becomes the other ring.
+            addr_of_mut!((*r).current).write(if valid { previous ^ 1 } else { 0 });
             addr_of_mut!((*r).magic).write(MAGIC);
-            addr_of_mut!((*r).total).write(0);
+            (*ring(false)).total = 0;
+            PREVIOUS.store(valid, Ordering::Relaxed);
         }
-        let _ = PREVIOUS.set(previous);
     }
     if log::set_logger(&LOGGER).is_ok() {
         log::set_max_level(LevelFilter::Info);
@@ -141,16 +161,23 @@ pub fn init() {
 
 /// The text for `GET /log`: the lines of the previous start, then the lines of this start.
 pub fn text() -> String {
-    let current = {
+    let (current, previous) = {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: this function holds LOCK, and init() made the ring valid.
-        contents(unsafe { &*ring() })
+        // SAFETY: this function holds LOCK. init() made the ring of this start valid, and
+        // PREVIOUS shows that the other ring is valid.
+        unsafe {
+            let previous = if PREVIOUS.load(Ordering::Relaxed) {
+                contents(&*ring(true))
+            } else {
+                String::new()
+            };
+            (contents(&*ring(false)), previous)
+        }
     };
-    let previous = PREVIOUS.get().map_or("", String::as_str);
     let previous = if previous.is_empty() {
         "(no lines: the box started from power-on)\n"
     } else {
-        previous
+        previous.as_str()
     };
     let crash = CRASH.lock().unwrap_or_else(|e| e.into_inner());
     let crash = if crash.is_empty() {

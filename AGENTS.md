@@ -187,7 +187,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 ### DMX IN, OLED and joystick
 
-- The `dmx` thread sends and receives on UART1. It has priority 6 on core 1 and a 7 KB stack. The output has a fixed period of 24 ms (about 41 frames each second).
+- The `dmx` thread sends and receives on UART1. It has priority 6 on core 1 and a 6 KB stack. The output has a fixed period of 24 ms (about 41 frames each second).
 - A frame ends at the data event with a receive timeout after a break event (`receive_timeout` of 1 character time). The thread reads exactly the bytes of each data event.
 - The thread accepts only start code 0. Without a good frame for 1 s, the input has no signal and is all 0.
 - The ESP32 UART stores a 0x00 byte for a break. `autoblink_core_ui::frame_channels` removes up to one 0x00 byte for each break event from the end of the frame. A frame must have 24 to 512 channels. After 8 rejected frames in a row, the thread clears the receive buffer.
@@ -240,7 +240,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Do not use the subtype `0x40` for the partition. It panics espflash 4.6.0. The table uses the named subtype `undefined`.
 - `GET /show` serializes the running show. `POST /show` is a CORS simple request with an Origin check. It answers 413 when the body is larger than 60 000 bytes. It answers 503 when the body is larger than half of the largest free heap block. The reader bounds the lists of the show while it reads them.
 - The firmware sends the capability `dmx` and the status field `dmx`. The page sends the WebSocket commands `dmx_live`, `dmx_fog` and `dmx_aim`.
-- The `dmx` thread has priority 6 on core 1. Its stack is 7 KB since 1.29.0 (6 KB before). This size is an estimate. Measure it with `/mem` on a box.
+- The `dmx` thread has priority 6 on core 1. Its stack is 6 KB. On 1.32.3, it used 4096 bytes with DMX IN. Measure it with `/mem` on a box.
 - Three senders use one queue of depth 32 to the `dmx` thread: `midi`, `prolink-rx` and the HTTP task (`dmx_fog`). A full queue drops a message. A dropped Off keeps its layer on until the next Off of that preset. An On does not remove the layer. A stop only hides it.
 - The DMX output starts before WiFi. Thus the OTA maintenance start sends the idle look.
 - The strobe hold ends when the active page closes or a send to it fails. A take-over of another page also ends it.
@@ -351,7 +351,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Start a thread with `crate::spawn`. It gives the FreeRTOS task the thread name. Without it, `/mem` shows each Rust thread as "pthread".
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it and the `midi` thread. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
-- Each stack comes from the heap. The sizes in 1.19.0 keep about 1.5 to 2 KB free in each task. Measure with `/mem` again after a change that adds work to a thread. Version 1.21.0 changes `main` to 7 KB and adds `prolink-rx` with 6 KB. Version 1.24.0 adds `ui` with 8 KB. Version 1.29.0 gives `dmx` 7 KB and adds `artnet` with 4 KB. Version 1.30.1 gives `artnet` 5 KB. Measure these threads, and measure `main` again, because the `Box` builds in `dmx::start` can use its stack.
+- Each stack comes from the heap. Each size keeps 1.5 KB or more above the low point of `/mem`. Measure with `/mem` again after a change that adds work to a thread. The memory trim after 1.32.3 sets these sizes in bytes: `ui` 6656, `dbserver` 5120, `dmx` 6144, `prolink-rx` 5120, `main` 6144, `mdns` 3072 and IDLE 2176 (`sdkconfig.defaults` and the `spawn` calls).
+- The LEDs have no thread. An esp_timer of 5 ms in the `esp_timer` task sets IO32 and IO33 (`led.rs`). The `prolink-rx` thread writes the beat into atomics, and the main loop writes the blink code each second.
 - Put a large struct on the heap (`Box`), not on the stack of a thread. The OLED display struct holds its 1 KB frame buffer. On the 5 KB stack of `ui`, it overflowed the stack, and the box restarted in `malloc` with the address 0xffffffff.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
 - The firmware keeps 600 columns of the waveform preview (`autoblink_core_dbserver::PREVIEW_COLUMNS`). The players send 1200.
@@ -359,7 +360,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The fetch does not start below 24 KB free heap or an 8 KB largest block. The page then shows "not enough memory for the track data", and the fetch starts again after 3 s.
 - Do not use `std::io::copy` in a firmware thread. It puts an 8 KB buffer on the stack.
 - Do not use `std::sync::mpsc` when the receiver has a higher priority than the sender on the same core. The receiver can spin on a half-written slot, and the sender cannot run. Use `esp_idf_svc::hal::task::queue::Queue` (see `midi.rs`). Firmware 1.21.0 restarted from the task watchdog on the `midi` thread because of this.
-- The log ring is in RTC slow memory (4 KB). A panic, a watchdog or a software restart keeps it. A power-on clears it.
+- The log is in RTC slow memory: two rings of 4000 bytes. A panic, a watchdog or a software restart keeps them. A power-on clears them.
+- Each start writes into the other ring. Thus the heap keeps no copy of the lines of the previous start. The rings use 8 KB of RTC slow memory with the other components. The linker stops when they do not fit.
 - The text has three parts: the last crash, the lines of the previous start and the lines of this start.
 - The firmware keeps the crash report outside the ring. Thus a flood of log lines cannot push it out.
 - The ESP-IDF C components (WiFi driver, HTTP server) log only to UART0. The ring has only the Rust log lines. The C components log only warnings and errors (`CONFIG_LOG_DEFAULT_LEVEL_WARN`), because each UART write blocks the task.

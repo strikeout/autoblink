@@ -53,7 +53,8 @@ pub struct Tracks(pub Mutex<HashMap<u8, TrackData>>);
 /// Starts the fetch thread. Returns the sender for the track changes.
 pub fn start(state: Arc<State>) -> anyhow::Result<Sender<TrackRef>> {
     let (tx, rx) = mpsc::channel::<TrackRef>();
-    crate::spawn(c"dbserver", 7 * 1024, move || {
+    // 1.32.3 used 3156 bytes of the stack (/mem). 5 KB keeps a margin of 1.5 KB.
+    crate::spawn(c"dbserver", 5 * 1024, move || {
         while let Ok(first) = rx.recv() {
             // Keep only the last change of each deck. The older changes are stale.
             let mut latest = vec![first];

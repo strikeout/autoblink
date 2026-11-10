@@ -192,10 +192,9 @@ pub fn start(
 
     // Priority 6 is above the HTTP server task (5) and below the `prolink-rx` (8) and `midi` (10)
     // threads on core 1.
-    // ponytail: 7 KB is an estimate. 1.29.0 kept 3484 bytes free with the engine and the Art-Net
-    // merge. The DMX IN code adds a few small locals. Measure with /mem on a box that receives
-    // DMX IN, and set the size from the low point.
-    crate::spawn_rt(c"dmx", 7 * 1024, 6, Some(Core::Core1), move || {
+    // 1.32.3 used 4096 bytes of the stack (/mem) with the engine and DMX IN. 6 KB keeps a
+    // margin of 2 KB.
+    crate::spawn_rt(c"dmx", 6 * 1024, 6, Some(Core::Core1), move || {
         run(&uart, &state, &show, &box_cfg, &msgs)
     })?;
     log::info!("DMX output is on IO4, DMX input is on IO36");

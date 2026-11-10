@@ -152,7 +152,7 @@ fn run() -> anyhow::Result<()> {
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
     let (install, ota_error) = ota::take_request(&nvs)?;
-    // IO33 stays on until the LED thread starts. Then it shows the state of the box.
+    // IO33 stays on until the LED timer starts. Then it shows the state of the box.
     let mut status_led = PinDriver::output(p.pins.gpio33)?;
     status_led.set_high()?;
 
@@ -296,7 +296,7 @@ fn run() -> anyhow::Result<()> {
     )?;
     let track_changes = tracks::start(state.clone())?;
 
-    let beat_tx = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
+    let _leds = led::start(PinDriver::output(p.pins.gpio32)?, status_led, state.clone())?;
 
     ui::start(
         p.i2c0,
@@ -316,8 +316,7 @@ fn run() -> anyhow::Result<()> {
         state.clone(),
         device_number,
         move |beat| {
-            // A full queue drops the LED pulse. The receive thread does not wait for the LEDs.
-            let _ = beat_tx.try_send(beat.beat_in_bar);
+            led::beat(beat.beat_in_bar, beat.at_us / 1000);
             // A full queue drops the beat. The receive thread does not wait for the DMX thread.
             #[cfg(feature = "dmx")]
             let _ = dmx_q.send_back(
@@ -514,6 +513,7 @@ fn run() -> anyhow::Result<()> {
         state
             .wifi_join_down
             .store(join_ssid.is_some() && sta_ip.is_none(), Ordering::Relaxed);
+        led::update_code(&state);
         let now = (eth_ip.map(|(ip, _)| ip), sta_ip);
         if now != last {
             if now.0 != last.0 {

@@ -398,6 +398,12 @@ pub fn start(
                     if active.send(&status) {
                         release_strobe(&state);
                     }
+                    // A large status grows the buffer. After the send, give the extra heap back
+                    // when the buffer is more than twice the size of the status. Thus a status
+                    // that is always above 4 KB does not grow and shrink the buffer each time.
+                    if status.capacity() > 2 * status.len().max(4096) {
+                        status.shrink_to(4096);
+                    }
                 }
             }
         }

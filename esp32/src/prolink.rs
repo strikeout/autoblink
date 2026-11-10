@@ -75,7 +75,8 @@ pub fn spawn(
     let fds = [discovery.as_raw_fd(), beats.as_raw_fd(), status.as_raw_fd()];
 
     let st = state.clone();
-    crate::spawn_rt(c"prolink-rx", 6 * 1024, 8, Some(Core::Core1), move || {
+    // 1.32.3 used 3376 bytes of the stack (/mem). 5 KB keeps a margin of 1.5 KB.
+    crate::spawn_rt(c"prolink-rx", 5 * 1024, 8, Some(Core::Core1), move || {
         // SAFETY: a null handle subscribes the calling task.
         if let Err(e) = sys::esp!(unsafe { sys::esp_task_wdt_add(std::ptr::null_mut()) }) {
             log::warn!("The task watchdog does not watch the Pro DJ Link receive thread: {e}");
