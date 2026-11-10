@@ -303,7 +303,10 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
   - 502: OFL fails, the reply is too large, or the box has no internet.
   - 503: the heap is low, or another fetch or an OTA check runs.
   - 504: OFL does not answer in 10 s.
-- A fetch does not start below 80 KB free heap or a 32 KB largest block (`MIN_FREE`, `MIN_BLOCK`). TLS takes about 50 KB. The firmware cuts off a reply larger than 24 KB (`MAX_BODY`).
+- A fetch does not start below 68 KB free heap or a 20 KB largest block (`MIN_FREE`, `MIN_BLOCK`). The firmware cuts off a reply larger than 24 KB (`MAX_BODY`).
+- On 1.32.1, a fetch with a small reply needed 50 KB of heap, and a reply of 10 KB needed 57 KB. Each fetch logs the heap that it needed.
+- The reply buffer grows in steps of 4 KB. It does not grow when the free heap is below 16 KB (`MIN_FREE_GROW` and one step). The route then answers 503. On 1.32.2, the low point of a fetch was 15 to 27 KB, and the box did not restart.
+- After two fetches, the largest free block went from 72 KB to 31 KB and stayed there. Nobody knows the cause yet.
 - The fetch runs on the `ofl` thread (12 KB stack, priority 5, from `crate::spawn`). The HTTP handler joins the thread. Thus a fetch blocks the HTTP task. The page gets no status and no beats for up to tens of seconds. The MIDI clock and the DMX output keep running.
 - While `ofl::busy()` is true, the status thread sends no status, as during an OTA check. The page disables the library search while the strobe hold is on.
 - The certificate chain of OFL ends at ISRG Root X1. The common certificate bundle has it through the X2 cross-certificate.
