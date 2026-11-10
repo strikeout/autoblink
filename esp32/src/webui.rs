@@ -269,7 +269,7 @@ pub fn start(
                     .store(if v == 0 { 0 } else { v.clamp(5_000, 1_000_000) }, Relaxed),
                 "slots" => t
                     .slots
-                    .store(if v == 0 { 0 } else { v.clamp(24, 512) }, Relaxed),
+                    .store(if v == 0 { 0 } else { v.clamp(1, 512) }, Relaxed),
                 "gap" => t.gap_us.store(v.min(1000), Relaxed),
                 "baud" => t.baud.store(v.clamp(240_000, 260_000), Relaxed),
                 _ => {}

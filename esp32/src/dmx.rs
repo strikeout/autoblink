@@ -69,7 +69,7 @@ pub struct Tune {
     /// The time from one write to the next, in µs. With 0, the thread writes the next frame when
     /// the TX buffer has space for it. The frames then go out back to back.
     pub period_us: AtomicU32,
-    /// The channels in each frame, 24 to 512. With 0, the setting "DMX Channels" decides.
+    /// The channels in each frame, 1 to 512. With 0, the setting "DMX Channels" decides.
     pub slots: AtomicU32,
     /// The idle time between two slots in µs. With 0, the slots go out back to back. Otherwise
     /// the thread writes each slot alone and waits.
@@ -563,7 +563,7 @@ fn run(
         if send {
             let len = 1 + match TUNE.slots.load(Ordering::Relaxed) as usize {
                 0 => slots,
-                n => n.clamp(24, 512),
+                n => n.clamp(1, 512),
             };
             let brk = TUNE.break_bits.load(Ordering::Relaxed) as i32;
             let gap = TUNE.gap_us.load(Ordering::Relaxed);
