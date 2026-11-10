@@ -187,7 +187,8 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 
 ### DMX IN, OLED and joystick
 
-- The `dmx` thread sends and receives on UART1. It has priority 6 on core 1 and a 6.5 KB stack. The output has a fixed period of 24 ms (about 41 frames each second).
+- The `dmx` thread sends and receives on UART1. It has priority 6 on core 1 and a 6.5 KB stack. The thread writes a frame 24 ms after the last write (about 41 frames each second). The UART needs 22.7 ms for a frame and its break.
+- Do not schedule the writes on a fixed grid. A late write and an on-time write can then come less than 22.7 ms apart. The driver starts a queued frame a few µs after the break (TX idle 0). This mark after break is too short, and a light can flicker. The log reports late writes once a minute.
 - A frame ends at the data event with a receive timeout after a break event (`receive_timeout` of 1 character time). The thread reads exactly the bytes of each data event.
 - The thread accepts only start code 0. Without a good frame for 1 s, the input has no signal and is all 0.
 - The ESP32 UART stores a 0x00 byte for a break. `autoblink_core_ui::frame_channels` removes up to one 0x00 byte for each break event from the end of the frame. A frame must have 24 to 512 channels. After 8 rejected frames in a row, the thread clears the receive buffer.

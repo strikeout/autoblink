@@ -39,10 +39,18 @@ use crate::State;
 /// The fade time of the beat flash of a show without lights.
 const FLASH_MS: u64 = 200;
 
-/// The time between the starts of two output frames. The UART sends one frame (512 channels) in
-/// about 23 ms. The idle time after the break is the mark after break of the next frame. Thus the
-/// rate is about 41 Hz.
+/// The time from one frame write to the next. The UART sends one frame (512 channels) and the
+/// break in 22.7 ms. The idle time after the break is the mark after break of the next frame. Thus
+/// the rate is about 41 Hz.
+///
+/// The thread measures the time from the last write, not from a fixed grid. With a grid, a late
+/// write and an on-time write can be less than 22.7 ms apart. The driver then starts the queued
+/// frame a few µs after the break (TX idle 0). A fixture can misread such a frame.
 const FRAME_PERIOD: Duration = Duration::from_millis(24);
+
+/// The log counts a write that starts this much after its time. On a fixed grid, such a write
+/// makes the next gap shorter than the wire time.
+const LATE_LIMIT: Duration = Duration::from_micros(1300);
 
 /// The break length in bit times. At 250 kbaud, one bit is 4 µs, so 25 bits give 100 µs.
 /// DMX512 needs at least 88 µs.
@@ -254,6 +262,10 @@ fn run(
     let mut was_signal = false;
     let mut next_count = Instant::now() + Duration::from_secs(1);
     let mut next_send = Instant::now();
+    // The late writes since the last report, and the latest one.
+    let mut late_count = 0u32;
+    let mut late_max = Duration::ZERO;
+    let mut next_late_log = Instant::now() + Duration::from_secs(60);
     // The setting "DMX IN". The thread reads it with the other settings before each frame.
     let mut dmx_in = false;
     loop {
@@ -351,10 +363,21 @@ fn run(
         if Instant::now() < next_send {
             continue;
         }
-        next_send += FRAME_PERIOD;
-        // After a long stop, do not send the missed frames.
-        if next_send < Instant::now() {
-            next_send = Instant::now() + FRAME_PERIOD;
+        let late = Instant::now() - next_send;
+        if late > LATE_LIMIT {
+            late_count += 1;
+            late_max = late_max.max(late);
+        }
+        if Instant::now() >= next_late_log {
+            next_late_log = Instant::now() + Duration::from_secs(60);
+            if late_count > 0 {
+                log::info!(
+                    "DMX output: {late_count} frames started late in 60 s, the latest by {} µs",
+                    late_max.as_micros()
+                );
+            }
+            late_count = 0;
+            late_max = Duration::ZERO;
         }
 
         let now_ms = state.now_ms();
@@ -473,6 +496,9 @@ fn run(
             in_log.recent(now_ms, &mut s.in_recent);
             out_log.recent(now_ms, &mut s.out_recent);
         }
+        // The next write comes one period after this write. Thus the UART has sent this frame and
+        // its break before the next frame comes.
+        next_send = Instant::now() + FRAME_PERIOD;
         // The UART sends the frame, then the break. The break before the next frame and the idle
         // time after it make the reset sequence of DMX512.
         if send {
