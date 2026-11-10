@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Wiring of the AUTOBLINK box with modules: WT32-ETH01, two LEDs, OLED, joystick, MIDI OUT (TRS-A), DMX OUT, DMX IN, USB-C power and the flash header. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1545" viewBox="0 0 1400 1545" font-family="Helvetica, Arial, sans-serif">
-  <rect x="0" y="0" width="1400" height="1545" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1563" viewBox="0 0 1400 1563" font-family="Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="1400" height="1563" fill="#ffffff"/>
 
   <!-- Title -->
   <text x="60" y="50" font-size="24" font-weight="bold" fill="#24292f">AUTOBLINK box · wiring</text>
@@ -17,7 +17,7 @@
     <rect x="790" y="390" width="550" height="220" rx="10"/>
     <rect x="790" y="630" width="550" height="240" rx="10"/>
     <rect x="790" y="890" width="550" height="430" rx="10"/>
-    <rect x="60" y="1340" width="1280" height="185" rx="10"/>
+    <rect x="60" y="1340" width="1280" height="203" rx="10"/>
   </g>
   <g font-size="15" font-weight="bold" fill="#24292f">
     <text x="75" y="122">LEDs · active high</text>
@@ -55,8 +55,7 @@
   <!-- 3V3 wires (red) -->
   <g stroke="#cf222e" stroke-width="2.5" fill="none" stroke-linecap="round">
     <line x1="900" y1="240" x2="1120" y2="240"/>
-    <polyline points="870,470 840,470 840,525 870,525"/>
-    <line x1="840" y1="500" x2="870" y2="500"/>
+    <polyline points="870,470 840,470 840,500 870,500"/>
     <line x1="870" y1="705" x2="840" y2="705"/>
     <line x1="310" y1="625" x2="370" y2="625"/>
     <line x1="290" y1="840" x2="370" y2="840"/>
@@ -72,7 +71,7 @@
     <line x1="1120" y1="290" x2="1080" y2="290"/>
     <line x1="1120" y1="555" x2="1080" y2="555"/>
     <line x1="1120" y1="815" x2="1100" y2="815"/>
-    <polyline points="870,780 840,780 840,805 870,805"/>
+    <line x1="870" y1="805" x2="840" y2="805"/>
     <line x1="310" y1="595" x2="340" y2="595"/>
     <line x1="290" y1="810" x2="320" y2="810"/>
     <line x1="380" y1="1190" x2="360" y2="1190"/>
@@ -89,7 +88,6 @@
   </g>
 
   <!-- Junction dots -->
-  <circle cx="840" cy="500" r="4" fill="#cf222e"/>
   <circle cx="840" cy="470" r="4" fill="#cf222e"/>
   <circle cx="1070" cy="715" r="4" fill="#8250df"/>
   <circle cx="1070" cy="785" r="4" fill="#8250df"/>
@@ -329,16 +327,20 @@
   <!-- ============ DMX OUT ============ -->
   <rect x="870" y="430" width="150" height="150" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
   <g font-size="12" fill="#24292f">
-    <text x="945" y="452" text-anchor="middle" font-weight="bold">U1 · MAX3485</text>
+    <text x="945" y="452" text-anchor="middle" font-weight="bold">U1 · RS485 V2.03</text>
     <text x="878" y="474">VCC</text>
-    <text x="878" y="504">DE</text>
-    <text x="878" y="529">RE</text>
-    <text x="878" y="559">DI</text>
+    <text x="878" y="504">EN</text>
+    <text x="878" y="529">RXD</text>
+    <text x="878" y="559">TXD</text>
     <text x="1012" y="494" text-anchor="end">A</text>
     <text x="1012" y="524" text-anchor="end">B</text>
     <text x="945" y="574" text-anchor="middle">GND</text>
   </g>
-  <line x1="878" y1="517" x2="893" y2="517" stroke="#24292f" stroke-width="1"/>
+  <g stroke="#57606a" stroke-width="2">
+    <line x1="870" y1="525" x2="855" y2="525"/>
+    <line x1="844" y1="519" x2="854" y2="531"/>
+    <line x1="854" y1="519" x2="844" y2="531"/>
+  </g>
 
   <rect x="1120" y="440" width="200" height="150" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
   <g font-size="12" fill="#24292f">
@@ -361,16 +363,20 @@
   <!-- ============ DMX IN ============ -->
   <rect x="870" y="665" width="150" height="170" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
   <g font-size="12" fill="#24292f">
-    <text x="945" y="687" text-anchor="middle" font-weight="bold">U2 · MAX3485</text>
+    <text x="945" y="687" text-anchor="middle" font-weight="bold">U2 · RS485 V2.03</text>
     <text x="878" y="709">VCC</text>
-    <text x="878" y="744">RO</text>
-    <text x="878" y="784">DE</text>
-    <text x="878" y="809">RE</text>
+    <text x="878" y="744">RXD</text>
+    <text x="878" y="784">TXD</text>
+    <text x="878" y="809">EN</text>
     <text x="1012" y="719" text-anchor="end">A</text>
     <text x="1012" y="789" text-anchor="end">B</text>
     <text x="945" y="829" text-anchor="middle">GND</text>
   </g>
-  <line x1="878" y1="797" x2="893" y2="797" stroke="#24292f" stroke-width="1"/>
+  <g stroke="#57606a" stroke-width="2">
+    <line x1="870" y1="780" x2="855" y2="780"/>
+    <line x1="844" y1="774" x2="854" y2="786"/>
+    <line x1="854" y1="774" x2="844" y2="786"/>
+  </g>
 
   <rect x="1120" y="665" width="200" height="170" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
   <g font-size="12" fill="#24292f">
@@ -394,7 +400,7 @@
   <g font-size="12" fill="#24292f">
     <text x="805" y="936" font-weight="bold">At hand</text>
     <text x="805" y="953">WT32-ETH01 and its USB-C dock, OLED 128×64, joystick KY-023</text>
-    <text x="805" y="970">2 × MAX3485 module (U1, U2), XLR-3 male and female panel sockets</text>
+    <text x="805" y="970">2 × RS485 module V2.03 (U1, U2), XLR-3 male and female panel sockets</text>
     <text x="805" y="987">3.5 mm TRS panel jack and TRS MIDI cable (Type A)</text>
     <text x="805" y="1004">Green and red 5 mm LED</text>
     <text x="805" y="1028" font-weight="bold">To buy</text>
@@ -472,12 +478,14 @@
   <circle cx="290" cy="1461" r="4" fill="#24292f"/>
 
   <g font-size="12" fill="#24292f">
-    <text x="520" y="1386">1. Power the OLED, the joystick and the two MAX3485 modules from 3V3, not from 5 V. At 5 V, they put 5 V on ESP32 pins.</text>
+    <text x="520" y="1386">1. Power the OLED, the joystick and the two RS485 modules from 3V3, not from 5 V. At 5 V, they put 5 V on ESP32 pins.</text>
     <text x="520" y="1404">2. U1 (OUT): remove its 120 Ω resistor; the last fixture has the terminator. U2 (IN): keep it; the box ends the console line.</text>
     <text x="520" y="1422">3. The jack is TRS Type A. A Type B device swaps tip and ring: use a Type A to B adapter.</text>
     <text x="520" y="1440">4. To flash over J2: adapter TX to RX0, adapter RX to TX0, GND to GND. Hold BOOT, push RST, release BOOT.</text>
     <text x="520" y="1458">5. Power comes from J1 during the flash. Do not connect the 5 V pin of the adapter. Do not use J1 and the dock together.</text>
     <text x="520" y="1476">6. Do not connect IO2 and IO12. IO2 is the receive pin of the MIDI UART. IO12 high at power-on stops the start.</text>
     <text x="520" y="1494">7. The firmware calibrates the joystick center at each start. Do not touch the joystick while the box starts.</text>
+    <text x="520" y="1512">8. EN high makes the RS485 module send, EN low makes it receive. U1: EN to 3V3. U2: EN to GND.</text>
+    <text x="520" y="1530">9. Connect TXD of U1 to IO4. Do not connect it to the pin TXD of the board: that pin is IO17, the MIDI output.</text>
   </g>
 </svg>
