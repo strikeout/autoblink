@@ -52,8 +52,9 @@ impl DmxMode {
     }
 }
 
-/// A received frame with fewer channels is noise. DMX512 sends at least 24 channels.
-pub const MIN_CHANNELS: usize = 24;
+/// The fewest channels of a good frame. DMX512 lets a transmitter send fewer than 24 slots when it
+/// makes the time from break to break at least 1204 µs.
+pub const MIN_CHANNELS: usize = 1;
 
 /// Returns the channels of a received frame, or `None` when the frame is not good.
 ///
@@ -176,8 +177,18 @@ mod tests {
     }
 
     #[test]
-    fn a_short_long_or_other_frame_is_rejected() {
-        assert_eq!(frame_channels(&[0u8; 4], 1), None);
+    fn a_frame_with_few_channels_is_good() {
+        // The start code, 3 channels and the break byte.
+        assert_eq!(
+            frame_channels(&[0, 10, 20, 30, 0], 1),
+            Some(&[10, 20, 30][..])
+        );
+    }
+
+    #[test]
+    fn an_empty_long_or_other_frame_is_rejected() {
+        // The start code and the break byte.
+        assert_eq!(frame_channels(&[0u8; 2], 1), None);
         assert_eq!(frame_channels(&[0u8; 515], 1), None);
         let mut rx = [0u8; 514];
         rx[0] = 0xCC;

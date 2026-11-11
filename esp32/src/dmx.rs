@@ -109,8 +109,17 @@ pub static TUNE: Tune = Tune {
     baud: AtomicU32::new(250_000),
 };
 
-/// The input has no signal when no good frame arrives for this time.
-const SIGNAL_TIMEOUT: Duration = Duration::from_secs(1);
+/// The input has no signal when no good frame arrives for this time. A DMX512 transmitter sends
+/// at least one packet each second, and E1.11 gives a receiver 1.25 s.
+const SIGNAL_TIMEOUT: Duration = Duration::from_millis(1250);
+
+/// The framing error interrupt of the ESP32 UART (`UART_INTR_FRAM_ERR` in `hal/uart_ll.h`). The
+/// ESP-IDF driver does not enable it. A framing error event marks a slot without its stop bits.
+const UART_INTR_FRAM_ERR: u32 = 1 << 3;
+
+/// The time after the last stop bit before the break. The ESP32 makes the second stop bit with
+/// an extra delay bit, and `wait_tx_done` can end before it.
+const MBB_US: u32 = 8;
 
 /// After this many rejected frames in a row, the thread clears the receive buffer. Then a lost
 /// data event cannot shift the channels for a long time.
@@ -342,8 +351,18 @@ fn run(
     let mut last_beat_ms: Option<u64> = None;
     let mut rx_len = 0;
     let mut rx_bad = false;
-    // The break events since the last frame end.
+    // The break events and the framing error events since the last frame end.
     let mut breaks = 0usize;
+    let mut frame_errors = 0usize;
+    // False until the first frame end after the start or a resync. The bytes before that frame
+    // end are the rest of a frame that started earlier, so the thread discards them.
+    let mut synced = false;
+    // The ring buffer of the UART driver has this much free space when it is empty.
+    let mut tx_empty = 0usize;
+    esp_idf_svc::sys::esp!(unsafe {
+        esp_idf_svc::sys::uart_get_tx_buffer_free_size(uart.port(), &mut tx_empty)
+    })
+    .unwrap_or_else(|e| log::warn!("DMX: no TX buffer size: {e}"));
     let mut bad_in_row = 0u32;
     let mut last_good: Option<Instant> = None;
     let mut frames = 0u16;
@@ -413,10 +432,13 @@ fn run(
                         left -= n;
                     }
                     if timeout && breaks > 0 {
-                        let good = (!rx_bad)
-                            .then(|| frame_channels(&rx[..rx_len], breaks))
+                        // Each break byte also gives a framing error. A further error is a bad
+                        // slot.
+                        let good = (!rx_bad && frame_errors <= breaks)
+                            .then(|| frame_channels(&rx[..rx_len], breaks.min(2)))
                             .flatten();
                         match good {
+                            _ if !synced => synced = true,
                             // While DMX IN is off, a frame is noise on the open pin.
                             Some(_) if !dmx_in => {}
                             Some(channels) => {
@@ -433,18 +455,23 @@ fn run(
                         rx_len = 0;
                         rx_bad = false;
                         breaks = 0;
+                        frame_errors = 0;
                         if bad_in_row >= RESYNC_AFTER {
                             bad_in_row = 0;
                             resync(uart, events);
+                            synced = false;
                         }
                     }
                 }
-                UartEventPayload::Break => breaks = (breaks + 1).min(2),
+                UartEventPayload::Break => breaks = breaks.saturating_add(1),
+                UartEventPayload::FrameError => frame_errors = frame_errors.saturating_add(1),
                 UartEventPayload::RxFifoOverflow | UartEventPayload::RxBufferFull => {
                     resync(uart, events);
+                    synced = false;
                     rx_len = 0;
                     rx_bad = false;
                     breaks = 0;
+                    frame_errors = 0;
                     rejected = rejected.wrapping_add(1);
                 }
                 _ => {}
@@ -545,6 +572,10 @@ fn run(
             dmx_in = cfg.dmx_in;
             if rx_on != Some(dmx_in) {
                 route_rx(dmx_in);
+                set_frame_errors(uart.port(), dmx_in);
+                frame_errors = 0;
+                // The new input source can start in the middle of a frame.
+                synced = false;
                 rx_on = Some(dmx_in);
             }
             (
@@ -746,8 +777,8 @@ fn run(
             // frame gets 30 ms.
             // ESP-IDF gives the TX done event also when the FIFO runs empty in a frame, for
             // example during a flash write. The call with 0 ticks reads the state of the UART.
-            let done = uart
-                .wait_tx_done(TickType::from(Duration::from_millis(30)).ticks())
+            let done = wait_tx_buffer(uart.port(), tx_empty)
+                .and_then(|()| uart.wait_tx_done(TickType::from(Duration::from_millis(30)).ticks()))
                 .and_then(|()| uart.wait_tx_done(0));
             let result = done.and_then(|()| {
                 if gap == 0 {
@@ -817,6 +848,51 @@ fn start_frame(
     usize::try_from(n).unwrap_or(0)
 }
 
+/// Waits until the ring buffer of the TX driver is empty. `tx_empty` is its free space when it is
+/// empty.
+///
+/// `wait_tx_done` reads only the FIFO. When the ISR waits, for example after a flash write, the
+/// FIFO can be empty while the ring buffer still holds the rest of the frame.
+fn wait_tx_buffer(
+    port: esp_idf_svc::sys::uart_port_t,
+    tx_empty: usize,
+) -> Result<(), esp_idf_svc::sys::EspError> {
+    let until = Instant::now() + Duration::from_millis(30);
+    loop {
+        let mut free = 0;
+        // SAFETY: the driver of the port is installed.
+        esp_idf_svc::sys::esp!(unsafe {
+            esp_idf_svc::sys::uart_get_tx_buffer_free_size(port, &mut free)
+        })?;
+        if free >= tx_empty {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            return Err(esp_idf_svc::sys::EspError::from_infallible::<
+                { esp_idf_svc::sys::ESP_ERR_TIMEOUT },
+            >());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Turns the framing error interrupt of UART1 on or off. It is on only while "DMX IN" is on,
+/// because noise on an open IO36 can give an interrupt for each byte.
+fn set_frame_errors(port: esp_idf_svc::sys::uart_port_t, on: bool) {
+    use esp_idf_svc::sys::{uart_disable_intr_mask, uart_enable_intr_mask};
+    // SAFETY: the driver of the port is installed.
+    let err = unsafe {
+        if on {
+            uart_enable_intr_mask(port, UART_INTR_FRAM_ERR)
+        } else {
+            uart_disable_intr_mask(port, UART_INTR_FRAM_ERR)
+        }
+    };
+    if let Err(e) = esp_idf_svc::sys::esp!(err) {
+        log::warn!("DMX: framing error interrupt not set: {e}");
+    }
+}
+
 /// Connects the receive input of UART1 to IO36 (`on`), or to a constant high level. While
 /// "DMX IN" is off, an open or low IO36 then gives no receive interrupts on core 1. Without the
 /// RS485 module, IO36 reads low, and the UART can see one break after the other.
@@ -873,6 +949,7 @@ fn digital_rx_pad() {
 fn send_break(port: esp_idf_svc::sys::uart_port_t, break_us: u32, mab_us: u32) {
     use esp_idf_svc::hal::delay::Ets;
     use esp_idf_svc::sys::{uart_set_line_inverse, uart_signal_inv_t_UART_SIGNAL_TXD_INV};
+    Ets::delay_us(MBB_US);
     // SAFETY: the driver of the port is installed, and the UART sends nothing now.
     unsafe { uart_set_line_inverse(port, uart_signal_inv_t_UART_SIGNAL_TXD_INV as u32) };
     Ets::delay_us(break_us);
