@@ -21,6 +21,8 @@ mod net;
 mod ofl;
 mod ota;
 mod prolink;
+#[cfg(feature = "dmx")]
+mod sacn;
 mod settings;
 #[cfg(feature = "dmx")]
 mod show;
@@ -90,6 +92,9 @@ pub struct State {
     /// it. The OTA maintenance start does not set it.
     #[cfg(feature = "dmx")]
     pub artnet: std::sync::OnceLock<std::net::UdpSocket>,
+    /// The sACN socket. `main` sets it with the Art-Net socket.
+    #[cfg(feature = "dmx")]
+    pub sacn: std::sync::OnceLock<std::net::UdpSocket>,
     /// The tier that the page pins for the autopilot: 0 is Auto, 1 is Calm, 2 is Groove and 3
     /// is Peak. `AUTO_PIN_NONE` is no request. The `midi` thread takes the value.
     #[cfg(feature = "dmx")]
@@ -195,6 +200,8 @@ fn run() -> anyhow::Result<()> {
         show_store: Mutex::new(show_store),
         #[cfg(feature = "dmx")]
         artnet: std::sync::OnceLock::new(),
+        #[cfg(feature = "dmx")]
+        sacn: std::sync::OnceLock::new(),
         #[cfg(feature = "dmx")]
         auto_pin: AtomicU8::new(AUTO_PIN_NONE),
         #[cfg(feature = "dmx")]
@@ -336,9 +343,12 @@ fn run() -> anyhow::Result<()> {
         },
     )?;
 
-    // Art-Net needs the network. The maintenance start does not get to this line.
+    // Art-Net and sACN need the network. The maintenance start does not get to this line.
     #[cfg(feature = "dmx")]
-    artnet::start(&state);
+    {
+        artnet::start(&state);
+        sacn::start(&state);
+    }
 
     // The web server and the receive threads run. A restart before this line makes the
     // bootloader start the previous app.
@@ -359,6 +369,7 @@ fn run() -> anyhow::Result<()> {
         ip: AP_IP,
         prefix: 24,
         mac: wifi.ap_netif().get_mac()?,
+        dhcp: false,
     };
     let mut last = (None, None);
     let mut next_heap_log = Instant::now();
@@ -501,6 +512,8 @@ fn run() -> anyhow::Result<()> {
                 ip: i.ip,
                 prefix: i.subnet.mask.0,
                 mac,
+                // Without a DHCP server, the address is a 169.254.x.x address of AutoIP.
+                dhcp: !i.ip.is_link_local(),
             };
             *state.artnet_ifaces.lock().unwrap() = [
                 info.map(|i| iface(eth_name, i, eth_mac)),

@@ -67,13 +67,24 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_FREERTOS_HZ=1000
 
 # The web server has 6 sockets. The firmware also needs 3 UDP sockets for Pro DJ Link, 1 UDP
-# socket for Art-Net, 1 TCP socket for the dbserver, 1 for the OTA download and 2 for the web
-# server itself. The default is 10.
+# socket for Art-Net, 1 UDP socket for sACN, 1 TCP socket for the dbserver, 1 for the OTA
+# download and 2 for the web server itself. The default is 10.
 CONFIG_LWIP_MAX_SOCKETS=20
 
-# The MIDI thread resets the task watchdog on each loop pass. When the thread or an idle task
-# stops for 5 s, the firmware restarts.
+# The `midi`, `prolink-rx` and `dmx` threads reset the task watchdog on each loop pass. When one
+# of them or an idle task stops for 5 s, the firmware restarts.
 CONFIG_ESP_TASK_WDT_PANIC=y
+
+# The UART interrupt runs from IRAM. Thus a flash write or a cache miss does not delay the TX
+# FIFO refill, and a long DMX frame has no gap between two slots. This is an app option, so OTA
+# can change it.
+CONFIG_UART_ISR_IN_IRAM=y
+
+# The brownout detector restarts the box when the supply falls below 2.43 V (level 0). It is the
+# default of ESP-IDF. The line keeps it on when a default changes. The LED and the night memory
+# read the reset reason.
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_0=y
 
 # The bootloader starts the previous app when a new app restarts before it marks itself valid
 # (see ota.rs). Flash the bootloader of this build, because the bootloader of espflash does not

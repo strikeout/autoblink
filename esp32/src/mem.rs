@@ -54,24 +54,102 @@ pub fn report() -> String {
     out
 }
 
-/// Writes the configuration of GPIO4, the DMX output. Signal 17 of the GPIO matrix is UART1 TX.
+/// Writes the configuration of GPIO4 (the DMX output) and IO36 (DMX IN). Signal 17 of the GPIO
+/// matrix is UART1 TX. The last line gives the raw pad registers of IO36.
 #[cfg(feature = "dmx")]
 fn dmx_pin(out: &mut String) {
-    const PIN: sys::gpio_num_t = 4;
-    let mut buf = [0u8; 768];
+    let mut buf = [0u8; 1280];
     // SAFETY: the stream writes only into `buf`. fclose ends the stream before the code reads
     // `buf`.
     unsafe {
         let f = sys::fmemopen(buf.as_mut_ptr().cast(), buf.len(), c"w".as_ptr());
         if !f.is_null() {
-            sys::gpio_dump_io_configuration(f, 1 << PIN);
+            sys::gpio_dump_io_configuration(f, (1 << 4) | (1 << 36));
             sys::fclose(f);
         }
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     let _ = write!(
         out,
-        "\nDMX output pin:\n{}",
-        String::from_utf8_lossy(&buf[..end])
+        "\nDMX pins:\n{}{}\n",
+        String::from_utf8_lossy(&buf[..end]),
+        crate::dmx::rx_pad_state()
     );
+}
+
+/// The number of edges that one capture of the DMX output pin keeps. Each edge takes 4 bytes.
+#[cfg(feature = "dmx")]
+const MAX_EDGES: usize = 4000;
+
+/// The time of one capture of the DMX output pin, in ms. It holds about 2.5 frames.
+#[cfg(feature = "dmx")]
+pub const SCOPE_MS: u32 = 60;
+
+/// One capture of GPIO4 (DMX OUT).
+#[cfg(feature = "dmx")]
+pub struct Capture {
+    /// The CPU clock in MHz. The times are in CPU cycles.
+    pub mhz: u32,
+    /// The level of the pin at the start.
+    pub first: u32,
+    /// Each entry is the time after the start in cycles. Bit 0 is the new level. The loop can
+    /// stop for more than 2 µs. Two entries with bit 1 set then give the start and the end of
+    /// the stop. An edge in the stop has no exact time.
+    pub edges: Vec<u32>,
+}
+
+/// Reads the level of `pin` for `SCOPE_MS` and records each edge. The pin is 4 (DMX OUT) or 36
+/// (DMX IN, the signal of a console or of the box in a loop).
+///
+/// A task with priority 24 on core 0 reads the pad in a loop. Interrupts can stop the loop for
+/// some µs, and the capture marks each such stop. The loop blocks the WiFi task for the capture
+/// time. The `dmx` and `midi` threads on core 1 keep running.
+#[cfg(feature = "dmx")]
+pub fn scope(pin: u32) -> std::io::Result<Capture> {
+    use esp_idf_svc::hal::cpu::Core;
+    crate::spawn_rt(c"scope", 4096, 24, Some(Core::Core0), move || capture(pin))?
+        .join()
+        .map_err(|_| std::io::Error::other("the capture panicked"))
+}
+
+#[cfg(feature = "dmx")]
+fn capture(pin: u32) -> Capture {
+    // GPIO0 to GPIO31 are in GPIO_IN_REG, and GPIO32 to GPIO39 are in GPIO_IN1_REG.
+    let (reg, bit) = if pin < 32 {
+        (sys::GPIO_IN_REG, pin)
+    } else {
+        (sys::GPIO_IN1_REG, pin - 32)
+    };
+    let mhz = sys::CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    let span = SCOPE_MS * 1000 * mhz;
+    let gap = 2 * mhz;
+    // SAFETY: the two registers are read-only registers of the GPIO peripheral. The input
+    // buffer of IO4 and IO36 is on, because the UART uses the two pins.
+    let read = || (unsafe { std::ptr::read_volatile(reg as *const u32) } >> bit) & 1;
+    // SAFETY: xthal_get_ccount reads the cycle counter of the current core.
+    let ccount = || unsafe { sys::xthal_get_ccount() };
+    let mut edges = Vec::with_capacity(MAX_EDGES);
+    let start = ccount();
+    let first = read();
+    let mut level = first;
+    let mut last = start;
+    loop {
+        let now = ccount();
+        let l = read();
+        let t = now.wrapping_sub(start);
+        if t >= span || edges.len() >= MAX_EDGES {
+            break;
+        }
+        let stopped = now.wrapping_sub(last) > gap;
+        if stopped {
+            // The stop starts at the last read. This entry keeps the old level.
+            edges.push((last.wrapping_sub(start) & !3) | 2 | level);
+        }
+        if l != level || stopped {
+            edges.push((t & !3) | u32::from(stopped) << 1 | l);
+            level = l;
+        }
+        last = now;
+    }
+    Capture { mhz, first, edges }
 }

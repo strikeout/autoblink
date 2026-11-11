@@ -2534,7 +2534,7 @@ function renderLayers() {
   if (key !== layerKey) {
     layerKey = key;
     $('ltlayers').replaceChildren(h('span', null, on.length ? 'NOW' : 'No look plays'), ...on.map((i) => sceneChip(i, true)));
-    if (dmxLast && dmxLast.artnet) $('ltlayers').append(h('span', null, '+ Art-Net'));
+    if (dmxLast && dmxLast.artnet) $('ltlayers').append(h('span', null, '+ ' + (SOURCE_NAME[dmxLast.source] || 'Art-Net')));
   }
   strobeClass();
 }
@@ -3068,12 +3068,17 @@ function drvPick(v) {
   if (v !== 'auto' && scenes.enabled !== (v === 'manual')) { scenes.enabled = v === 'manual'; sceneSave(); }
 }
 
+/** The names of the outside sources of the status field dmx.source. */
+const SOURCE_NAME = { dmx_in: 'DMX IN', artnet: 'Art-Net', sacn: 'sACN' };
+
 /** The desk input of the box, from the status field dmx. Empty without the field (the host). */
 function deskText() {
   const d = status && status.dmx;
   if (!d || !d.mode) return '';
-  const art = d.artnet ? (d.signal ? 'Art-Net ignored' : 'Art-Net live') : 'no Art-Net';
-  return (d.signal ? 'DMX IN ' + d.in_fps + ' fps' : 'no DMX IN') + ' · ' + art + ' ▶ ' + d.mode + ' ▶ DMX out';
+  // The source holds or fades its last frame after its sender stops (setting Signal Loss).
+  const net = d.source && d.source !== 'dmx_in' ? SOURCE_NAME[d.source] + ' ' + (d.hold || 'live')
+    : d.source === 'dmx_in' ? (d.signal ? 'DMX IN wins over Art-Net/sACN' : 'DMX IN ' + d.hold) : 'no Art-Net/sACN';
+  return (d.signal ? 'DMX IN ' + d.in_fps + ' fps' : 'no DMX IN') + ' · ' + net + ' ▶ ' + d.mode + ' ▶ DMX out';
 }
 
 let drvKey = '';

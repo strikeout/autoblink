@@ -306,6 +306,14 @@ impl Show {
     }
 
     /// The look of a preset, or `None` when the preset has no look.
+    /// The last DMX channel that a light of the show uses, or `None` for a show without lights.
+    pub fn last_channel(&self) -> Option<usize> {
+        self.fixtures
+            .iter()
+            .map(|f| usize::from(f.address) + f.channels.len().max(1) - 1)
+            .max()
+    }
+
     pub fn look(&self, preset: u8) -> Option<&Look> {
         self.looks.get(usize::from(preset))?.as_ref()
     }
@@ -344,6 +352,18 @@ mod tests {
             position: None,
             shape: Shape::None,
         }
+    }
+
+    #[test]
+    fn last_channel_is_the_end_of_the_highest_light() {
+        let mut s = Show::default();
+        assert_eq!(s.last_channel(), None);
+        s.fixtures = vec![fixture(0), fixture(1)];
+        s.fixtures[0].channels = vec![Channel::Dimmer; 5];
+        s.fixtures[1].address = 3;
+        assert_eq!(s.last_channel(), Some(5));
+        s.fixtures[1].address = 40;
+        assert_eq!(s.last_channel(), Some(40));
     }
 
     #[test]

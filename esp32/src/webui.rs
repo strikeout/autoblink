@@ -229,6 +229,70 @@ pub fn start(
             .write_all(crate::mem::report().as_bytes())
     })?;
 
+    // The edges of the DMX output pin for a decoder on a computer. `/scope?pin=36` records DMX
+    // IN instead. One line holds the CPU clock in MHz, the level at the start and the number of
+    // edges. Then each edge has one line.
+    #[cfg(feature = "dmx")]
+    server.fn_handler("/scope", Method::Get, |req| -> anyhow::Result<()> {
+        let pin = if req.uri().contains("pin=36") { 36 } else { 4 };
+        let c = crate::mem::scope(pin)?;
+        let mut resp = req.into_response(200, None, &[("Content-Type", "text/plain")])?;
+        let mut buf = format!("{} {} {}\n", c.mhz, c.first, c.edges.len());
+        for e in &c.edges {
+            buf.push_str(&e.to_string());
+            buf.push('\n');
+            if buf.len() > 1000 {
+                resp.write_all(buf.as_bytes())?;
+                buf.clear();
+            }
+        }
+        resp.write_all(buf.as_bytes())?;
+        Ok(())
+    })?;
+
+    // Changes the timing of the DMX output for a test, for example
+    // `/dmxtune?break=44&mab=20&idle=0&period=0&slots=64&gap=40&baud=250000`. Without a value, the route only gives the
+    // timing. A restart sets the defaults again.
+    #[cfg(feature = "dmx")]
+    server.fn_handler("/dmxtune", Method::Get, |req| -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let t = &crate::dmx::TUNE;
+        let query = req.uri().split_once('?').map_or("", |(_, q)| q).to_owned();
+        for pair in query.split('&') {
+            let Some((k, v)) = pair.split_once('=') else {
+                continue;
+            };
+            let Ok(v) = v.parse::<u32>() else { continue };
+            match k {
+                "break" => t.break_bits.store(v.clamp(22, 255), Relaxed),
+                "mab" => t.mab_us.store(v.clamp(12, 2_000), Relaxed),
+                "idle" => t.idle_bits.store(v.min(1023), Relaxed),
+                "period" => t
+                    .period_us
+                    .store(if v == 0 { 0 } else { v.clamp(5_000, 1_000_000) }, Relaxed),
+                "slots" => t
+                    .slots
+                    .store(if v == 0 { 0 } else { v.clamp(1, 512) }, Relaxed),
+                "gap" => t.gap_us.store(v.min(1000), Relaxed),
+                "baud" => t.baud.store(v.clamp(240_000, 260_000), Relaxed),
+                _ => {}
+            }
+        }
+        let text = format!(
+            "break {} bits\nmab {} us\nidle {} bits\nperiod {} us\nslots {}\ngap {} us\nbaud {}\n",
+            t.break_bits.load(Relaxed),
+            t.mab_us.load(Relaxed),
+            t.idle_bits.load(Relaxed),
+            t.period_us.load(Relaxed),
+            t.slots.load(Relaxed),
+            t.gap_us.load(Relaxed),
+            t.baud.load(Relaxed)
+        );
+        req.into_response(200, None, &[("Content-Type", "text/plain")])?
+            .write_all(text.as_bytes())?;
+        Ok(())
+    })?;
+
     #[cfg(feature = "dmx")]
     show_routes(&mut server, &state)?;
     #[cfg(feature = "dmx")]

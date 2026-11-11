@@ -16,13 +16,13 @@
 //! lights uses the HTP and LTP rules of `autoblink_core_dmx::Merge`. A show without lights uses
 //! HTP for each channel (`autoblink_core_ui::merge`).
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use autoblink_core_dmx::{
-    apply_room, Action, BeatClock, Changes, Lights, Live, Merge, PilotStatus, Show, Tier, Universe,
-    ARTNET_TIMEOUT_MS, UNIVERSE,
+    apply_room, dim, Action, BeatClock, Changes, Lights, Live, Loss, Merge, PilotStatus, Proto,
+    Sender, Show, Source, SourceState, Tier, Universe, DMX_IN_PRIORITY, UNIVERSE,
 };
 use autoblink_core_midi::scenes::Event;
 use autoblink_core_ui::{frame_channels, merge, BoxConfig, DmxMode};
@@ -39,26 +39,101 @@ use crate::State;
 /// The fade time of the beat flash of a show without lights.
 const FLASH_MS: u64 = 200;
 
-/// The time between the starts of two output frames. The UART sends one frame (512 channels) in
-/// about 23 ms. The idle time after the break is the mark after break of the next frame. Thus the
-/// rate is about 41 Hz.
+/// The time from one frame write to the next. One frame is the break, the mark after break and
+/// the start code with 512 channels. It takes 22.8 ms. Thus the rate is about 41 Hz.
+///
+/// The thread measures the time from the last write, not from a fixed grid. Thus the UART has
+/// sent the frame before the next write comes.
 const FRAME_PERIOD: Duration = Duration::from_millis(24);
 
-/// The break length in bit times. At 250 kbaud, one bit is 4 µs, so 25 bits give 100 µs.
-/// DMX512 needs at least 88 µs.
-const BREAK_BITS: i32 = 25;
+/// The log counts a write that starts this much after its time. On a fixed grid, such a write
+/// makes the next gap shorter than the wire time.
+const LATE_LIMIT: Duration = Duration::from_micros(1300);
+
+/// The break length in bit times. At 250 kbaud, one bit is 4 µs, so 44 bits give 176 µs, the
+/// break of most consoles. DMX512 needs at least 88 µs.
+const BREAK_BITS: u32 = 44;
+
+/// The mark after break in µs. DMX512-A needs at least 12 µs from a transmitter. The first slot
+/// goes straight into the TX FIFO (`start_frame`), so the write adds only some µs.
+const MAB_US: u32 = 20;
+
+/// The UART idle time after its FIFO is empty, in bit times. With 0, the slots of a long frame
+/// stay back to back when the FIFO runs empty for a moment.
+const IDLE_BITS: u32 = 0;
+
+/// The time after which the thread sends a frame again without a change. The bars of the owner
+/// flickered with 40 frames each second, but they were stable with 4 frames. DMX512 allows up to
+/// 1 s from break to break.
+const REPEAT: Duration = Duration::from_millis(250);
+
+/// With "DMX Refresh" On change, the frames after a change also go out at once, this many. When
+/// a light drops a damaged frame, the next frame then comes after 24 ms, not after 250 ms.
+const BURST: u8 = 3;
+
+/// The longest wait of the loop. The thread resets the task watchdog (5 s) on each pass, also
+/// when `GET /dmxtune` sets a long period.
+const MAX_WAIT: Duration = Duration::from_secs(1);
 
 /// The start code and the 512 channels.
 const FRAME_LEN: usize = 513;
 
-/// The input has no signal when no good frame arrives for this time.
-const SIGNAL_TIMEOUT: Duration = Duration::from_secs(1);
+/// The timing of the DMX output. `GET /dmxtune` changes it at runtime, for tests with a light.
+/// The values are not stored. A restart sets the defaults again.
+pub struct Tune {
+    /// The break length in bit times (4 µs).
+    pub break_bits: AtomicU32,
+    /// The mark after break in µs.
+    pub mab_us: AtomicU32,
+    /// The idle time of the UART after its FIFO is empty, in bit times (`uart_set_tx_idle_num`).
+    pub idle_bits: AtomicU32,
+    /// The time from one write to the next, in µs. With 0, the thread writes the next frame when
+    /// the TX buffer has space for it. The frames then go out back to back.
+    pub period_us: AtomicU32,
+    /// The channels in each frame, 1 to 512. With 0, the setting "DMX Channels" decides.
+    pub slots: AtomicU32,
+    /// The idle time between two slots in µs. With 0, the slots go out back to back. Otherwise
+    /// the thread writes each slot alone and waits.
+    pub gap_us: AtomicU32,
+    /// The baud rate. DMX512 uses 250 000. A test can move it by a few percent.
+    pub baud: AtomicU32,
+}
+
+pub static TUNE: Tune = Tune {
+    break_bits: AtomicU32::new(BREAK_BITS),
+    mab_us: AtomicU32::new(MAB_US),
+    idle_bits: AtomicU32::new(IDLE_BITS),
+    period_us: AtomicU32::new(FRAME_PERIOD.as_micros() as u32),
+    slots: AtomicU32::new(0),
+    gap_us: AtomicU32::new(0),
+    baud: AtomicU32::new(250_000),
+};
+
+/// The input has no signal when no good frame arrives for this time. A DMX512 transmitter sends
+/// at least one packet each second, and E1.11 gives a receiver 1.25 s.
+const SIGNAL_TIMEOUT: Duration = Duration::from_millis(1250);
+
+/// The framing error interrupt of the ESP32 UART (`UART_INTR_FRAM_ERR` in `hal/uart_ll.h`). The
+/// ESP-IDF driver does not enable it. A framing error event marks a slot without its stop bits.
+const UART_INTR_FRAM_ERR: u32 = 1 << 3;
+
+/// The time after the last stop bit before the break. The ESP32 makes the second stop bit with
+/// an extra delay bit, and `wait_tx_done` can end before it.
+const MBB_US: u32 = 8;
 
 /// After this many rejected frames in a row, the thread clears the receive buffer. Then a lost
 /// data event cannot shift the channels for a long time.
 const RESYNC_AFTER: u32 = 8;
 
-/// The outside source when DMX IN and Art-Net are both silent.
+/// The DMX IN sender for `Source`. It wins over each network sender.
+const DMX_IN: Sender = Sender {
+    proto: Proto::DmxIn,
+    addr: [0; 4],
+    priority: DMX_IN_PRIORITY,
+    cid: [0; 16],
+};
+
+/// The outside source before the first frame of DMX IN, Art-Net or sACN.
 static NO_SOURCE: Universe = [0; UNIVERSE];
 
 /// The number of messages that the queue to the `dmx` thread holds. A full queue drops a message.
@@ -149,8 +224,13 @@ pub struct DmxStatus {
     pub strobe_hold: bool,
     /// `true` while the page holds the whole room dark.
     pub blackout: bool,
-    /// `true` while Art-Net is live: the last frame is not older than `ARTNET_TIMEOUT_MS`.
+    /// `true` while a network sender (Art-Net or sACN) is live: its last frame is less than 1 s
+    /// old.
     pub artnet: bool,
+    /// The protocol of the outside source, or `None` before its first frame.
+    pub source: Option<Proto>,
+    /// The state of the outside source: live, held, fading or black.
+    pub hold: Option<SourceState>,
     /// The key of the setting "DMX Mode", for example "merge".
     pub mode: &'static str,
     /// The good DMX IN frames in the last second.
@@ -191,20 +271,30 @@ pub fn start(
             .tx_fifo_size(1024)
             .queue_size(32)
     };
-    let uart = UartDriver::new(uart, tx, rx, None::<Gpio36>, None::<Gpio4>, &cfg)?;
     let queue = Arc::new(Queue::<DmxMsg>::new(QUEUE_LEN));
     let msgs = queue.clone();
 
     // Priority 6 is above the HTTP server task (5) and below the `prolink-rx` (8) and `midi` (10)
     // threads on core 1.
-    // 1.32.3 used 4096 bytes of the stack (/mem) with the engine and DMX IN. The Art-Net reads
-    // and the ArtPoll reply have their own frames of 144 and 560 bytes beside the engine calls.
-    // With the log line of the reply, the path can use about 4.8 KB.
-    // ponytail: 6.5 KB is an estimate. Measure with /mem on a box that gets ArtPoll from a desk,
-    // and keep 1.5 KB above the low point.
-    crate::spawn_rt(c"dmx", 6656, 6, Some(Core::Core1), move || {
-        run(&uart, &state, &show, &box_cfg, &msgs)
-    })?;
+    // 1.39.0 used 6208 bytes of the 6656-byte stack (/mem) with Art-Net from Lightkey, ArtPoll
+    // and the sACN joins. `dim` and the ArtPollReply path add frames beside the engine calls.
+    // 8 KB keeps more than 1.5 KB above that low point. Measure again with a fade out running.
+    //
+    // The thread installs the driver, so the UART interrupt runs on core 1. On core 0, the WiFi
+    // interrupts delayed it, and a long frame had gaps of up to 30 µs between two slots.
+    crate::spawn_rt(
+        c"dmx",
+        8192,
+        6,
+        Some(Core::Core1),
+        move || match UartDriver::new(uart, tx, rx, None::<Gpio36>, None::<Gpio4>, &cfg) {
+            Ok(uart) => {
+                digital_rx_pad();
+                run(&uart, &state, &show, &box_cfg, &msgs)
+            }
+            Err(e) => log::error!("DMX: the UART driver does not start: {e}"),
+        },
+    )?;
     log::info!("DMX output is on IO4, DMX input is on IO36");
     Ok(queue)
 }
@@ -230,22 +320,49 @@ fn run(
     let mut prev_in: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut out_log = Changes::default();
     let mut in_log = Changes::default();
-    let mut input: Box<Universe> = Box::new([0; UNIVERSE]);
-    let mut art: Box<Universe> = Box::new([0; UNIVERSE]);
+    // The outside source, its output frame and the sent slots for the change log.
+    let mut src = Box::<Source>::default();
+    let mut src_out: Box<Universe> = Box::new([0; UNIVERSE]);
+    let mut shown: Box<Universe> = Box::new([0; UNIVERSE]);
     let mut art_buf: Box<[u8; crate::artnet::PACKET_LEN]> =
         Box::new([0; crate::artnet::PACKET_LEN]);
+    let mut sacn_buf: Box<[u8; crate::sacn::PACKET_LEN]> = Box::new([0; crate::sacn::PACKET_LEN]);
+    let mut groups = crate::sacn::Groups::default();
+    // The state of the output for the ArtPollReply, from the last frame.
+    let mut node = crate::artnet::Node::default();
+    let mut sacn_universe = 1u16;
+    // The frames of other universes since the last report.
+    let mut other = 0u32;
+    // The changes from live to held since the last report.
+    let mut holds = 0u32;
+    let mut prev_state: Option<SourceState> = None;
+    let mut next_stats_log = Instant::now() + Duration::from_secs(60);
+    let mut next_groups = Instant::now();
+    let mut burst = 0u8;
+    // The mode and the sender of the last frame, and the last time that the source was live.
+    let mut prev_mode: Option<DmxMode> = None;
+    let mut prev_sender: Option<Sender> = None;
+    let mut live_at = 0u64;
     let mut rx: Box<[u8; FRAME_LEN + 3]> = Box::new([0; FRAME_LEN + 3]);
     let mut lts = Box::<Merge>::default();
     let mut lights = Lights::default();
     let mut clock = BeatClock::default();
     let mut playing = None;
     let mut last_beat_ms: Option<u64> = None;
-    // The time of the Art-Net frame in `art`.
-    let mut art_at: Option<u64> = None;
     let mut rx_len = 0;
     let mut rx_bad = false;
-    // The break events since the last frame end.
+    // The break events and the framing error events since the last frame end.
     let mut breaks = 0usize;
+    let mut frame_errors = 0usize;
+    // False until the first frame end after the start or a resync. The bytes before that frame
+    // end are the rest of a frame that started earlier, so the thread discards them.
+    let mut synced = false;
+    // The ring buffer of the UART driver has this much free space when it is empty.
+    let mut tx_empty = 0usize;
+    esp_idf_svc::sys::esp!(unsafe {
+        esp_idf_svc::sys::uart_get_tx_buffer_free_size(uart.port(), &mut tx_empty)
+    })
+    .unwrap_or_else(|e| log::warn!("DMX: no TX buffer size: {e}"));
     let mut bad_in_row = 0u32;
     let mut last_good: Option<Instant> = None;
     let mut frames = 0u16;
@@ -254,10 +371,42 @@ fn run(
     let mut was_signal = false;
     let mut next_count = Instant::now() + Duration::from_secs(1);
     let mut next_send = Instant::now();
+    // The late writes since the last report, and the latest one.
+    let mut late_count = 0u32;
+    let mut late_max = Duration::ZERO;
+    // The frames that the UART did not take since the last report, and the last error.
+    let mut unsent = 0u32;
+    let mut unsent_err = None;
+    let mut next_late_log = Instant::now() + Duration::from_secs(60);
+    // No value: the first frame sets the idle time.
+    let mut idle_set = u16::MAX;
+    // The bytes of the last frame on the wire, and the time of its write.
+    let mut sent: Box<[u8; FRAME_LEN]> = Box::new([0; FRAME_LEN]);
+    let mut sent_len = 0usize;
+    let mut sent_at: Option<Instant> = None;
+    let mut baud_set = 250_000u32;
     // The setting "DMX IN". The thread reads it with the other settings before each frame.
     let mut dmx_in = false;
+    // The input of the UART: IO36, or a constant high level while "DMX IN" is off.
+    let mut rx_on: Option<bool> = None;
+    // The task watchdog restarts the box when this loop stops for 5 s.
+    let watched = match esp_idf_svc::sys::esp!(unsafe {
+        esp_idf_svc::sys::esp_task_wdt_add(std::ptr::null_mut())
+    }) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("DMX: the task watchdog does not watch the thread: {e}");
+            false
+        }
+    };
     loop {
-        let wait = next_send.saturating_duration_since(Instant::now());
+        if watched {
+            // SAFETY: the thread is a subscriber of the watchdog.
+            unsafe { esp_idf_svc::sys::esp_task_wdt_reset() };
+        }
+        let wait = next_send
+            .saturating_duration_since(Instant::now())
+            .min(MAX_WAIT);
         if let Some((event, _)) = events.recv_front(TickType::from(wait).ticks()) {
             match event.payload() {
                 UartEventPayload::Data { size, timeout } => {
@@ -283,16 +432,17 @@ fn run(
                         left -= n;
                     }
                     if timeout && breaks > 0 {
-                        let good = (!rx_bad)
-                            .then(|| frame_channels(&rx[..rx_len], breaks))
+                        // Each break byte also gives a framing error. A further error is a bad
+                        // slot.
+                        let good = (!rx_bad && frame_errors <= breaks)
+                            .then(|| frame_channels(&rx[..rx_len], breaks.min(2)))
                             .flatten();
                         match good {
+                            _ if !synced => synced = true,
                             // While DMX IN is off, a frame is noise on the open pin.
                             Some(_) if !dmx_in => {}
                             Some(channels) => {
-                                input[..channels.len()].copy_from_slice(channels);
-                                // A shorter frame does not keep the old values of the other channels.
-                                input[channels.len()..].fill(0);
+                                src.accept(DMX_IN, None, channels, state.now_ms());
                                 last_good = Some(Instant::now());
                                 frames = frames.saturating_add(1);
                                 bad_in_row = 0;
@@ -305,35 +455,45 @@ fn run(
                         rx_len = 0;
                         rx_bad = false;
                         breaks = 0;
+                        frame_errors = 0;
                         if bad_in_row >= RESYNC_AFTER {
                             bad_in_row = 0;
                             resync(uart, events);
+                            synced = false;
                         }
                     }
                 }
-                UartEventPayload::Break => breaks = (breaks + 1).min(2),
+                UartEventPayload::Break => breaks = breaks.saturating_add(1),
+                UartEventPayload::FrameError => frame_errors = frame_errors.saturating_add(1),
                 UartEventPayload::RxFifoOverflow | UartEventPayload::RxBufferFull => {
                     resync(uart, events);
+                    synced = false;
                     rx_len = 0;
                     rx_bad = false;
                     breaks = 0;
+                    frame_errors = 0;
                     rejected = rejected.wrapping_add(1);
                 }
                 _ => {}
             }
         }
 
-        // `main` gives the socket after the network starts. Before that, there is no Art-Net.
+        // `main` gives the sockets after the network starts. Before that, there is no Art-Net and
+        // no sACN.
+        let now_ms = state.now_ms();
         if let Some(sock) = state.artnet.get() {
-            if crate::artnet::drain(sock, state, &mut art_buf, &mut art) {
-                art_at = Some(state.now_ms());
+            other += crate::artnet::drain(sock, state, &mut art_buf, &mut src, &node, now_ms);
+        }
+        if let Some(sock) = state.sacn.get() {
+            other += crate::sacn::drain(sock, &mut sacn_buf, &mut src, sacn_universe, now_ms);
+            if Instant::now() >= next_groups {
+                next_groups = Instant::now() + Duration::from_secs(1);
+                let ifaces = *state.artnet_ifaces.lock().unwrap();
+                groups.update(sock, &ifaces, sacn_universe);
             }
         }
 
         let signal = last_good.is_some_and(|t| t.elapsed() < SIGNAL_TIMEOUT);
-        if !signal {
-            input.fill(0);
-        }
         if Instant::now() >= next_count {
             next_count += Duration::from_secs(1);
             if signal != was_signal {
@@ -351,10 +511,43 @@ fn run(
         if Instant::now() < next_send {
             continue;
         }
-        next_send += FRAME_PERIOD;
-        // After a long stop, do not send the missed frames.
-        if next_send < Instant::now() {
-            next_send = Instant::now() + FRAME_PERIOD;
+        let period_us = TUNE.period_us.load(Ordering::Relaxed);
+        // With period 0, the next frame starts when the UART has sent the last frame.
+        if period_us == 0 && uart.wait_tx_done(0).is_err() {
+            next_send = Instant::now() + Duration::from_millis(1);
+            continue;
+        }
+        let baud = TUNE.baud.load(Ordering::Relaxed);
+        if baud != baud_set {
+            // SAFETY: the driver of the port is installed.
+            unsafe { esp_idf_svc::sys::uart_set_baudrate(uart.port(), baud) };
+            baud_set = baud;
+        }
+        let idle = TUNE.idle_bits.load(Ordering::Relaxed) as u16;
+        if idle != idle_set {
+            // SAFETY: the driver of the port is installed.
+            unsafe { esp_idf_svc::sys::uart_set_tx_idle_num(uart.port(), idle) };
+            idle_set = idle;
+        }
+        let late = Instant::now() - next_send;
+        if late > LATE_LIMIT {
+            late_count += 1;
+            late_max = late_max.max(late);
+        }
+        if Instant::now() >= next_late_log {
+            next_late_log = Instant::now() + Duration::from_secs(60);
+            if late_count > 0 {
+                log::info!(
+                    "DMX output: {late_count} frames started late in 60 s, the latest by {} µs",
+                    late_max.as_micros()
+                );
+            }
+            if let Some(e) = unsent_err.take() {
+                log::warn!("DMX output: {unsent} frames not sent in 60 s, the last with: {e}");
+            }
+            unsent = 0;
+            late_count = 0;
+            late_max = Duration::ZERO;
         }
 
         let now_ms = state.now_ms();
@@ -374,15 +567,39 @@ fn run(
             strobe_hold: state.dmx_live.strobe_hold.load(Ordering::Relaxed),
             blackout: state.dmx_live.blackout.load(Ordering::Relaxed),
         };
-        let art_live = art_at.is_some_and(|t| now_ms.saturating_sub(t) <= ARTNET_TIMEOUT_MS);
-        let (mode, beat_channel) = {
+        let (mode, beat_channel, frame_cfg) = {
             let cfg = cfg.lock().unwrap();
             dmx_in = cfg.dmx_in;
+            if rx_on != Some(dmx_in) {
+                route_rx(dmx_in);
+                set_frame_errors(uart.port(), dmx_in);
+                frame_errors = 0;
+                // The new input source can start in the middle of a frame.
+                synced = false;
+                rx_on = Some(dmx_in);
+            }
             (
                 cfg.dmx_mode,
                 usize::from(cfg.beat_channel).clamp(1, UNIVERSE),
+                cfg.clone(),
             )
         };
+        sacn_universe = frame_cfg.sacn_universe;
+        // A change of the mode, or "DMX IN" off while DMX IN is the source, forgets the held
+        // frame. Thus a frame of noise on IO36 or an old desk look does not stay for ever.
+        let dmx_in_off = !dmx_in && src.sender().is_some_and(|s| s.proto == Proto::DmxIn);
+        if dmx_in_off || prev_mode.is_some_and(|m| m != mode) {
+            src.clear();
+        }
+        prev_mode = Some(mode);
+        let loss = Loss {
+            black: frame_cfg.loss_black,
+            after_ms: u64::from(frame_cfg.loss_s) * 1000,
+        };
+        // The channels of this frame. The setting "DMX Channels" gives them from the show and the
+        // outside source.
+        let slots;
+        let src_state;
         let send = {
             let show = show.lock().unwrap();
             while let Some((msg, _)) = msgs.recv_front(0) {
@@ -411,6 +628,14 @@ fn run(
             let mut effect = [0u8; UNIVERSE];
             lights.frame(&show, beat.as_ref(), &live, now_ms, &mut effect);
             let lit = !show.fixtures.is_empty();
+            src_state = src.frame(&show, loss, now_ms, &mut src_out);
+            // Only Merge and Pass send the outside frame. After the fade out, its length does
+            // not count.
+            let src_slots = (matches!(mode, DmxMode::Merge | DmxMode::Pass)
+                && src_state.is_some_and(|s| s != SourceState::Black))
+            .then(|| src.slots())
+            .flatten();
+            slots = frame_cfg.frame_channels(show.last_channel(), src_slots);
             if !lit {
                 // A show without lights keeps the beat flash of the older firmware.
                 let level = last_beat_ms.map_or(0, |t| {
@@ -418,21 +643,27 @@ fn run(
                 });
                 effect[beat_channel - 1] = level as u8;
             }
-            // DMX IN is the outside source. Without its signal, the last live Art-Net frame is.
-            let outside: Option<&Universe> = if signal {
-                Some(&input)
-            } else if art_live {
-                Some(&art)
-            } else {
-                None
-            };
+            // The source follows DMX IN while it has a signal, else one network sender. After the
+            // sender stops, it holds or fades the last frame (settings "Signal Loss").
+            let outside: Option<&Universe> = src_state.map(|_| &*src_out);
             // Without a source, the next source shows each of its channels that is not 0.
             match outside {
                 Some(o) => in_log.frame(&mut prev_in, o, now_ms),
                 None => prev_in.fill(0),
             }
+            // A source that comes back after the loss time, or a new sender, claims each of its
+            // channels that is not 0 again.
+            if src_state == Some(SourceState::Live) {
+                let back = prev_state != Some(SourceState::Live)
+                    && now_ms.saturating_sub(live_at) >= loss.after_ms;
+                if back || src.sender() != prev_sender {
+                    lts.rearm();
+                }
+                live_at = now_ms;
+            }
+            prev_sender = src.sender();
             let send = if mode == DmxMode::Merge && lit {
-                lts.apply(&show, outside.map(|o| (o, now_ms)), now_ms, &mut effect);
+                lts.apply(&show, outside, &mut effect);
                 channels.copy_from_slice(&effect);
                 true
             } else {
@@ -444,16 +675,66 @@ fn run(
                     channels,
                 )
             };
-            // The room level comes after the merge. Thus the dip and the blackout also apply
-            // to the light of the outside source.
-            // A trial move of the page acts also while the autopilot is off.
-            let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
-            apply_room(&show, console, all, channels);
+            if mode == DmxMode::Pass && outside.is_some() {
+                // Pass sends the outside source without the effects of the box. Only the
+                // blackout of the page acts on it.
+                if live.blackout {
+                    dim(&show, 0, channels);
+                }
+            } else {
+                // The room level comes after the merge. Thus the dip and the blackout also apply
+                // to the light of the outside source.
+                // A trial move of the page acts also while the autopilot is off.
+                let (console, all) = lights.room(&show, beat.as_ref(), &live, now_ms);
+                apply_room(&show, console, all, channels);
+            }
             send
         };
+        // The UART sends the frame, then the break. The break before the next frame and the idle
+        // time after it make the reset sequence of DMX512.
+        let len = 1 + match TUNE.slots.load(Ordering::Relaxed) as usize {
+            0 => slots,
+            n => n.clamp(1, 512),
+        };
         if send {
-            let channels: &Universe = (&out[1..]).try_into().expect("512 channels");
-            out_log.frame(&mut prev, channels, now_ms);
+            // The change log shows only the channels on the wire.
+            shown[..len - 1].copy_from_slice(&out[1..len]);
+            shown[len - 1..].fill(0);
+            out_log.frame(&mut prev, &shown, now_ms);
+        }
+        let net_live = src_state == Some(SourceState::Live)
+            && src.sender().is_some_and(|s| s.proto != Proto::DmxIn);
+        log_source(&src, src_state, &mut prev_state, &mut holds);
+        if Instant::now() >= next_stats_log {
+            next_stats_log = Instant::now() + Duration::from_secs(60);
+            let st = src.take_stats();
+            if st.frames > 0 || st.ignored > 0 || other > 0 {
+                log::info!(
+                    "DMX source in 60 s: {} frames, {} late, {} of other senders, {} switches, {} of other universes, {holds} holds, gap up to {} ms",
+                    st.frames,
+                    st.late,
+                    st.ignored,
+                    st.switches,
+                    other,
+                    st.max_gap_ms
+                );
+            }
+            other = 0;
+            holds = 0;
+        }
+        let now_node = crate::artnet::Node {
+            port_address: frame_cfg.artnet_universe,
+            sending: mode != DmxMode::Off,
+            sacn: src_state.is_some() && src.sender().is_some_and(|s| s.proto == Proto::Sacn),
+            merging: mode == DmxMode::Merge && src_state.is_some(),
+            continuous: frame_cfg.dmx_refresh_always,
+            failsafe_zero: frame_cfg.loss_black,
+        };
+        if now_node != node {
+            node = now_node;
+            if let Some(sock) = state.artnet.get() {
+                crate::artnet::changed(sock, state, &node);
+            }
         }
         // The page and the display read the status. The thread does not wait for the lock, and
         // it writes the layers only after a change. The next frame tries again.
@@ -465,7 +746,9 @@ fn run(
             s.master = live.master;
             s.strobe_hold = live.strobe_hold;
             s.blackout = live.blackout;
-            s.artnet = art_live;
+            s.artnet = net_live;
+            s.source = src_state.and(src.sender()).map(|s| s.proto);
+            s.hold = src_state;
             s.mode = mode.key();
             s.in_fps = in_fps;
             s.signal = signal;
@@ -473,11 +756,233 @@ fn run(
             in_log.recent(now_ms, &mut s.in_recent);
             out_log.recent(now_ms, &mut s.out_recent);
         }
-        // The UART sends the frame, then the break. The break before the next frame and the idle
-        // time after it make the reset sequence of DMX512.
-        if send {
-            if let Err(e) = uart.write_with_break(&out[..], BREAK_BITS) {
-                log::warn!("DMX frame not sent: {e}");
+        // The next write comes one period after this write.
+        next_send = Instant::now() + Duration::from_micros(u64::from(period_us));
+        // With "DMX Refresh" On change, a frame without a change waits until `REPEAT` is over.
+        // The `BURST` frames after a change go out at once.
+        let changed = len != sent_len || out[..len] != sent[..len];
+        if changed {
+            burst = BURST;
+        }
+        let due = frame_cfg.dmx_refresh_always
+            || changed
+            || burst > 0
+            || sent_at.is_none_or(|t| t.elapsed() >= REPEAT);
+        if send && due {
+            let bit_us = 1_000_000 / baud_set.max(1);
+            let brk_us = TUNE.break_bits.load(Ordering::Relaxed) * bit_us;
+            let mab_us = TUNE.mab_us.load(Ordering::Relaxed);
+            let gap = TUNE.gap_us.load(Ordering::Relaxed);
+            // The last frame is normally out, because the period is longer than a frame. A late
+            // frame gets 30 ms.
+            // ESP-IDF gives the TX done event also when the FIFO runs empty in a frame, for
+            // example during a flash write. The call with 0 ticks reads the state of the UART.
+            let done = wait_tx_buffer(uart.port(), tx_empty)
+                .and_then(|()| uart.wait_tx_done(TickType::from(Duration::from_millis(30)).ticks()))
+                .and_then(|()| uart.wait_tx_done(0));
+            let result = done.and_then(|()| {
+                if gap == 0 {
+                    let n = start_frame(uart.port(), brk_us, mab_us, &out[..len]);
+                    if n < len {
+                        uart.write(&out[n..len])?;
+                    }
+                    Ok(())
+                } else {
+                    start_frame(uart.port(), brk_us, mab_us, &[]);
+                    // One slot takes 11 bits. The wait after each write is the slot and the gap.
+                    for &b in &out[..len] {
+                        uart.write(&[b])?;
+                        esp_idf_svc::hal::delay::Ets::delay_us(11 * bit_us + gap);
+                    }
+                    Ok(())
+                }
+            });
+            match result {
+                Ok(()) => {
+                    if !changed {
+                        burst = burst.saturating_sub(1);
+                    }
+                    sent[..len].copy_from_slice(&out[..len]);
+                    sent_len = len;
+                    sent_at = Some(Instant::now());
+                }
+                // The next pass tries again. The log shows the count once a minute.
+                Err(e) => {
+                    unsent += 1;
+                    unsent_err = Some(e);
+                }
+            }
+        }
+        // Each pass waits at least 1 ms. Thus the idle task runs, also with `GET /dmxtune`
+        // values that make a pass long.
+        next_send = next_send.max(Instant::now() + Duration::from_millis(1));
+    }
+}
+
+/// Sends the break, the mark after break and the first slots of a frame. Returns the number of
+/// bytes of `data` in the TX FIFO. The caller writes the rest.
+///
+/// The task runs at priority 23 for this time. Thus no other task on core 1 makes the break or
+/// the mark longer, and the first slot follows the mark after about 10 µs. The TX FIFO and the
+/// ring buffer of the UART must be empty, so the FIFO bytes go out before the rest.
+fn start_frame(
+    port: esp_idf_svc::sys::uart_port_t,
+    break_us: u32,
+    mab_us: u32,
+    data: &[u8],
+) -> usize {
+    use esp_idf_svc::sys::{uart_tx_chars, uxTaskPriorityGet, vTaskPrioritySet};
+    let me = std::ptr::null_mut();
+    // SAFETY: a null handle is the calling task.
+    let old = unsafe { uxTaskPriorityGet(me) };
+    unsafe { vTaskPrioritySet(me, 23) };
+    send_break(port, break_us, mab_us);
+    let n = if data.is_empty() {
+        0
+    } else {
+        // SAFETY: `data` is valid for its length. The call writes only what the FIFO takes.
+        unsafe { uart_tx_chars(port, data.as_ptr().cast(), data.len() as u32) }
+    };
+    // SAFETY: as above.
+    unsafe { vTaskPrioritySet(me, old) };
+    usize::try_from(n).unwrap_or(0)
+}
+
+/// Waits until the ring buffer of the TX driver is empty. `tx_empty` is its free space when it is
+/// empty.
+///
+/// `wait_tx_done` reads only the FIFO. When the ISR waits, for example after a flash write, the
+/// FIFO can be empty while the ring buffer still holds the rest of the frame.
+fn wait_tx_buffer(
+    port: esp_idf_svc::sys::uart_port_t,
+    tx_empty: usize,
+) -> Result<(), esp_idf_svc::sys::EspError> {
+    let until = Instant::now() + Duration::from_millis(30);
+    loop {
+        let mut free = 0;
+        // SAFETY: the driver of the port is installed.
+        esp_idf_svc::sys::esp!(unsafe {
+            esp_idf_svc::sys::uart_get_tx_buffer_free_size(port, &mut free)
+        })?;
+        if free >= tx_empty {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            return Err(esp_idf_svc::sys::EspError::from_infallible::<
+                { esp_idf_svc::sys::ESP_ERR_TIMEOUT },
+            >());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Turns the framing error interrupt of UART1 on or off. It is on only while "DMX IN" is on,
+/// because noise on an open IO36 can give an interrupt for each byte.
+fn set_frame_errors(port: esp_idf_svc::sys::uart_port_t, on: bool) {
+    use esp_idf_svc::sys::{uart_disable_intr_mask, uart_enable_intr_mask};
+    // SAFETY: the driver of the port is installed.
+    let err = unsafe {
+        if on {
+            uart_enable_intr_mask(port, UART_INTR_FRAM_ERR)
+        } else {
+            uart_disable_intr_mask(port, UART_INTR_FRAM_ERR)
+        }
+    };
+    if let Err(e) = esp_idf_svc::sys::esp!(err) {
+        log::warn!("DMX: framing error interrupt not set: {e}");
+    }
+}
+
+/// Connects the receive input of UART1 to IO36 (`on`), or to a constant high level. While
+/// "DMX IN" is off, an open or low IO36 then gives no receive interrupts on core 1. Without the
+/// RS485 module, IO36 reads low, and the UART can see one break after the other.
+fn route_rx(on: bool) {
+    if on {
+        digital_rx_pad();
+    }
+    use esp_idf_svc::sys::{
+        esp_rom_gpio_connect_in_signal, GPIO_MATRIX_CONST_ONE_INPUT, U1RXD_IN_IDX,
+    };
+    let src = if on { 36 } else { GPIO_MATRIX_CONST_ONE_INPUT };
+    // SAFETY: the call sets the source of the UART1 RX signal in the GPIO matrix. The pad of
+    // IO36 keeps its input buffer, so `GET /scope?pin=36` still reads it.
+    unsafe { esp_rom_gpio_connect_in_signal(src, U1RXD_IN_IDX, false) };
+}
+
+/// The RTC register of the sensor pads. Bit 27 routes IO36 (SENSE1) to the RTC side, and bit 19
+/// is its RTC input enable.
+const RTC_SENSOR_PADS: u32 = esp_idf_svc::sys::DR_REG_RTCIO_BASE + 0x7c;
+
+/// The pad registers and the level of IO36, for `/mem`.
+pub fn rx_pad_state() -> String {
+    // SAFETY: the two addresses are registers of the IO MUX and the RTC IO peripherals.
+    let read = |a: u32| unsafe { std::ptr::read_volatile(a as *const u32) };
+    let level = (read(esp_idf_svc::sys::GPIO_IN1_REG) >> 4) & 1;
+    format!(
+        "IO36: IO_MUX {:#010x}, RTC sensor pads {:#010x}, level {level}",
+        read(esp_idf_svc::sys::IO_MUX_GPIO36_REG),
+        read(RTC_SENSOR_PADS)
+    )
+}
+
+/// Puts IO36 into the digital input mode. ESP-IDF 5.5 only sets the input enable of a receive
+/// pin. On the owner's box, IO36 read 0 all the time, also with a console on DMX IN and 1.25 V
+/// on the pin. The log shows the pad registers before and after.
+fn digital_rx_pad() {
+    let before = rx_pad_state();
+    // SAFETY: IO36 is the receive pin of UART1. The calls only change its pad mode.
+    unsafe {
+        esp_idf_svc::sys::rtc_gpio_deinit(36);
+        esp_idf_svc::sys::gpio_input_enable(36);
+    }
+    log::info!("DMX IN pad: {before}; now {}", rx_pad_state());
+}
+
+/// Sends the break and the mark after break of a frame. The TX line is inverted for the break.
+/// The TX FIFO of the UART must be empty.
+///
+/// The break comes before the data of its frame, as on a console. The ESP-IDF break comes after
+/// the data, so the time between two frames was the mark after break. With a short frame, that
+/// mark was about 25 ms at 40 Hz and up to 250 ms with "DMX Refresh" On change.
+// ponytail: a task with a higher priority can make the break or the mark longer. DMX512 allows
+// both up to 1 s. The upgrade is a hardware timer, as in the esp_dmx library.
+fn send_break(port: esp_idf_svc::sys::uart_port_t, break_us: u32, mab_us: u32) {
+    use esp_idf_svc::hal::delay::Ets;
+    use esp_idf_svc::sys::{uart_set_line_inverse, uart_signal_inv_t_UART_SIGNAL_TXD_INV};
+    Ets::delay_us(MBB_US);
+    // SAFETY: the driver of the port is installed, and the UART sends nothing now.
+    unsafe { uart_set_line_inverse(port, uart_signal_inv_t_UART_SIGNAL_TXD_INV as u32) };
+    Ets::delay_us(break_us);
+    // SAFETY: as above. The mask 0 turns off each inversion.
+    unsafe { uart_set_line_inverse(port, 0) };
+    Ets::delay_us(mab_us);
+}
+
+/// Logs a change of the state of the outside source. A change between live and held only adds 1
+/// to `holds`. A desk that sends only on a change gives such a change each few seconds.
+fn log_source(
+    src: &Source,
+    state: Option<SourceState>,
+    prev: &mut Option<SourceState>,
+    holds: &mut u32,
+) {
+    if state == *prev {
+        return;
+    }
+    let was = std::mem::replace(prev, state);
+    let Some(state) = state else {
+        return;
+    };
+    match (was, state) {
+        (Some(SourceState::Live), SourceState::Held) => *holds += 1,
+        (Some(SourceState::Held), SourceState::Live) => {}
+        _ => {
+            if let Some(s) = src.sender() {
+                let [a, b, c, d] = s.addr;
+                log::info!(
+                    "DMX source: {:?} from {a}.{b}.{c}.{d} is {state:?}",
+                    s.proto
+                );
             }
         }
     }
