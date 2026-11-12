@@ -107,6 +107,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "autoblink-core-beat"
+version = "1.39.7"
+
+[[package]]
 name = "autoblink-core-dbserver"
 version = "1.39.7"
 
