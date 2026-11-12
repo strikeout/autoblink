@@ -5,6 +5,8 @@
 //! beat phase and bar 1 from the kick drum. The calibrator compares the mic grid with the Pro DJ
 //! Link beats while a deck plays.
 
+pub mod arbiter;
+pub mod grid;
 pub mod onset;
 #[cfg(test)]
 pub(crate) mod synth;
