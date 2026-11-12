@@ -310,6 +310,7 @@ pub fn start(
                 device: snap.device,
                 playing: snap.playing,
                 bpm: snap.bpm,
+                mic: false,
             });
             next_pulse = clock.poll(&cfg, state.now_us(), master, &mut send);
             if Instant::now() >= next_cc {
