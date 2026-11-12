@@ -556,7 +556,8 @@ fn run(
             .lock()
             .unwrap()
             .master()
-            .is_some_and(|m| m.is_playing(now_ms));
+            .is_some_and(|m| m.is_playing(now_ms))
+            || state.mic_master.load(Ordering::Relaxed);
         // `set_playing` keeps the time of the stop. Thus the thread calls it only on a change.
         if playing != Some(is_playing) {
             lights.set_playing(is_playing, now_ms);

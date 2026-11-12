@@ -28,6 +28,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use autoblink_core_beat::tracker::Section;
 use autoblink_core_dbserver::{current_phrase_idx, phrase_info};
 use autoblink_core_midi::clock::Master;
 use autoblink_core_midi::scenes::{SceneInput, ScenePhrase, SceneStatus, Scenes, ScenesConfig};
@@ -235,7 +236,44 @@ pub fn start(
             // The track energy and the time of the next drop, for the pilot.
             #[cfg(feature = "dmx")]
             let mut facts = (None, None);
-            let (mut snap, track) = {
+            // While the mic is the master, its calibrated grid gives the master values.
+            let mic = state
+                .mic_master
+                .load(Ordering::Relaxed)
+                .then(|| *state.mic.lock().unwrap())
+                .and_then(|v| Some((v, v.grid?)));
+            let (mut snap, track) = if let Some((v, g)) = mic {
+                let now_us = state.now_us() as f64;
+                let (_, phrase16) = g.current(now_us);
+                let bpm = if v.device == last_master && smoothed_bpm > 0.0 {
+                    smoothed_bpm
+                } else {
+                    g.bpm()
+                };
+                scene_in = SceneInput {
+                    device: v.device,
+                    track: 0,
+                    playing: true,
+                    bpm,
+                    phrase: None,
+                    bass_cut: None,
+                    guess: v.section.map(|s| match s {
+                        Section::Break => autoblink_core_midi::scenes::Event::Break,
+                        Section::Drop => autoblink_core_midi::scenes::Event::Drop,
+                    }),
+                    phrase16,
+                };
+                let snap = Snapshot {
+                    device: v.device,
+                    bpm,
+                    pitch: 0.0,
+                    phrase16,
+                    beat_phase: g.beat_phase(now_us),
+                    playing: true,
+                    phrase: None,
+                };
+                (snap, None)
+            } else {
                 let tracker = state.tracker.lock().unwrap();
                 tracker.master().map_or((Snapshot::default(), None), |m| {
                     let snap = Snapshot {
@@ -317,7 +355,7 @@ pub fn start(
                 device: snap.device,
                 playing: snap.playing,
                 bpm: snap.bpm,
-                mic: false,
+                mic: mic.is_some(),
             });
             next_pulse = clock.poll(&cfg, state.now_us(), master, &mut send);
             if Instant::now() >= next_cc {

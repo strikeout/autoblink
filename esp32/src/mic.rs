@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use autoblink_core_beat::arbiter::Arbiter;
 use autoblink_core_beat::calib::{Calibrator, Stats};
-use autoblink_core_beat::grid::{Grid, SampleClock};
+use autoblink_core_beat::grid::{Emitter, Grid, SampleClock};
 use autoblink_core_beat::tracker::{MicState, Section, Tracker};
 use autoblink_core_beat::{DEFAULT_OFFSET_US, LONG_FLYWHEEL_MS, SAMPLE_RATE};
 use autoblink_core_ui::BoxConfig;
@@ -27,7 +28,7 @@ use esp_idf_svc::hal::i2s::{I2sDriver, I2sRx, I2S0};
 use esp_idf_svc::hal::task::queue::Queue;
 
 use crate::midi::Beat;
-use crate::State;
+use crate::{BeatOut, State};
 
 /// The frames of one read: 16 ms. The DMA holds 6 reads (96 ms), so that a WiFi burst on
 /// core 0 drops no sample.
@@ -68,6 +69,7 @@ pub fn start(
     box_cfg: Arc<Mutex<BoxConfig>>,
     device: Arc<AtomicU8>,
     pdl: Arc<Queue<Beat>>,
+    out: BeatOut,
     offset_us: Option<i64>,
 ) -> anyhow::Result<()> {
     // Core 0 and priority 4: below the WiFi task, above the `ui` thread (3).
@@ -93,6 +95,7 @@ pub fn start(
             &box_cfg,
             &device,
             &pdl,
+            &out,
             offset_us.unwrap_or(DEFAULT_OFFSET_US),
         );
     })?;
@@ -109,6 +112,7 @@ fn run(
     box_cfg: &Mutex<BoxConfig>,
     device: &AtomicU8,
     pdl: &Queue<Beat>,
+    out: &BeatOut,
     offset_us: i64,
 ) {
     let mut enabled = false;
@@ -121,6 +125,17 @@ fn run(
     let mut saved = offset_us;
     let mut next_save = Instant::now();
     let mut long_logged = false;
+    let mut arbiter = Arbiter::default();
+    let mut emitter = Emitter::new();
+    let mut last_section = None;
+    let deck_playing = || {
+        state
+            .tracker
+            .lock()
+            .unwrap()
+            .master()
+            .is_some_and(|m| m.is_playing(state.now_ms()))
+    };
     let timeout = TickType::from(Duration::from_millis(100)).ticks();
     loop {
         let want = box_cfg.lock().unwrap().mic;
@@ -148,6 +163,8 @@ fn run(
             last_state = MicState::Listening;
         }
         if !enabled {
+            arbiter.update(true, MicState::Listening);
+            state.mic_master.store(false, Ordering::Relaxed);
             publish(state, MicView::default());
             thread::sleep(Duration::from_secs(1));
             continue;
@@ -207,6 +224,41 @@ fn run(
                 calib.ratio()
             );
         }
+        // A Pro DJ Link deck that plays always wins. The mic takes over only from a lock.
+        let master = arbiter.update(deck_playing(), s);
+        if master != state.mic_master.load(Ordering::Relaxed) {
+            log::info!(
+                "Mic: {}",
+                if master {
+                    "the mic gives the beat"
+                } else {
+                    "the mic does not give the beat"
+                }
+            );
+            emitter.reset();
+        }
+        state.mic_master.store(master, Ordering::Relaxed);
+        calib.set_learning(!master);
+        let section = tracker.section();
+        if section == Some(Section::Drop) && last_section != section {
+            calib.on_drop();
+        }
+        last_section = section;
+        let grid = raw.map(|g| calib.map(&g));
+        let dev = device.load(Ordering::Relaxed);
+        if let (true, Some(g)) = (master, &grid) {
+            if let Some(b) = emitter.next(g, now_us as f64) {
+                // A deck that started to play in this pass wins: no beat goes out twice.
+                if !deck_playing() {
+                    out.send(Beat {
+                        device: dev,
+                        beat_in_bar: b.beat_in_bar,
+                        bpm: b.bpm,
+                        at_us: b.at_us,
+                    });
+                }
+            }
+        }
         // The main loop writes the offset to NVS. This thread does not wait for the flash.
         let off = calib.offset_us();
         if (off - saved).abs() > SAVE_CHANGE_US && Instant::now() >= next_save {
@@ -219,10 +271,10 @@ fn run(
             MicView {
                 enabled: true,
                 state: s,
-                master: false,
-                device: device.load(Ordering::Relaxed),
-                grid: raw.map(|g| calib.map(&g)),
-                section: tracker.section(),
+                master,
+                device: dev,
+                grid,
+                section,
                 level: tracker.level(),
                 confidence: tracker.confidence(),
                 offset_ms: (off / 1000) as i16,

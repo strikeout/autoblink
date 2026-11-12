@@ -31,6 +31,14 @@ impl Grid {
         ((now_us - self.beat_us) / self.period_us).rem_euclid(1.0)
     }
 
+    /// The beat in the bar (1 to 4) and the beat of the 16-beat block (1 to 16) of the last grid
+    /// beat at or before `now_us`.
+    pub fn current(&self, now_us: f64) -> (u8, u8) {
+        let last =
+            self.beat_us + ((now_us - self.beat_us) / self.period_us).floor() * self.period_us;
+        self.position(last)
+    }
+
     /// The beat in the bar (1 to 4) and the beat of the 16-beat block (1 to 16) of the grid beat
     /// nearest `at_us`.
     pub fn position(&self, at_us: f64) -> (u8, u8) {
@@ -262,6 +270,9 @@ mod tests {
             phrase_pos: 6,
         };
         assert_eq!(g.position(1e6 + 2.0 * P), (1, 9));
+        // The current beat is the last beat at or before the time, also after half a beat.
+        assert_eq!(g.current(1e6 + 2.0 * P + 0.75 * P), (1, 9));
+        assert_eq!(g.current(1e6 + 2.0 * P), (1, 9));
         assert_eq!(g.position(1e6 - P), (2, 6));
         assert!((g.bpm() - 120.0).abs() < 1e-9);
         assert!((g.beat_phase(1e6 + 1.25 * P) - 0.25).abs() < 1e-9);
