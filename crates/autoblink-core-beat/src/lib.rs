@@ -6,6 +6,7 @@
 //! Link beats while a deck plays.
 
 pub mod arbiter;
+pub mod calib;
 pub mod grid;
 pub mod onset;
 #[cfg(test)]
