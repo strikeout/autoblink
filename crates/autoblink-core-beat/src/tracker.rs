@@ -6,7 +6,7 @@
 //! - `Locked` needs a kick on 6 of the last 8 predicted beats.
 
 use crate::onset::{Frame, Onsets};
-use crate::{BPM_MAX, BPM_MIN, HOP, NO_MIC_MS, SAMPLE_RATE, SILENCE_DBFS, SILENCE_MS};
+use crate::{BPM_MAX, BPM_MIN, BREAK_BEATS, HOP, NO_MIC_MS, SAMPLE_RATE, SILENCE_DBFS, SILENCE_MS};
 
 const SR: f64 = SAMPLE_RATE as f64;
 /// The onset frames each second.
@@ -98,12 +98,100 @@ struct Pll {
     /// The beat index and the onset time of the last kicks, for the period.
     hist: [(f64, f64); HIST],
     hist_len: usize,
+    /// The class of the beat index (mod 4) that is bar 1.
+    bar0: u8,
+    /// The class of the beat index (mod 16) that starts the 16-beat block. `phrase0 % 4 == bar0`.
+    phrase0: u8,
+    /// The clap onsets and the high-band onsets of the 4 beat classes, with a decay of 16 bars.
+    acc_clap: [f32; 4],
+    acc_high: [f32; 4],
+    /// The class that the bar scores give now, and the beats in a row that it won.
+    cand: Option<u8>,
+    streak: u32,
+    /// The beats in a row without a kick on the grid and off the grid.
+    quiet: u32,
+    /// The kicks in a row on the grid during the flywheel, and the index of the first one.
+    back: u8,
+    back_n: u64,
 }
+
+/// The decay of the bar scores for each beat: a time constant of 16 bars.
+const BAR_DECAY: f32 = 0.984_5;
+/// The beats that a new bar 1 must win in a row (8 bars).
+const BAR_STREAK: u32 = 32;
+/// The margin of the best bar score over the second.
+const BAR_MARGIN: f32 = 1.15;
+/// The ratio of the clap scores of the two beat pairs that decides the pair of bar 1.
+const CLAP_RATIO: f32 = 1.5;
 
 /// The kicks that the period regression uses.
 const HIST: usize = 16;
 
 impl Pll {
+    fn bar_pos(&self, n: u64) -> u8 {
+        ((n + 4 - u64::from(self.bar0)) % 4) as u8
+    }
+
+    fn phrase_pos(&self, n: u64) -> u8 {
+        ((n + 16 - u64::from(self.phrase0)) % 16) as u8
+    }
+
+    /// Adds the onsets of beat `n` to the bar scores. Moves bar 1 when another class wins for
+    /// `BAR_STREAK` beats in a row.
+    fn score_bar(&mut self, n: u64, clap: f32, high: f32) {
+        for a in self.acc_clap.iter_mut().chain(self.acc_high.iter_mut()) {
+            *a *= BAR_DECAY;
+        }
+        let i = (n % 4) as usize;
+        self.acc_clap[i] += clap;
+        self.acc_high[i] += high;
+        let cand = self.bar_candidate();
+        if cand.is_some() && cand == self.cand {
+            self.streak += 1;
+        } else {
+            self.cand = cand;
+            self.streak = u32::from(cand.is_some());
+        }
+        if let Some(c) = cand {
+            if self.streak >= BAR_STREAK && c != self.bar0 {
+                let delta = (c + 4 - self.bar0) % 4;
+                self.bar0 = c;
+                self.phrase0 = (self.phrase0 + delta) % 16;
+            }
+        }
+    }
+
+    /// The class of bar 1 that the scores give: the most high-band change, among the pair without
+    /// the claps when one pair has them. `None` without a clear margin.
+    fn bar_candidate(&self) -> Option<u8> {
+        // A clap pair has a clap of about the same size on both of its beats. A crash on one beat
+        // is no clap pair.
+        let c = &self.acc_clap;
+        let pair = |a: usize, b: usize, x: usize, y: usize| {
+            let (lo, hi) = (c[a].min(c[b]), c[a].max(c[b]));
+            lo > CLAP_RATIO * c[x].max(c[y]) && lo > 0.5 * hi
+        };
+        let cands: &[usize] = if pair(0, 2, 1, 3) {
+            &[1, 3]
+        } else if pair(1, 3, 0, 2) {
+            &[0, 2]
+        } else {
+            &[0, 1, 2, 3]
+        };
+        let mut best = (0, f32::MIN);
+        let mut second = f32::MIN;
+        for &c in cands {
+            let v = self.acc_high[c];
+            if v > best.1 {
+                second = best.1;
+                best = (c, v);
+            } else if v > second {
+                second = v;
+            }
+        }
+        (best.1 > 0.0 && best.1 > BAR_MARGIN * second).then_some(best.0 as u8)
+    }
+
     fn add_hit(&mut self, t: f64) {
         self.hist[self.n as usize % HIST] = (self.n as f64, t);
         self.hist_len = (self.hist_len + 1).min(HIST);
@@ -134,7 +222,7 @@ pub struct Tracker {
     odf: [f32; LONG],
     kick: [f32; SHORT],
     clap: [f32; SHORT],
-    full: [f32; SHORT],
+    high: [f32; SHORT],
     state: MicState,
     pll: Option<Pll>,
     tempo: Option<f64>,
@@ -145,6 +233,8 @@ pub struct Tracker {
     quiet: u64,
     listen_from: u64,
     cold_lock_ms: Option<u32>,
+    section: Option<Section>,
+    flywheel_from: u64,
 }
 
 impl Default for Tracker {
@@ -165,7 +255,7 @@ impl Tracker {
             odf: [0.0; LONG],
             kick: [0.0; SHORT],
             clap: [0.0; SHORT],
-            full: [0.0; SHORT],
+            high: [0.0; SHORT],
             state: MicState::Listening,
             pll: None,
             tempo: None,
@@ -176,6 +266,8 @@ impl Tracker {
             quiet: 0,
             listen_from: 0,
             cold_lock_ms: None,
+            section: None,
+            flywheel_from: 0,
         }
     }
 
@@ -215,8 +307,8 @@ impl Tracker {
         self.pll.map(|p| SampleGrid {
             beat: p.next - DELAY,
             period: p.period,
-            bar_pos: (p.n % 4) as u8,
-            phrase_pos: (p.n % 16) as u8,
+            bar_pos: p.bar_pos(p.n),
+            phrase_pos: p.phrase_pos(p.n),
         })
     }
 
@@ -225,8 +317,9 @@ impl Tracker {
         self.pll.map(|p| 60.0 * SR / p.period).or(self.tempo)
     }
 
+    /// The last Break or Drop since the lock.
     pub fn section(&self) -> Option<Section> {
-        None
+        self.section
     }
 
     /// The strength of the periodicity of the onsets, 0 to 100.
@@ -239,13 +332,19 @@ impl Tracker {
         ((self.level_db + 90.0) / 90.0 * 100.0).clamp(0.0, 100.0) as u8
     }
 
+    /// True while the bar scores give the current bar 1 with a margin for 8 bars.
     pub fn bar_confident(&self) -> bool {
-        false
+        self.pll
+            .is_some_and(|p| p.cand == Some(p.bar0) && p.streak >= BAR_STREAK)
     }
 
     /// The time in `Flywheel`, in ms. 0 outside `Flywheel`.
     pub fn flywheel_ms(&self) -> u64 {
-        0
+        if self.state == MicState::Flywheel {
+            (self.frames - self.flywheel_from) * 1000 / FPS as u64
+        } else {
+            0
+        }
     }
 
     /// The time from `Listening` to `Locked` of the last lock, in ms.
@@ -256,6 +355,7 @@ impl Tracker {
     fn reset(&mut self, state: MicState) {
         self.state = state;
         self.pll = None;
+        self.section = None;
         self.tempo_off = 0;
         self.listen_from = self.frames;
     }
@@ -265,7 +365,7 @@ impl Tracker {
         self.odf[i % LONG] = f.kick + 0.5 * f.full;
         self.kick[i % SHORT] = f.kick;
         self.clap[i % SHORT] = f.clap;
-        self.full[i % SHORT] = f.full;
+        self.high[i % SHORT] = f.high;
         self.frames += 1;
         self.level_db += (f.dbfs.max(-120.0) - self.level_db) * 0.05;
 
@@ -429,6 +529,15 @@ impl Tracker {
             last_hi: ((next - period / 8.0) / HOP as f64).floor() as u64,
             hist: [(0.0, 0.0); HIST],
             hist_len: 0,
+            bar0: 0,
+            phrase0: 0,
+            acc_clap: [0.0; 4],
+            acc_high: [0.0; 4],
+            cand: None,
+            streak: 0,
+            quiet: 0,
+            back: 0,
+            back_n: 0,
         });
     }
 
@@ -455,6 +564,14 @@ impl Tracker {
             p.last_hi = f_hi;
             let thr = (0.35 * p.peak).max(KICK_FLOOR);
             let hit = v >= thr;
+            if self.state != MicState::Flywheel {
+                let max = |ring: &[f32]| {
+                    (f_lo..=f_hi)
+                        .map(|f| self.ring(ring, f))
+                        .fold(0.0, f32::max)
+                };
+                p.score_bar(p.n, max(&self.clap), max(&self.high));
+            }
             if hit {
                 let a = self.ring(&self.kick, m.saturating_sub(1));
                 let c = self.ring(&self.kick, m + 1);
@@ -472,37 +589,27 @@ impl Tracker {
                 p.period = p.period.clamp(60.0 * SR / BPM_MAX, 60.0 * SR / BPM_MIN);
                 p.peak += 0.1 * (v - p.peak);
             }
-            #[cfg(test)]
-            if std::env::var("BEAT_TRACE").is_ok() {
-                eprintln!(
-                    "t={:.3} n={} st={:?} hit={} v={:.2} thr={:.2} off={:.2} bpm={:.3} conf={}",
-                    p.next / SR,
-                    p.n,
-                    self.state,
-                    hit,
-                    v,
-                    thr,
-                    off,
-                    60.0 * SR / p.period,
-                    self.confidence
-                );
-            }
             p.hits = (p.hits << 1) | u8::from(hit);
             p.off_grid = if !hit && off >= thr {
                 p.off_grid + 1
             } else {
                 0
             };
+            p.quiet = if !hit && off < thr { p.quiet + 1 } else { 0 };
+            let n = p.n;
             p.next += p.period;
             p.n += 1;
             p.beats += 1;
             self.pll = Some(p);
-            self.after_beat(p);
+            self.after_beat(n, hit);
         }
     }
 
-    /// Changes the state after the evaluation of one predicted beat.
-    fn after_beat(&mut self, p: Pll) {
+    /// Changes the state after the evaluation of the predicted beat `n`.
+    fn after_beat(&mut self, n: u64, hit: bool) {
+        let Some(p) = self.pll.as_mut() else {
+            return;
+        };
         let hits = p.hits.count_ones();
         match self.state {
             MicState::Listening if p.beats >= 6 => {
@@ -513,7 +620,31 @@ impl Tracker {
                     self.pll = None;
                 }
             }
-            MicState::Locked if p.off_grid >= 4 => self.reset(MicState::Listening),
+            MicState::Locked | MicState::Flywheel if p.off_grid >= 4 => {
+                self.reset(MicState::Listening)
+            }
+            MicState::Locked if p.quiet >= BREAK_BEATS => {
+                p.back = 0;
+                self.state = MicState::Flywheel;
+                self.section = Some(Section::Break);
+                self.flywheel_from = self.frames;
+            }
+            MicState::Flywheel if hit => {
+                p.back += 1;
+                if p.back == 1 {
+                    p.back_n = n;
+                }
+                if p.back >= 2 {
+                    // The first beat of the kick return starts a bar and a 16-beat block.
+                    p.bar0 = (p.back_n % 4) as u8;
+                    p.phrase0 = (p.back_n % 16) as u8;
+                    p.cand = None;
+                    p.streak = 0;
+                    self.state = MicState::Locked;
+                    self.section = Some(Section::Drop);
+                }
+            }
+            MicState::Flywheel => p.back = 0,
             _ => {}
         }
     }
@@ -722,55 +853,93 @@ mod tests {
         let e = grid_err_ms(&tr, &beats[beats.len() - 8..]);
         assert!(e < 10.0, "phase error {e} ms");
     }
-}
 
-#[cfg(test)]
-mod probe {
-    use super::*;
-    use crate::synth::{beat_times, render, Track};
+    /// The bar position and the phrase position of the grid beat nearest `at` (s).
+    fn pos_at(tr: &Tracker, at: f64) -> (u8, u8) {
+        let g = tr.grid().expect("a grid");
+        let k = ((at * SR - g.beat) / g.period).round() as i64;
+        (
+            (i64::from(g.bar_pos) + k).rem_euclid(4) as u8,
+            (i64::from(g.phrase_pos) + k).rem_euclid(16) as u8,
+        )
+    }
+
+    /// The time of true beat `k` (s).
+    fn beat_at(t: &Track, k: usize) -> f64 {
+        beat_times(t, 600.0)[k].0
+    }
 
     #[test]
-    #[ignore]
-    fn signed_bias() {
-        for t in [
-            Track::default(),
-            Track {
-                clap_on_2_4: false,
-                bar_change: false,
-                ..Track::default()
-            },
-            Track {
-                noise_db: Some(-10.0),
-                ..Track::default()
-            },
-            Track {
-                bpm: 130.0,
-                offset_s: 0.173,
-                ..Track::default()
-            },
-        ] {
-            let mut tr = Tracker::new();
-            tr.push(&render(&t, 30.0));
-            let Some(g) = tr.grid() else {
-                eprintln!("no grid {:?}", tr.state());
-                continue;
-            };
-            let b = beat_times(&t, 30.0);
-            let errs: Vec<f64> = b[b.len() - 16..]
-                .iter()
-                .map(|&(at, _)| {
-                    let x = at * SR;
-                    let n = ((x - g.beat) / g.period).round();
-                    (g.beat + n * g.period - x) / SR * 1000.0
-                })
-                .collect();
-            eprintln!(
-                "bpm {:.3} errs {:?}",
-                tr.bpm().unwrap(),
-                errs.iter()
-                    .map(|e| (e * 10.0).round() / 10.0)
-                    .collect::<Vec<_>>()
-            );
+    fn finds_bar_1_within_8_bars() {
+        let t = Track::default();
+        let (tr, _) = run(&t, beat_at(&t, 64));
+        assert_eq!(pos_at(&tr, beat_at(&t, 60)).0, 0);
+        assert!(tr.bar_confident());
+    }
+
+    #[test]
+    fn without_a_clap_the_bar_change_decides() {
+        let t = Track {
+            clap_on_2_4: false,
+            ..Track::default()
+        };
+        let (tr, _) = run(&t, beat_at(&t, 64));
+        assert_eq!(pos_at(&tr, beat_at(&t, 60)).0, 0);
+    }
+
+    fn breakdown() -> Track {
+        Track {
+            breakdown: Some((64, 64)),
+            ..Track::default()
         }
+    }
+
+    #[test]
+    fn a_breakdown_runs_the_flywheel() {
+        let t = breakdown();
+        let (tr, log) = run(&t, beat_at(&t, 127));
+        assert_eq!(state_at(&log, beat_at(&t, 72)), MicState::Flywheel);
+        assert_eq!(tr.state(), MicState::Flywheel);
+        assert_eq!(tr.section(), Some(Section::Break));
+        let e = grid_err_ms(&tr, &[(beat_at(&t, 126), 3)]);
+        assert!(e < 10.0, "phase error {e} ms at the end of the breakdown");
+    }
+
+    #[test]
+    fn the_kick_return_is_a_drop() {
+        let t = breakdown();
+        let (tr, _) = run(&t, beat_at(&t, 130));
+        assert_eq!(tr.state(), MicState::Locked);
+        assert_eq!(tr.section(), Some(Section::Drop));
+        assert_eq!(pos_at(&tr, beat_at(&t, 128)), (0, 0));
+    }
+
+    #[test]
+    fn the_flywheel_counts_its_time() {
+        let t = Track {
+            breakdown: Some((64, 72)),
+            ..Track::default()
+        };
+        let (tr, _) = run(&t, beat_at(&t, 135));
+        assert_eq!(tr.state(), MicState::Flywheel);
+        assert!(
+            tr.flywheel_ms() >= 29_000,
+            "flywheel {} ms",
+            tr.flywheel_ms()
+        );
+    }
+
+    #[test]
+    fn the_bar_stays_without_confidence() {
+        let t = Track {
+            clap_on_2_4: false,
+            bar_change: false,
+            ..Track::default()
+        };
+        let (tr, _) = run(&t, beat_at(&t, 24));
+        let early = pos_at(&tr, beat_at(&t, 20)).0;
+        let (tr, _) = run(&t, beat_at(&t, 120));
+        assert_eq!(pos_at(&tr, beat_at(&t, 20)).0, early);
+        assert!(!tr.bar_confident());
     }
 }

@@ -1,4 +1,4 @@
-//! The onsets of three bands: the kick, the clap and the full band.
+//! The onsets of four bands: the kick, the clap, the high band and the full band.
 //!
 //! For each hop of `HOP` samples, each band gives the rise of its log energy. A fall gives 0.
 
@@ -19,6 +19,8 @@ pub struct Frame {
     pub clap: f32,
     /// The rise of the log energy above 30 Hz.
     pub full: f32,
+    /// The rise of the log energy above about 4 kHz: crashes, hats and new layers.
+    pub high: f32,
     /// The level of the hop, in dBFS.
     pub dbfs: f32,
     /// The largest sample minus the smallest sample of the hop.
@@ -67,8 +69,9 @@ pub struct Onsets {
     kick: [Biquad; 2],
     clap: [Biquad; 3],
     full: Biquad,
-    /// The smoothed power of the kick (two stages), clap and full bands.
-    env: [f32; 4],
+    high: [Biquad; 2],
+    /// The smoothed power of the kick (two stages), clap, full and high bands.
+    env: [f32; 5],
     /// The sum of squares of the raw samples of the hop.
     sum: f32,
     min: i16,
@@ -77,7 +80,7 @@ pub struct Onsets {
     prev: i16,
     n: usize,
     /// The log energy of the last hop for each band.
-    last: [f32; 3],
+    last: [f32; 4],
 }
 
 impl Default for Onsets {
@@ -96,13 +99,14 @@ impl Onsets {
                 Biquad::new(4000.0, true),
             ],
             full: Biquad::new(30.0, false),
-            env: [0.0; 4],
+            high: [Biquad::new(4000.0, false); 2],
+            env: [0.0; 5],
             sum: 0.0,
             min: 0,
             max: 0,
             prev: 0,
             n: 0,
-            last: [0.0; 3],
+            last: [0.0; 4],
         }
     }
 
@@ -114,11 +118,13 @@ impl Onsets {
             let k = self.kick.iter_mut().fold(x, |v, f| f.run(v));
             let c = self.clap.iter_mut().fold(x, |v, f| f.run(v));
             let f = self.full.run(x);
+            let h = self.high.iter_mut().fold(x, |v, f| f.run(v));
             // A power over 8 ms ripples with a 50 Hz kick. The envelopes smooth that ripple.
             self.env[0] += KICK_C * (k * k - self.env[0]);
             self.env[1] += KICK_C * (self.env[0] - self.env[1]);
             self.env[2] += HIGH_C * (c * c - self.env[2]);
             self.env[3] += HIGH_C * (f * f - self.env[3]);
+            self.env[4] += HIGH_C * (h * h - self.env[4]);
             self.sum += x * x;
             self.min = self.min.min(s);
             self.max = self.max.max(s);
@@ -137,9 +143,9 @@ impl Onsets {
 
     fn finish(&mut self) -> Frame {
         let n = HOP as f32;
-        let mut rise = [0.0f32; 3];
+        let mut rise = [0.0f32; 4];
         for (r, (env, last)) in rise.iter_mut().zip(
-            [self.env[1], self.env[2], self.env[3]]
+            [self.env[1], self.env[2], self.env[3], self.env[4]]
                 .iter()
                 .zip(&mut self.last),
         ) {
@@ -152,6 +158,7 @@ impl Onsets {
             kick: rise[0],
             clap: rise[1],
             full: rise[2],
+            high: rise[3],
             dbfs: if power > 0.0 {
                 10.0 * power.log10()
             } else {
