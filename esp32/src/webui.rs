@@ -222,6 +222,79 @@ pub fn start(
         }
     })?;
 
+    // A 16-bit stereo WAV of the mic and the Pro DJ Link beats, for the tuning on a computer. The
+    // route streams a live room microphone, so it answers only after the active page armed it.
+    let mic_state = state.clone();
+    server.fn_handler("/mic", Method::Get, move |req| -> anyhow::Result<()> {
+        if !crate::mic::take_arm(mic_state.now_ms()) {
+            req.into_status_response(403)?
+                .write_all(b"Start the recording from the page")?;
+            return Ok(());
+        }
+        let secs = query_value(req.uri(), "s").map_or(Some(30), |v| v.parse::<u32>().ok());
+        let Some(secs) = secs.filter(|s| (1..=120).contains(s)) else {
+            req.into_status_response(400)?
+                .write_all(b"s must be 1 to 120")?;
+            return Ok(());
+        };
+        // SAFETY: the heap calls only read counters.
+        let (free, block) = unsafe {
+            (
+                sys::esp_get_free_heap_size(),
+                sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT),
+            )
+        };
+        if free < 40_000 || block < 12_000 || !crate::mic::capture_start() {
+            req.into_status_response(503)?
+                .write_all(b"not enough memory, or another recording runs")?;
+            return Ok(());
+        }
+        /// Ends the capture also when the client goes away during the stream.
+        struct Stop;
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let dropped = crate::mic::capture_stop();
+                log::info!("Mic recording ends. {dropped} frames were dropped");
+            }
+        }
+        let _stop = Stop;
+        let frames = secs * autoblink_core_beat::SAMPLE_RATE;
+        let headers = [
+            ("Content-Type", "audio/wav"),
+            ("Content-Disposition", "attachment; filename=\"mic.wav\""),
+        ];
+        let mut resp = req.into_response(200, None, &headers)?;
+        resp.write_all(&autoblink_core_beat::wav::header(
+            frames,
+            2,
+            autoblink_core_beat::SAMPLE_RATE,
+        ))?;
+        let mut left = frames as usize * 2;
+        let mut samples = [0i16; 512];
+        let mut bytes = [0u8; 1024];
+        let mut quiet_since = Instant::now();
+        while left > 0 && quiet_since.elapsed() < Duration::from_secs(1) {
+            let n = crate::mic::capture_read(&mut samples[..left.min(512)], 100);
+            if n == 0 {
+                continue;
+            }
+            quiet_since = Instant::now();
+            for (b, s) in bytes.chunks_exact_mut(2).zip(&samples[..n]) {
+                b.copy_from_slice(&s.to_le_bytes());
+            }
+            resp.write_all(&bytes[..n * 2])?;
+            left -= n;
+        }
+        // Without the mic, the file has the size of its header and holds silence.
+        bytes.fill(0);
+        while left > 0 {
+            let n = left.min(512);
+            resp.write_all(&bytes[..n * 2])?;
+            left -= n;
+        }
+        Ok(())
+    })?;
+
     server.fn_handler("/log", Method::Get, |req| {
         let mut resp =
             req.into_response(200, None, &[("Content-Type", "text/plain; charset=utf-8")])?;
@@ -837,6 +910,10 @@ fn command(
             }
             _ => error("The command needs a preset"),
         },
+        Some("mic_arm") => {
+            crate::mic::arm(state.now_ms());
+            r#"{"type":"mic_arm"}"#.into()
+        }
         Some("reboot") => match crate::restart_soon() {
             Ok(()) => {
                 log::info!("The page asked for a restart");

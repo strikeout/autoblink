@@ -7,6 +7,7 @@
 //! start. A PDM mic without a clock keeps its data line at high impedance, and the internal
 //! pull-down keeps IO12 low. Do not use a mic module with a pull-up on its data line.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -37,6 +38,118 @@ const FRAMES: usize = 256;
 const SAVE_EVERY: Duration = Duration::from_secs(300);
 /// The offset change that the box writes to NVS, in µs.
 const SAVE_CHANGE_US: i64 = 2_000;
+
+/// The time until which `GET /mic` accepts one capture, in ms of `State::now_ms`. 0 is not armed.
+/// A mutex, because the Xtensa core has no 64-bit atomics.
+static ARMED_UNTIL: Mutex<u64> = Mutex::new(0);
+/// The time that an arm stays valid, in ms.
+const ARM_MS: u64 = 60_000;
+/// The stereo frames that wait for the HTTP task (128 ms, 8 KB).
+const RING: usize = 2048;
+/// The frames that the thread holds back, so that a Pro DJ Link beat that arrives late still lands
+/// on its frame (2 reads, 32 ms).
+const HOLD: usize = 2 * FRAMES;
+
+/// A running capture of `GET /mic`. It exists only during a capture.
+struct Capture {
+    ring: VecDeque<[i16; 2]>,
+    /// The frames that wait for their beat mark. The first one has the sample index `hold_from`.
+    hold: VecDeque<[i16; 2]>,
+    hold_from: u64,
+    dropped: u32,
+}
+
+static CAPTURE: Mutex<Option<Capture>> = Mutex::new(None);
+
+/// The active page armed `GET /mic` (WebSocket command `mic_arm`).
+pub fn arm(now_ms: u64) {
+    *ARMED_UNTIL.lock().unwrap() = now_ms + ARM_MS;
+}
+
+/// True once for each arm, within `ARM_MS` of the arm.
+pub fn take_arm(now_ms: u64) -> bool {
+    now_ms < std::mem::take(&mut *ARMED_UNTIL.lock().unwrap())
+}
+
+/// Starts a capture. False while another capture runs.
+pub fn capture_start() -> bool {
+    let mut c = CAPTURE.lock().unwrap();
+    if c.is_some() {
+        return false;
+    }
+    *c = Some(Capture {
+        ring: VecDeque::with_capacity(RING),
+        hold: VecDeque::with_capacity(HOLD + FRAMES),
+        hold_from: 0,
+        dropped: 0,
+    });
+    true
+}
+
+/// Moves up to `buf.len() / 2` stereo frames into `buf`. Waits up to `timeout_ms` for the first
+/// frame. Returns the number of samples (2 for each frame).
+pub fn capture_read(buf: &mut [i16], timeout_ms: u32) -> usize {
+    let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
+    loop {
+        {
+            let mut c = CAPTURE.lock().unwrap();
+            let Some(c) = c.as_mut() else {
+                return 0;
+            };
+            let mut n = 0;
+            while n + 2 <= buf.len() {
+                let Some(f) = c.ring.pop_front() else {
+                    break;
+                };
+                buf[n] = f[0];
+                buf[n + 1] = f[1];
+                n += 2;
+            }
+            if n > 0 {
+                return n;
+            }
+        }
+        if Instant::now() >= deadline {
+            return 0;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Ends the capture and frees its buffers. Returns the frames that a full ring dropped.
+pub fn capture_stop() -> u32 {
+    CAPTURE.lock().unwrap().take().map_or(0, |c| c.dropped)
+}
+
+/// Adds one read to a running capture: the PCM of the samples from `first`, and the Pro DJ Link
+/// beats as (sample index, beat in the bar).
+fn capture_add(first: u64, pcm: &[i16], beats: &[(u64, u8)]) {
+    let mut c = CAPTURE.lock().unwrap();
+    let Some(c) = c.as_mut() else {
+        return;
+    };
+    if c.hold.is_empty() {
+        c.hold_from = first;
+    }
+    c.hold.extend(pcm.iter().map(|&s| [s, 0]));
+    for &(at, beat) in beats {
+        if let Some(f) = at
+            .checked_sub(c.hold_from)
+            .and_then(|i| c.hold.get_mut(i as usize))
+        {
+            f[1] = i16::from(beat) * 1000;
+        }
+    }
+    while c.hold.len() > HOLD {
+        let f = c.hold.pop_front().unwrap_or_default();
+        c.hold_from += 1;
+        if c.ring.len() < RING {
+            c.ring.push_back(f);
+        } else {
+            c.dropped += 1;
+        }
+    }
+}
 
 /// The mic part of the state. The `mic` thread writes it once for each read.
 #[derive(Clone, Copy, Debug, Default)]
@@ -116,9 +229,11 @@ fn run(
     offset_us: i64,
 ) {
     let mut enabled = false;
-    let mut tracker = Tracker::new();
+    // The tracker (about 3.6 KB) and the calibrator (about 1.3 KB) go on the heap, not on the
+    // 6 KB stack of the thread.
+    let mut tracker = Box::new(Tracker::new());
     let mut clock = SampleClock::new();
-    let mut calib = Calibrator::new(offset_us);
+    let mut calib = Box::new(Calibrator::new(offset_us));
     let mut buf = [0u8; FRAMES * 2];
     let mut pcm = [0i16; FRAMES];
     let mut last_state = MicState::Listening;
@@ -158,7 +273,7 @@ fn run(
             }
             enabled = want;
             log::info!("Mic: {}", if want { "on" } else { "off" });
-            tracker = Tracker::new();
+            *tracker = Tracker::new();
             clock = SampleClock::new();
             last_state = MicState::Listening;
         }
@@ -180,13 +295,22 @@ fn run(
         for (p, b) in pcm.iter_mut().zip(buf.as_chunks::<2>().0).take(n) {
             *p = i16::from_le_bytes(*b);
         }
+        let first = tracker.samples();
         tracker.push(&pcm[..n]);
         let now_us = state.now_us();
         clock.observe(tracker.samples(), now_us);
         let raw = tracker.grid().map(|g| clock.grid(&g));
+        let mut marks = [(0u64, 0u8); 16];
+        let mut n_marks = 0;
         while let Some((b, _)) = pdl.recv_front(0) {
             calib.pdl_beat(b.at_us, b.beat_in_bar, b.bpm, raw.as_ref());
+            if n_marks < marks.len() {
+                let at = clock.to_sample(b.at_us as f64).max(0.0) as u64;
+                marks[n_marks] = (at, b.beat_in_bar);
+                n_marks += 1;
+            }
         }
+        capture_add(first, &pcm[..n], &marks[..n_marks]);
         if let Some(g) = &raw {
             calib.track(g);
         }
