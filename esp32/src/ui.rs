@@ -448,6 +448,7 @@ fn snapshot(state: &State) -> Snapshot {
     let now = state.now_ms();
     Snapshot {
         master: master.as_ref().map(|d| d.num),
+        mic: false,
         playing: master.as_ref().is_some_and(|d| d.is_playing(now)),
         bpm: master.as_ref().map_or(0.0, |d| d.bpm),
         beat: master.as_ref().map_or(0, |d| d.beat),
