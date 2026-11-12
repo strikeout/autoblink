@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use autoblink_core_beat::arbiter::Arbiter;
 use autoblink_core_beat::calib::{Calibrator, Stats};
 use autoblink_core_beat::grid::{Emitter, Grid, SampleClock};
 use autoblink_core_beat::tracker::{MicState, Section, Tracker};
@@ -86,9 +85,9 @@ pub fn capture_start() -> bool {
     true
 }
 
-/// Moves up to `buf.len() / 2` stereo frames into `buf`. Waits up to `timeout_ms` for the first
-/// frame. Returns the number of samples (2 for each frame).
-pub fn capture_read(buf: &mut [i16], timeout_ms: u32) -> usize {
+/// Moves up to `buf.len() / 4` stereo frames into `buf` as 16-bit little-endian samples. Waits
+/// up to `timeout_ms` for the first frame. Returns the number of bytes (4 for each frame).
+pub fn capture_read(buf: &mut [u8], timeout_ms: u32) -> usize {
     let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
     loop {
         {
@@ -97,13 +96,13 @@ pub fn capture_read(buf: &mut [i16], timeout_ms: u32) -> usize {
                 return 0;
             };
             let mut n = 0;
-            while n + 2 <= buf.len() {
+            while n + 4 <= buf.len() {
                 let Some(f) = c.ring.pop_front() else {
                     break;
                 };
-                buf[n] = f[0];
-                buf[n + 1] = f[1];
-                n += 2;
+                buf[n..n + 2].copy_from_slice(&f[0].to_le_bytes());
+                buf[n + 2..n + 4].copy_from_slice(&f[1].to_le_bytes());
+                n += 4;
             }
             if n > 0 {
                 return n;
@@ -168,6 +167,9 @@ pub struct MicView {
     pub confidence: u8,
     pub offset_ms: i16,
     pub stats: Stats,
+    /// The time of the last kick on the grid, in µs of `State::now_us`. The `midi` thread gives
+    /// the master to the mic only with a kick after the deck stopped.
+    pub last_kick_us: Option<u64>,
 }
 
 /// Starts the `mic` thread. `pdl` gives the Pro DJ Link master beats for the calibration.
@@ -186,8 +188,9 @@ pub fn start(
     offset_us: Option<i64>,
 ) -> anyhow::Result<()> {
     // Core 0 and priority 4: below the WiFi task, above the `ui` thread (3).
-    // ponytail: 6 KB is an estimate. Measure with /mem on a box with the mic.
-    crate::spawn_rt(c"mic", 6144, 4, Some(Core::Core0), move || {
+    // ponytail: the thread body has a frame of 2 736 bytes (ENTRY in the ELF, 1.40.0), and 8 KB is an
+    // estimate for the callees. Measure with /mem on a box with the mic.
+    crate::spawn_rt(c"mic", 8192, 4, Some(Core::Core0), move || {
         let cfg = PdmRxConfig::new(
             Config::default()
                 .dma_buffer_count(6)
@@ -229,18 +232,20 @@ fn run(
     offset_us: i64,
 ) {
     let mut enabled = false;
-    // The tracker (about 3.6 KB) and the calibrator (about 1.3 KB) go on the heap, not on the
-    // 6 KB stack of the thread.
-    let mut tracker = Box::new(Tracker::new());
+    // The tracker and the calibrator keep their large buffers on the heap. Check the frame of
+    // this thread in the ELF after a change: the `entry` of the thread body.
+    let mut tracker = Tracker::new();
     let mut clock = SampleClock::new();
-    let mut calib = Box::new(Calibrator::new(offset_us));
-    let mut buf = [0u8; FRAMES * 2];
-    let mut pcm = [0i16; FRAMES];
+    let mut calib = Calibrator::new(offset_us);
+    // The read buffers are on the heap, so that the frame of the thread stays small.
+    let mut buf = vec![0u8; FRAMES * 2];
+    let mut pcm = vec![0i16; FRAMES];
+    let mut marks: Vec<(u64, u8)> = Vec::with_capacity(16);
     let mut last_state = MicState::Listening;
     let mut saved = offset_us;
     let mut next_save = Instant::now();
     let mut long_logged = false;
-    let mut arbiter = Arbiter::default();
+    let mut was_master = false;
     let mut emitter = Emitter::new();
     let mut last_section = None;
     let deck_playing = || {
@@ -273,13 +278,11 @@ fn run(
             }
             enabled = want;
             log::info!("Mic: {}", if want { "on" } else { "off" });
-            *tracker = Tracker::new();
+            tracker = Tracker::new();
             clock = SampleClock::new();
             last_state = MicState::Listening;
         }
         if !enabled {
-            arbiter.update(true, MicState::Listening);
-            state.mic_master.store(false, Ordering::Relaxed);
             publish(state, MicView::default());
             thread::sleep(Duration::from_secs(1));
             continue;
@@ -300,17 +303,15 @@ fn run(
         let now_us = state.now_us();
         clock.observe(tracker.samples(), now_us);
         let raw = tracker.grid().map(|g| clock.grid(&g));
-        let mut marks = [(0u64, 0u8); 16];
-        let mut n_marks = 0;
+        marks.clear();
         while let Some((b, _)) = pdl.recv_front(0) {
             calib.pdl_beat(b.at_us, b.beat_in_bar, b.bpm, raw.as_ref());
-            if n_marks < marks.len() {
+            if marks.len() < marks.capacity() {
                 let at = clock.to_sample(b.at_us as f64).max(0.0) as u64;
-                marks[n_marks] = (at, b.beat_in_bar);
-                n_marks += 1;
+                marks.push((at, b.beat_in_bar));
             }
         }
-        capture_add(first, &pcm[..n], &marks[..n_marks]);
+        capture_add(first, &pcm[..n], &marks);
         if let Some(g) = &raw {
             calib.track(g);
         }
@@ -348,9 +349,10 @@ fn run(
                 calib.ratio()
             );
         }
-        // A Pro DJ Link deck that plays always wins. The mic takes over only from a lock.
-        let master = arbiter.update(deck_playing(), s);
-        if master != state.mic_master.load(Ordering::Relaxed) {
+        // The `midi` thread decides the master from this view (`Arbiter`). It decides in the same
+        // pass in which it sees the deck stop, so the clock sees no step without a master.
+        let master = state.mic_master.load(Ordering::Relaxed);
+        if master != was_master {
             log::info!(
                 "Mic: {}",
                 if master {
@@ -360,8 +362,8 @@ fn run(
                 }
             );
             emitter.reset();
+            was_master = master;
         }
-        state.mic_master.store(master, Ordering::Relaxed);
         calib.set_learning(!master);
         let section = tracker.section();
         if section == Some(Section::Drop) && last_section != section {
@@ -403,6 +405,7 @@ fn run(
                 confidence: tracker.confidence(),
                 offset_ms: (off / 1000) as i16,
                 stats: calib.stats(),
+                last_kick_us: tracker.last_kick().map(|k| clock.to_us(k).max(0.0) as u64),
             },
         );
     }

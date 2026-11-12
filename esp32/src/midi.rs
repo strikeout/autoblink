@@ -123,6 +123,7 @@ pub fn start(
         let mut smoother = Smoother::default();
         let mut smoothed_bpm = 0.0;
         let mut last_master = 0u8;
+        let mut arbiter = autoblink_core_beat::arbiter::Arbiter::default();
         // The last guess of the loop. The guess keeps a Drop or a Break near its threshold.
         let mut prev_guess = None;
         // The master deck and the track of `prev_guess`.
@@ -237,11 +238,22 @@ pub fn start(
             #[cfg(feature = "dmx")]
             let mut facts = (None, None);
             // While the mic is the master, its calibrated grid gives the master values.
-            let mic = state
-                .mic_master
-                .load(Ordering::Relaxed)
-                .then(|| *state.mic.lock().unwrap())
-                .and_then(|v| Some((v, v.grid?)));
+            // This thread decides the master. It sees a deck stop and gives the beat to the mic in
+            // one pass, so the clock sees no step without a playing master between the two.
+            let mic = {
+                let view = *state.mic.lock().unwrap();
+                let deck_playing = state
+                    .tracker
+                    .lock()
+                    .unwrap()
+                    .master()
+                    .is_some_and(|m| m.is_playing(now_ms));
+                let master =
+                    arbiter.update(deck_playing, view.state, state.now_us(), view.last_kick_us)
+                        && view.grid.is_some();
+                state.mic_master.store(master, Ordering::Relaxed);
+                master.then_some(view).and_then(|v| Some((v, v.grid?)))
+            };
             let (mut snap, track) = if let Some((v, g)) = mic {
                 let now_us = state.now_us() as f64;
                 let (_, phrase16) = g.current(now_us);

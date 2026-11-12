@@ -269,27 +269,24 @@ pub fn start(
             2,
             autoblink_core_beat::SAMPLE_RATE,
         ))?;
-        let mut left = frames as usize * 2;
-        let mut samples = [0i16; 512];
-        let mut bytes = [0u8; 1024];
+        // One buffer of 512 bytes: the HTTP task has an 8 KB stack.
+        let mut left = frames as usize * 4;
+        let mut bytes = [0u8; 512];
         let mut quiet_since = Instant::now();
         while left > 0 && quiet_since.elapsed() < Duration::from_secs(1) {
-            let n = crate::mic::capture_read(&mut samples[..left.min(512)], 100);
+            let n = crate::mic::capture_read(&mut bytes[..left.min(512)], 100);
             if n == 0 {
                 continue;
             }
             quiet_since = Instant::now();
-            for (b, s) in bytes.chunks_exact_mut(2).zip(&samples[..n]) {
-                b.copy_from_slice(&s.to_le_bytes());
-            }
-            resp.write_all(&bytes[..n * 2])?;
+            resp.write_all(&bytes[..n])?;
             left -= n;
         }
         // Without the mic, the file has the size of its header and holds silence.
         bytes.fill(0);
         while left > 0 {
             let n = left.min(512);
-            resp.write_all(&bytes[..n * 2])?;
+            resp.write_all(&bytes[..n])?;
             left -= n;
         }
         Ok(())

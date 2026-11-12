@@ -217,14 +217,15 @@ impl Pll {
     }
 }
 
-/// The beat tracker. It allocates nothing after `new`.
+/// The beat tracker. It allocates nothing after `new`. Its rings are on the heap.
 pub struct Tracker {
     onsets: Onsets,
     frames: u64,
-    odf: [f32; LONG],
-    kick: [f32; SHORT],
-    clap: [f32; SHORT],
-    high: [f32; SHORT],
+    // The rings are on the heap: the firmware thread has a 6 KB stack.
+    odf: Box<[f32]>,
+    kick: Box<[f32]>,
+    clap: Box<[f32]>,
+    high: Box<[f32]>,
     state: MicState,
     pll: Option<Pll>,
     tempo: Option<f64>,
@@ -237,6 +238,8 @@ pub struct Tracker {
     cold_lock_ms: Option<u32>,
     section: Option<Section>,
     flywheel_from: u64,
+    /// The sample index of the last kick on the grid.
+    last_kick: Option<f64>,
 }
 
 impl Default for Tracker {
@@ -254,10 +257,10 @@ impl Tracker {
         Self {
             onsets: Onsets::new(),
             frames: 0,
-            odf: [0.0; LONG],
-            kick: [0.0; SHORT],
-            clap: [0.0; SHORT],
-            high: [0.0; SHORT],
+            odf: vec![0.0; LONG].into_boxed_slice(),
+            kick: vec![0.0; SHORT].into_boxed_slice(),
+            clap: vec![0.0; SHORT].into_boxed_slice(),
+            high: vec![0.0; SHORT].into_boxed_slice(),
             state: MicState::Listening,
             pll: None,
             tempo: None,
@@ -270,6 +273,7 @@ impl Tracker {
             cold_lock_ms: None,
             section: None,
             flywheel_from: 0,
+            last_kick: None,
         }
     }
 
@@ -347,6 +351,11 @@ impl Tracker {
         } else {
             0
         }
+    }
+
+    /// The sample index of the last kick on the grid.
+    pub fn last_kick(&self) -> Option<f64> {
+        self.last_kick
     }
 
     /// The time from `Listening` to `Locked` of the last lock, in ms.
@@ -588,6 +597,7 @@ impl Tracker {
                     0.0
                 };
                 let t = m as f64 * HOP as f64 + half + delta * HOP as f64;
+                self.last_kick = Some(t - DELAY);
                 let e = t - p.next;
                 p.next += (0.1 * e).clamp(-MAX_ERR, MAX_ERR);
                 p.period += 0.01 * e;
@@ -708,6 +718,28 @@ mod tests {
     fn phase_err_ms(tr: &Tracker, t: &Track, s: f64) -> f64 {
         let beats = beat_times(t, s);
         grid_err_ms(tr, &beats[beats.len() - 8..])
+    }
+
+    #[test]
+    fn the_tracker_is_small() {
+        // The firmware builds the tracker on a 6 KB thread stack. The rings go on the heap.
+        assert!(
+            std::mem::size_of::<Tracker>() <= 1024,
+            "{} bytes",
+            std::mem::size_of::<Tracker>()
+        );
+    }
+
+    #[test]
+    fn the_last_kick_follows_the_kicks() {
+        let t = Track::default();
+        let (tr, _) = run(&t, 20.0);
+        let last = beat_times(&t, 20.0).last().unwrap().0;
+        let k = tr.last_kick().expect("a kick") / SR;
+        assert!(
+            (last - k).abs() < 0.6,
+            "last kick at {k} s, last beat at {last} s"
+        );
     }
 
     #[test]

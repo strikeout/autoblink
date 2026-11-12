@@ -402,8 +402,11 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The tempo comes from an autocorrelation of the last 4 s of onsets. The period comes from a least-squares fit over the last 16 kicks.
 - The kick onset is about 8 ms late in the tracker (`DELAY`). The calibration takes up the rest of the delay.
 - Bar 1 is the beat with the most change above 4 kHz, among the two beats without a clap. A Drop sets bar 1 and the start of the 16-beat block.
-- A Pro DJ Link deck that plays is always the master. The mic becomes the master only from `Locked`, about 2 s after the last Pro DJ Link beat (`Arbiter`).
-- The flywheel only keeps a mic master that took over already. A paused deck in a silent room stops the clock and the lights as before.
+- A Pro DJ Link deck that plays is always the master. The mic becomes the master only from `Locked` (`Arbiter`).
+- After a deck stops, the mic needs a kick that comes at least 0.5 s after the stop (`TAKEOVER_AFTER_US`). The lock of the mic holds the kicks of the deck for 8 beats. Thus a paused deck in a silent room stops the clock and the lights as before.
+- The flywheel only keeps a mic master that took over already.
+- The `midi` thread runs the `Arbiter` and writes `State::mic_master`. It sees a deck stop and gives the beat to the mic in one pass. With Clock Loop Sync, a `mic` thread decision came one pass late, and the clock sent Stop and Start.
+- The calibrator uses only a packet within a quarter beat of the current offset. A WiFi packet that is more than half a beat late wraps to the next mic beat.
 - The mic master uses the setting "Device Number" (index 2). A handover between a deck and the mic sends no MIDI Stop and no Start. The first beat of the new master slews the phase error (`Clock::poll`, `Master::mic`).
 - The mic thread sends its beats into `BeatOut`, the fan-out of the Pro DJ Link beats. The page beat queue is a FreeRTOS queue, because the `mic` thread has a lower priority than `web-status`.
 - While a deck plays, the calibrator learns the offset from the mic grid to the Pro DJ Link grid. It also learns the bar rotation and the tempo ratio (1, 2 or 1/2). It uses the earliest packet of each window of 32 beats.
@@ -414,6 +417,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - Run the tracker on a recording: `cargo run -p autoblink-core-beat --example eval -- rec.wav`. Keep the recordings out of git.
 - The setting "Mic" (index 119, default on) turns off the I2S channel. A box without the module shows `no_mic` after 5 s of constant PCM.
 - The flywheel has no time limit (owner decision). Crowd noise after the music can keep it on. The log reports a flywheel that lasts longer than 5 minutes.
+- Check the stack frame of a thread body after a change: decode the `entry` instruction of `__rust_begin_short_backtrace::<…>` in the ELF. `Box::new(T::new())` builds `T` on the stack first. A large buffer of the tracker or the calibrator therefore lives in a `Vec` or a boxed slice.
 - If the mic sends silence, set SEL of the module to 3V3, or change the slot of `PdmRxSlotConfig`. Nobody has tested a module on a box yet.
 
 ### Debug logs
@@ -428,7 +432,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it, the `midi` thread and the `dmx` thread (since 1.39.0). The loop of the `dmx` thread waits at most 1 s, also with a long `/dmxtune` period. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
 - `prolink-rx` also runs the virtual CDJ (`VirtualCdj` in `prolink.rs`). Between two receives, it does the due step. A join sends a packet every 300 ms. After the join, the virtual CDJ sends the keepalive and the status packets every 1.5 s. The poll waits until the next step, and at most 1 s. The virtual CDJ has no thread.
-- Each stack comes from the heap. Each size keeps 1.5 KB or more above the low point of `/mem`. Measure with `/mem` again after a change that adds work to a thread. The memory trim after 1.32.3 sets the sizes in `sdkconfig.defaults` and in the `spawn` calls. The sizes in bytes are `ui` 6656, `dbserver` 5120, `dmx` 8192, `prolink-rx` 5632, `main` 6144, `mdns` 3072, `mic` 6144 and IDLE 2176. Nobody has measured `mic` yet.
+- Each stack comes from the heap. Each size keeps 1.5 KB or more above the low point of `/mem`. Measure with `/mem` again after a change that adds work to a thread. The memory trim after 1.32.3 sets the sizes in `sdkconfig.defaults` and in the `spawn` calls. The sizes in bytes are `ui` 6656, `dbserver` 5120, `dmx` 8192, `prolink-rx` 5632, `main` 6144, `mdns` 3072, `mic` 8192 and IDLE 2176. Nobody has measured `mic` yet. Its thread body has a frame of 2 736 bytes in 1.40.0.
 - The LEDs have no thread. An esp_timer of 5 ms in the `esp_timer` task sets IO32 and IO33 (`led.rs`). The `prolink-rx` thread writes the beat into atomics, and the main loop writes the blink code each second. The `esp_timer` task has 2560 bytes of stack. Measure it with `/mem` after an hour of beats.
 - Put a large struct on the heap (`Box`), not on the stack of a thread. The OLED display struct holds its 1 KB frame buffer. On the 5 KB stack of `ui`, it overflowed the stack, and the box restarted in `malloc` with the address 0xffffffff.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.

@@ -83,7 +83,8 @@ pub struct Calibrator {
     windows_pos: usize,
     /// The beat time, the bar position and the period of the last raw grid of `track`.
     prev: Option<(f64, u8, f64)>,
-    errs: [u16; ERRS],
+    /// On the heap: the firmware thread has a 6 KB stack.
+    errs: Box<[u16]>,
     errs_len: usize,
     tempo_err: f64,
     beats: u32,
@@ -130,7 +131,7 @@ impl Calibrator {
             windows_len: 0,
             windows_pos: 0,
             prev: None,
-            errs: [0; ERRS],
+            errs: vec![0; ERRS].into_boxed_slice(),
             errs_len: 0,
             tempo_err: 0.0,
             beats: 0,
@@ -200,11 +201,18 @@ impl Calibrator {
                 self.ratio = r;
             }
         }
-        // The earliest packet gives the largest distance from the mic beat to the packet.
-        let d = nearest(&self.mapped(raw, 0.0, 0), at) - at;
-        self.win_max = self.win_max.max(d);
+        // The earliest packet gives the largest distance from the mic beat to the packet. A
+        // packet that is late by more than half a beat wraps to the next mic beat and looks
+        // early. Thus the window uses only a distance within a quarter beat of the offset.
+        let g0 = self.mapped(raw, 0.0, 0);
+        let d = nearest(&g0, at) - at;
+        if (d - self.offset).abs() <= g0.period_us / 4.0 {
+            self.win_max = self.win_max.max(d);
+        }
         self.win_n += 1;
-        if self.win_n >= WINDOW {
+        if self.win_n >= WINDOW && self.win_max == f64::MIN {
+            self.win_n = 0;
+        } else if self.win_n >= WINDOW {
             self.windows[self.windows_pos] = self.win_max;
             self.windows_pos = (self.windows_pos + 1) % WINDOWS;
             self.windows_len = (self.windows_len + 1).min(WINDOWS);
@@ -284,8 +292,7 @@ impl Calibrator {
         if self.beats == 0 {
             return None;
         }
-        let mut v = self.errs;
-        let v = &mut v[..self.errs_len];
+        let v = &mut self.errs[..self.errs_len];
         sort(v);
         let pick = |q: usize| {
             v.get((v.len() * q / 100).min(v.len().saturating_sub(1)))
@@ -357,6 +364,47 @@ mod tests {
             c.offset_us()
         );
         assert_eq!(c.rotation(), 0);
+    }
+
+    #[test]
+    fn the_calibrator_is_small() {
+        // The firmware builds the calibrator on a 6 KB thread stack. The error list goes on the
+        // heap.
+        assert!(
+            std::mem::size_of::<Calibrator>() <= 1024,
+            "{} bytes",
+            std::mem::size_of::<Calibrator>()
+        );
+    }
+
+    #[test]
+    fn late_wifi_packets_do_not_pull_the_offset() {
+        // 128 BPM. One packet in four is 250 to 320 ms late: more than half a beat early on the
+        // circle of the beat.
+        let p = 60e6 / 128.0;
+        let mut c = Calibrator::new(30_000);
+        let g = raw(40_000.0, p, 0);
+        let mut x: u32 = 9;
+        for k in 0..8 * 32u64 {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let r = f64::from(x >> 16) / 65_536.0;
+            let late = if k % 4 == 3 {
+                250_000.0 + r * 70_000.0
+            } else {
+                r * 20_000.0
+            };
+            c.pdl_beat(
+                (k as f64 * p + late) as u64,
+                (k % 4 + 1) as u8,
+                128.0,
+                Some(&g),
+            );
+        }
+        assert!(
+            (c.offset_us() - 40_000).abs() < 3_000,
+            "offset {}",
+            c.offset_us()
+        );
     }
 
     #[test]
