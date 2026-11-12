@@ -65,6 +65,11 @@ impl Log for Logger {
             return;
         }
         UART.log(record);
+        // The info lines of esp-idf-svc go to UART0 only. Most of them name an HTTP handler.
+        // They filled the ring in the first 15 s after a start.
+        if record.level() > log::Level::Warn && record.target().starts_with("esp_idf_svc") {
+            return;
+        }
         let mut line = String::new();
         // SAFETY: esp_log_timestamp has no preconditions.
         let ms = unsafe { sys::esp_log_timestamp() };

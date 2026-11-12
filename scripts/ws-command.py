@@ -33,7 +33,7 @@ def frames(t_end):
 s.settimeout(0.5)
 for m in frames(time.time() + 2):
     t = json.loads(m).get("type") if m.startswith("{") else m
-    print("<", t, m[:120] if t in ("hello", "busy", "error", "ota") else "")
+    print("<", t, m if t == "hello" else m[:120] if t in ("busy", "error", "ota") else "")
 for c in cmds:
     send(c); print(">", c)
     for m in frames(time.time() + 3):

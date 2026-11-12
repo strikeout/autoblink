@@ -22,7 +22,8 @@ use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::{Gpio12, Gpio2};
 use esp_idf_svc::hal::i2s::config::{
-    Config, DataBitWidth, PdmRxClkConfig, PdmRxConfig, PdmRxGpioConfig, PdmRxSlotConfig, SlotMode,
+    Config, DataBitWidth, PdmDownsample, PdmRxClkConfig, PdmRxConfig, PdmRxGpioConfig,
+    PdmRxSlotConfig, SlotMode,
 };
 use esp_idf_svc::hal::i2s::{I2sDriver, I2sRx, I2S0};
 use esp_idf_svc::hal::task::queue::Queue;
@@ -195,7 +196,10 @@ pub fn start(
             Config::default()
                 .dma_buffer_count(6)
                 .frames_per_buffer(FRAMES as u32),
-            PdmRxClkConfig::from_sample_rate_hz(SAMPLE_RATE),
+            // 16 times downsampling gives a PDM clock of 128 x 16 kHz = 2.048 MHz on IO2. A PDM
+            // mic such as the MP34DT01 needs 1 to 3.25 MHz. The default 8 times gives 1.024 MHz.
+            PdmRxClkConfig::from_sample_rate_hz(SAMPLE_RATE)
+                .downsample_mode(PdmDownsample::Samples16),
             PdmRxSlotConfig::from_bits_per_sample_and_slot_mode(
                 DataBitWidth::Bits16,
                 SlotMode::Mono,

@@ -43,9 +43,11 @@ python3 -I scripts/ws-command.py "$host" '{"type":"take_over"}' '{"type":"ota_in
   | grep -E '^>|error' || true
 
 echo "Waiting for $version to start on $host"
+# The hello message of the page connection gives the version. The log ring can lose the start
+# line within some seconds.
 i=0
 while [ $i -lt 80 ]; do
-  if curl -s -m 2 "http://$host/log" | grep -q "AUTOBLINK $version starts"; then
+  if python3 -I scripts/ws-command.py "$host" 2>/dev/null | grep -q "\"version\":\"$version\""; then
     echo "The box runs $version."
     exit 0
   fi
