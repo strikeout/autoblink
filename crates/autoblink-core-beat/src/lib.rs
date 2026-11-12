@@ -8,6 +8,7 @@
 pub mod onset;
 #[cfg(test)]
 pub(crate) mod synth;
+pub mod tracker;
 
 pub use onset::{Frame, Onsets};
 

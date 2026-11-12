@@ -191,7 +191,7 @@ pub fn render(t: &Track, seconds: f64) -> Vec<i16> {
             *s += amp * rng.next();
         }
     }
-    let gain = if t.clip { 8.0 } else { 1.0 };
+    let gain = if t.clip { 4.0 } else { 1.0 };
     buf.iter()
         .map(|s| (s * gain * 32767.0).clamp(-32768.0, 32767.0) as i16)
         .collect()

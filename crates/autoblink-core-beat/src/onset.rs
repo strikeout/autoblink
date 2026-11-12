@@ -5,6 +5,11 @@
 use crate::{HOP, SAMPLE_RATE};
 use std::f32::consts::TAU;
 
+/// The coefficient of a one-pole envelope with a time constant of 6 ms (each kick stage).
+const KICK_C: f32 = 1.0 / (0.006 * SAMPLE_RATE as f32);
+/// The coefficient of a one-pole envelope with a time constant of 3 ms.
+const HIGH_C: f32 = 1.0 / (0.003 * SAMPLE_RATE as f32);
+
 /// One hop of the onsets.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Frame {
@@ -62,10 +67,14 @@ pub struct Onsets {
     kick: [Biquad; 2],
     clap: [Biquad; 3],
     full: Biquad,
-    /// The sums of squares of the kick, clap and full bands, and of the raw samples.
-    sums: [f32; 4],
+    /// The smoothed power of the kick (two stages), clap and full bands.
+    env: [f32; 4],
+    /// The sum of squares of the raw samples of the hop.
+    sum: f32,
     min: i16,
     max: i16,
+    /// The last sample, so that a step between two hops counts in `span`.
+    prev: i16,
     n: usize,
     /// The log energy of the last hop for each band.
     last: [f32; 3],
@@ -87,9 +96,11 @@ impl Onsets {
                 Biquad::new(4000.0, true),
             ],
             full: Biquad::new(30.0, false),
-            sums: [0.0; 4],
-            min: i16::MAX,
-            max: i16::MIN,
+            env: [0.0; 4],
+            sum: 0.0,
+            min: 0,
+            max: 0,
+            prev: 0,
             n: 0,
             last: [0.0; 3],
         }
@@ -103,12 +114,15 @@ impl Onsets {
             let k = self.kick.iter_mut().fold(x, |v, f| f.run(v));
             let c = self.clap.iter_mut().fold(x, |v, f| f.run(v));
             let f = self.full.run(x);
-            self.sums[0] += k * k;
-            self.sums[1] += c * c;
-            self.sums[2] += f * f;
-            self.sums[3] += x * x;
+            // A power over 8 ms ripples with a 50 Hz kick. The envelopes smooth that ripple.
+            self.env[0] += KICK_C * (k * k - self.env[0]);
+            self.env[1] += KICK_C * (self.env[0] - self.env[1]);
+            self.env[2] += HIGH_C * (c * c - self.env[2]);
+            self.env[3] += HIGH_C * (f * f - self.env[3]);
+            self.sum += x * x;
             self.min = self.min.min(s);
             self.max = self.max.max(s);
+            self.prev = s;
             self.n += 1;
             if self.n == HOP {
                 out(self.finish());
@@ -116,15 +130,24 @@ impl Onsets {
         }
     }
 
+    /// The samples of the hop that is not full yet.
+    pub fn partial(&self) -> usize {
+        self.n
+    }
+
     fn finish(&mut self) -> Frame {
         let n = HOP as f32;
         let mut rise = [0.0f32; 3];
-        for (i, r) in rise.iter_mut().enumerate() {
-            let e = (1.0 + self.sums[i] / n / 1e3).ln();
-            *r = (e - self.last[i]).max(0.0);
-            self.last[i] = e;
+        for (r, (env, last)) in rise.iter_mut().zip(
+            [self.env[1], self.env[2], self.env[3]]
+                .iter()
+                .zip(&mut self.last),
+        ) {
+            let e = (1.0 + env / 1e3).ln();
+            *r = (e - *last).max(0.0);
+            *last = e;
         }
-        let power = self.sums[3] / n / (32768.0 * 32768.0);
+        let power = self.sum / n / (32768.0 * 32768.0);
         let frame = Frame {
             kick: rise[0],
             clap: rise[1],
@@ -136,9 +159,9 @@ impl Onsets {
             },
             span: (i32::from(self.max) - i32::from(self.min)) as u16,
         };
-        self.sums = [0.0; 4];
-        self.min = i16::MAX;
-        self.max = i16::MIN;
+        self.sum = 0.0;
+        self.min = self.prev;
+        self.max = self.prev;
         self.n = 0;
         frame
     }
