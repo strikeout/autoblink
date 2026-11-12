@@ -28,7 +28,9 @@ impl Grid {
 
     /// The part of the beat that passed at `now_us`, 0 to 1.
     pub fn beat_phase(&self, now_us: f64) -> f64 {
-        ((now_us - self.beat_us) / self.period_us).rem_euclid(1.0)
+        // `x - floor(x)` and not `rem_euclid`: the float remainder adds 2 KB to the firmware.
+        let x = (now_us - self.beat_us) / self.period_us;
+        x - x.floor()
     }
 
     /// The beat in the bar (1 to 4) and the beat of the 16-beat block (1 to 16) of the last grid

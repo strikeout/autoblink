@@ -94,6 +94,19 @@ pub struct Calibrator {
     last: Stats,
 }
 
+/// Sorts a short slice. The sort of std adds about 2 KB to the firmware for each type.
+fn sort<T: PartialOrd + Copy>(v: &mut [T]) {
+    for i in 1..v.len() {
+        let x = v[i];
+        let mut j = i;
+        while j > 0 && v[j - 1] > x {
+            v[j] = v[j - 1];
+            j -= 1;
+        }
+        v[j] = x;
+    }
+}
+
 /// The beat of `g` nearest `at`.
 fn nearest(g: &Grid, at: f64) -> f64 {
     g.beat_us + ((at - g.beat_us) / g.period_us).round() * g.period_us
@@ -197,7 +210,7 @@ impl Calibrator {
             self.windows_len = (self.windows_len + 1).min(WINDOWS);
             let mut v = self.windows;
             let v = &mut v[..self.windows_len];
-            v.sort_by(f64::total_cmp);
+            sort(v);
             self.offset = v[v.len() / 2];
             self.win_max = f64::MIN;
             self.win_n = 0;
@@ -273,7 +286,7 @@ impl Calibrator {
         }
         let mut v = self.errs;
         let v = &mut v[..self.errs_len];
-        v.sort_unstable();
+        sort(v);
         let pick = |q: usize| {
             v.get((v.len() * q / 100).min(v.len().saturating_sub(1)))
                 .copied()

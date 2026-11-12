@@ -15,6 +15,8 @@ const FPS: f64 = SR / HOP as f64;
 const LONG: usize = 500;
 /// The frames of the phase rings (about 1 s).
 const SHORT: usize = 128;
+/// The lags of the tempo search, 80 to 160 BPM, and one on each side.
+const LAGS: usize = 51;
 /// The frames between two tempo estimates (about 0.5 s).
 const TEMPO_EVERY: u64 = 62;
 /// The frames before the first tempo estimate (2 s).
@@ -442,7 +444,11 @@ impl Tracker {
             let octaves = (60.0 * FPS / lag / 125.0).log2();
             (-0.5 * octaves * octaves).exp() as f32
         };
-        let scores: Vec<f32> = (lo - 1..=hi + 1).map(score).collect();
+        let mut scores = [0.0f32; LAGS];
+        for (i, s) in scores.iter_mut().enumerate().take(hi - lo + 3) {
+            *s = score(lo - 1 + i);
+        }
+        let scores = &scores[..hi - lo + 3];
         let Some((k, &peak)) = scores[1..scores.len() - 1]
             .iter()
             .enumerate()
