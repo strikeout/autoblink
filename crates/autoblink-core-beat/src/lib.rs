@@ -12,6 +12,7 @@ pub mod onset;
 #[cfg(test)]
 pub(crate) mod synth;
 pub mod tracker;
+pub mod wav;
 
 pub use onset::{Frame, Onsets};
 
