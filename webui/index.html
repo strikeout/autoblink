@@ -473,6 +473,9 @@ body.busy #lvs{display:none!important}
         <div class="row">
           <span>pitch <b id="pitch" class="num">±0.00%</b></span>
         </div>
+        <div class="row" id="microw" hidden title="The mic of the box gives the beat when no Pro DJ Link deck plays.">
+          <span>mic <b id="micst">—</b></span>
+        </div>
         <div class="row num">
           <span>in <b id="in16">00</b></span>
           <span>out <b id="out16">00</b></span>
@@ -599,6 +602,8 @@ body.busy #lvs{display:none!important}
       <div class="group" data-cap="ota">
         <div class="section" title="The log of the box and the free memory of each task.">Diagnostics</div>
         <div class="row"><button id="dglog">Log</button> <button id="dgmem">Memory</button> <button id="dgx" class="x" aria-label="Close the output" hidden>✕</button></div>
+        <div class="row" id="micdiag" hidden title="The accuracy of the mic beat against Pro DJ Link in the last minute while a deck played.">mic <b id="micdg" class="num">—</b></div>
+        <div class="row" id="micrecrow" hidden><button id="micrec" title="Record 30 s of the mic and the Pro DJ Link beats as a WAV file, for the tuning of the beat tracker. The page gets no status during the recording.">Record mic 30 s</button></div>
         <pre id="dg" class="log" hidden></pre>
       </div>
     </div>
@@ -722,8 +727,10 @@ function onStatus(s) {
   set('mode', s.mode || '—');
   set('iface', s.iface || '—');
   set('state', m.playing ? '▶ PLAY' : '■ STOP');
-  $('nomaster').hidden = !s.no_devices;
-  $('mgrid').hidden = !!s.no_devices;
+  // The mic of the box can give the beat without a player on the network.
+  const noBeat = !!s.no_devices && s.source !== 'Mic';
+  $('nomaster').hidden = !noBeat;
+  $('mgrid').hidden = noBeat;
   $('state').className = m.playing ? 'play' : 'stop';
 
   set('bpm', m.bpm > 0 ? m.bpm.toFixed(2) : '---.-');
@@ -731,7 +738,8 @@ function onStatus(s) {
   if (!beatCap && m.beat !== lastBeat && m.beat > 0) flash();
   lastBeat = m.beat;
   set('pitch', Math.abs(m.pitch) < 0.005 ? '±0.00%' : (m.pitch > 0 ? '+' : '') + m.pitch.toFixed(2) + '%');
-  set('mdeck', m.device ? '#' + m.device + (m.virtual_master ? ' (virtual)' : '') : (s.link_active ? 'Link' : '—'));
+  set('mdeck', s.source === 'Mic' ? 'mic' : m.device ? '#' + m.device + (m.virtual_master ? ' (virtual)' : '') : (s.link_active ? 'Link' : '—'));
+  renderMic(s.mic);
   set('in16', pad2(m.phrase16));
   renderPhrase(s);
   if (s.clock) {
@@ -2859,6 +2867,27 @@ function connect() {
     backoff = Math.min(backoff * 2, 5000);
   };
 }
+
+/** The mic rows of the Live panel and of Diagnostics. The host sends no field mic. */
+function renderMic(mic) {
+  $('microw').hidden = $('micdiag').hidden = $('micrecrow').hidden = !mic;
+  if (!mic) return;
+  set('micst', (mic.master ? 'gives the beat · ' : '') + mic.state.replace('_', ' ') + (mic.bpm > 0 ? ' · ' + mic.bpm.toFixed(1) : ''));
+  const lock = mic.lock_ms == null ? '—' : (mic.lock_ms / 1000).toFixed(1) + ' s';
+  set('micdg', `level ${mic.level} · confidence ${mic.confidence} · offset ${mic.offset_ms} ms`
+    + (mic.beats ? ` · ${mic.beats} beats: tempo ±${(mic.tempo_err_cbpm / 100).toFixed(2)} BPM, phase ${mic.phase_med_ms} ms`
+      + ` (95 %: ${mic.phase_p95_ms} ms), bar 1 ${mic.bar1_pct} %, lock ${lock}` : ' · no Pro DJ Link beats to compare'));
+}
+// The box accepts GET /mic only after the active page armed it.
+$('micrec').addEventListener('click', () => send({ type: 'mic_arm' }));
+handlers.mic_arm = () => {
+  const a = document.createElement('a');
+  a.href = BASE + '/mic?s=30';
+  a.download = 'mic.wav';
+  a.click();
+  toast('The box records 30 s of the mic');
+  $('toast').classList.add('info');
+};
 
 $('rescan').addEventListener('click', () => send({ type: 'rescan' }));
 $('takeoverbtn').addEventListener('click', () => send({ type: 'take_over' }));
