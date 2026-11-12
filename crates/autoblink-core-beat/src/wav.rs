@@ -58,8 +58,10 @@ pub fn read(bytes: &[u8]) -> Result<Wav, &'static str> {
                 let (channels, rate) = fmt.ok_or("data before fmt")?;
                 let end = (body + len).min(bytes.len());
                 let samples = bytes[body..end]
-                    .chunks_exact(2)
-                    .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|b| i16::from_le_bytes(*b))
                     .collect();
                 return Ok(Wav {
                     rate,
