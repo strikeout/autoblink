@@ -15,6 +15,7 @@ mod dmx;
 mod led;
 mod logring;
 mod mem;
+mod mic;
 mod midi;
 mod net;
 #[cfg_attr(not(feature = "dmx"), allow(dead_code))]
@@ -110,6 +111,13 @@ pub struct State {
     /// writes them to NVS.
     #[cfg(feature = "dmx")]
     pub night: Mutex<Option<[u8; autoblink_core_dmx::NIGHT_BYTES]>>,
+    /// The mic beat. The `mic` thread writes it.
+    pub mic: Mutex<mic::MicView>,
+    /// True while the mic is the master. The `mic` thread writes it.
+    pub mic_master: AtomicBool,
+    /// The offset of the mic for NVS, in µs. The `mic` thread puts it, and the main loop writes
+    /// it.
+    pub mic_offset: Mutex<Option<i32>>,
     /// The Ethernet port, the joined WiFi network and the own WiFi network, in this order. The
     /// `dmx` thread replies to an ArtPoll on the interface in the subnet of the desk.
     #[cfg(feature = "dmx")]
@@ -210,6 +218,9 @@ fn run() -> anyhow::Result<()> {
         show_rev: AtomicU32::new(0),
         #[cfg(feature = "dmx")]
         night: Mutex::new(None),
+        mic: Mutex::new(mic::MicView::default()),
+        mic_master: AtomicBool::new(false),
+        mic_offset: Mutex::new(None),
         #[cfg(feature = "dmx")]
         artnet_ifaces: Mutex::new([None; 3]),
         start: Instant::now(),
@@ -292,6 +303,21 @@ fn run() -> anyhow::Result<()> {
         settings.night(),
     )?;
     let device_number = settings.device_number.clone();
+    // The Pro DJ Link master beats for the calibration of the mic.
+    let mic_pdl = Arc::new(esp_idf_svc::hal::task::queue::Queue::<midi::Beat>::new(16));
+    // SAFETY: the MIDI UART no longer reads IO2. `midi::start` routed its receive input to a
+    // constant level, so the mic clock is the only user of the pin.
+    let mic_clk = unsafe { esp_idf_svc::hal::gpio::Gpio2::steal() };
+    mic::start(
+        state.clone(),
+        p.i2s0,
+        mic_clk,
+        p.pins.gpio12,
+        settings.box_cfg.clone(),
+        device_number.clone(),
+        mic_pdl.clone(),
+        settings.mic_offset(),
+    )?;
     let settings = Arc::new(Mutex::new(settings));
     let (_server, web_beats) = webui::start(
         state.clone(),
@@ -332,6 +358,7 @@ fn run() -> anyhow::Result<()> {
                 },
                 0,
             );
+            let _ = mic_pdl.send_back(beat, 0);
             let page_beat = (beat.device, beat.beat_in_bar);
             // A full queue drops the beat. The receive thread does not wait for the MIDI thread.
             let _ = midi_beats.send_back(beat, 0);
@@ -406,6 +433,10 @@ fn run() -> anyhow::Result<()> {
             if let Some(bytes) = night {
                 settings.lock().unwrap().save_night(&bytes);
             }
+        }
+        let mic_offset = state.mic_offset.lock().unwrap().take();
+        if let Some(us) = mic_offset {
+            settings.lock().unwrap().save_mic_offset(us);
         }
         // SAFETY: the heap calls only read counters.
         let (free, min, block) = unsafe {

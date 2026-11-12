@@ -72,7 +72,7 @@ pub struct Onsets {
     high: [Biquad; 2],
     /// The smoothed power of the kick (two stages), clap, full and high bands.
     env: [f32; 5],
-    /// The sum of squares of the raw samples of the hop.
+    /// The sum of squares of the full band of the hop.
     sum: f32,
     min: i16,
     max: i16,
@@ -125,7 +125,8 @@ impl Onsets {
             self.env[2] += HIGH_C * (c * c - self.env[2]);
             self.env[3] += HIGH_C * (f * f - self.env[3]);
             self.env[4] += HIGH_C * (h * h - self.env[4]);
-            self.sum += x * x;
+            // The level uses the full band, so that a DC offset of the mic is no level.
+            self.sum += f * f;
             self.min = self.min.min(s);
             self.max = self.max.max(s);
             self.prev = s;
@@ -244,6 +245,16 @@ mod tests {
             }
         }
         assert!(on > 4.0 * off, "clap on 2 and 4 {on}, on 1 and 3 {off}");
+    }
+
+    #[test]
+    fn a_dc_offset_is_no_level() {
+        let v = frames(&vec![5000; SAMPLE_RATE as usize]);
+        assert!(
+            v.last().unwrap().dbfs < -90.0,
+            "dbfs {}",
+            v.last().unwrap().dbfs
+        );
     }
 
     #[test]

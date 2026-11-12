@@ -83,8 +83,9 @@ pub struct Beat {
 
 /// Starts the MIDI thread. Returns the queue for the master beats.
 ///
-/// `rx` is not used yet. The UART driver of ESP-IDF 5.5 does not install without a receive
-/// buffer, and `UartTxDriver` asks for none. IO2 has no wire. The joystick uses IO35.
+/// `rx` is not used. The UART driver of ESP-IDF 5.5 does not install without a receive
+/// buffer, and `UartTxDriver` asks for none. After the install, the receive input goes to a
+/// constant high level, and the mic uses IO2 for its clock.
 pub fn start(
     uart: UART2<'static>,
     tx: Gpio17<'static>,
@@ -97,6 +98,12 @@ pub fn start(
 ) -> anyhow::Result<Arc<Queue<Beat>>> {
     let uart_cfg = config::Config::new().baudrate(Hertz(31_250));
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio2>, None::<Gpio17>, &uart_cfg)?;
+    use esp_idf_svc::sys::{
+        esp_rom_gpio_connect_in_signal, GPIO_MATRIX_CONST_ONE_INPUT, U2RXD_IN_IDX,
+    };
+    // SAFETY: the call sets the source of the UART2 RX signal in the GPIO matrix. IO2 is then
+    // free for the clock of the mic.
+    unsafe { esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT, U2RXD_IN_IDX, false) };
     let beats = Arc::new(Queue::<Beat>::new(16));
     let beat_rx = beats.clone();
 
