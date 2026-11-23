@@ -15,6 +15,7 @@ mod dmx;
 mod led;
 mod logring;
 mod mem;
+mod mic;
 mod midi;
 mod net;
 #[cfg_attr(not(feature = "dmx"), allow(dead_code))]
@@ -44,6 +45,7 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::cpu::Core;
 use esp_idf_svc::hal::gpio::PinDriver;
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::task::queue::Queue;
 use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::mdns::EspMdns;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -110,11 +112,46 @@ pub struct State {
     /// writes them to NVS.
     #[cfg(feature = "dmx")]
     pub night: Mutex<Option<[u8; autoblink_core_dmx::NIGHT_BYTES]>>,
+    /// The mic beat. The `mic` thread writes it.
+    pub mic: Mutex<mic::MicView>,
+    /// True while the mic is the master. The `mic` thread writes it.
+    pub mic_master: AtomicBool,
+    /// The offset of the mic for NVS, in µs. The `mic` thread puts it, and the main loop writes
+    /// it.
+    pub mic_offset: Mutex<Option<i32>>,
     /// The Ethernet port, the joined WiFi network and the own WiFi network, in this order. The
     /// `dmx` thread replies to an ArtPoll on the interface in the subnet of the desk.
     #[cfg(feature = "dmx")]
     pub artnet_ifaces: Mutex<[Option<artnet::Iface>; 3]>,
     start: Instant,
+}
+
+/// The receivers of a master beat: the beat LED, the `dmx` thread, the `midi` thread and the
+/// page. The Pro DJ Link receive thread and the `mic` thread send to them.
+#[derive(Clone)]
+pub struct BeatOut {
+    #[cfg(feature = "dmx")]
+    dmx: Arc<Queue<dmx::DmxMsg>>,
+    midi: Arc<Queue<midi::Beat>>,
+    page: Arc<Queue<(u8, u8)>>,
+}
+
+impl BeatOut {
+    /// Sends `beat` to each receiver. A full queue drops the beat, so the sender never waits.
+    pub fn send(&self, beat: midi::Beat) {
+        led::beat(beat.beat_in_bar, beat.at_us / 1000);
+        #[cfg(feature = "dmx")]
+        let _ = self.dmx.send_back(
+            dmx::DmxMsg::Beat {
+                beat_in_bar: beat.beat_in_bar,
+                bpm: beat.bpm,
+                at_ms: beat.at_us / 1000,
+            },
+            0,
+        );
+        let _ = self.midi.send_back(beat, 0);
+        let _ = self.page.send_back((beat.device, beat.beat_in_bar), 0);
+    }
 }
 
 /// The value of `State::auto_pin` when the page asks for no change.
@@ -210,6 +247,9 @@ fn run() -> anyhow::Result<()> {
         show_rev: AtomicU32::new(0),
         #[cfg(feature = "dmx")]
         night: Mutex::new(None),
+        mic: Mutex::new(mic::MicView::default()),
+        mic_master: AtomicBool::new(false),
+        mic_offset: Mutex::new(None),
         #[cfg(feature = "dmx")]
         artnet_ifaces: Mutex::new([None; 3]),
         start: Instant::now(),
@@ -292,12 +332,36 @@ fn run() -> anyhow::Result<()> {
         settings.night(),
     )?;
     let device_number = settings.device_number.clone();
+    let box_cfg = settings.box_cfg.clone();
+    let mic_offset = settings.mic_offset();
     let settings = Arc::new(Mutex::new(settings));
     let (_server, web_beats) = webui::start(
         state.clone(),
         settings.clone(),
         #[cfg(feature = "dmx")]
         dmx_q.clone(),
+    )?;
+    let beat_out = BeatOut {
+        #[cfg(feature = "dmx")]
+        dmx: dmx_q.clone(),
+        midi: midi_beats,
+        page: web_beats,
+    };
+    // The Pro DJ Link master beats for the calibration of the mic.
+    let mic_pdl = Arc::new(Queue::<midi::Beat>::new(16));
+    // SAFETY: the MIDI UART no longer reads IO2. `midi::start` routed its receive input to a
+    // constant level, so the mic clock is the only user of the pin.
+    let mic_clk = unsafe { esp_idf_svc::hal::gpio::Gpio2::steal() };
+    mic::start(
+        state.clone(),
+        p.i2s0,
+        mic_clk,
+        p.pins.gpio12,
+        box_cfg,
+        device_number.clone(),
+        mic_pdl.clone(),
+        beat_out.clone(),
+        mic_offset,
     )?;
     let track_changes = tracks::start(state.clone())?;
 
@@ -321,22 +385,8 @@ fn run() -> anyhow::Result<()> {
         state.clone(),
         device_number,
         move |beat| {
-            led::beat(beat.beat_in_bar, beat.at_us / 1000);
-            // A full queue drops the beat. The receive thread does not wait for the DMX thread.
-            #[cfg(feature = "dmx")]
-            let _ = dmx_q.send_back(
-                dmx::DmxMsg::Beat {
-                    beat_in_bar: beat.beat_in_bar,
-                    bpm: beat.bpm,
-                    at_ms: beat.at_us / 1000,
-                },
-                0,
-            );
-            let page_beat = (beat.device, beat.beat_in_bar);
-            // A full queue drops the beat. The receive thread does not wait for the MIDI thread.
-            let _ = midi_beats.send_back(beat, 0);
-            // The web thread sends the beat to the page. This thread does not wait for it.
-            let _ = web_beats.try_send(page_beat);
+            beat_out.send(beat);
+            let _ = mic_pdl.send_back(beat, 0);
         },
         move |track| {
             let _ = track_changes.send(track);
@@ -406,6 +456,10 @@ fn run() -> anyhow::Result<()> {
             if let Some(bytes) = night {
                 settings.lock().unwrap().save_night(&bytes);
             }
+        }
+        let mic_offset = state.mic_offset.lock().unwrap().take();
+        if let Some(us) = mic_offset {
+            settings.lock().unwrap().save_mic_offset(us);
         }
         // SAFETY: the heap calls only read counters.
         let (free, min, block) = unsafe {

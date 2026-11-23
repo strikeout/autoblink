@@ -57,12 +57,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "autoblink-core-beat"
+version = "1.40.1"
+
+[[package]]
 name = "autoblink-core-dbserver"
-version = "1.39.7"
+version = "1.40.1"
 
 [[package]]
 name = "autoblink-core-dmx"
-version = "1.39.7"
+version = "1.40.1"
 dependencies = [
  "autoblink-core-midi",
  "serde",
@@ -71,18 +75,18 @@ dependencies = [
 
 [[package]]
 name = "autoblink-core-midi"
-version = "1.39.7"
+version = "1.40.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "autoblink-core-prolink"
-version = "1.39.7"
+version = "1.40.1"
 
 [[package]]
 name = "autoblink-core-ui"
-version = "1.39.7"
+version = "1.40.1"
 dependencies = [
  "autoblink-core-midi",
  "serde",
@@ -90,9 +94,10 @@ dependencies = [
 
 [[package]]
 name = "autoblink-esp32"
-version = "1.39.7"
+version = "1.40.1"
 dependencies = [
  "anyhow",
+ "autoblink-core-beat",
  "autoblink-core-dbserver",
  "autoblink-core-dmx",
  "autoblink-core-midi",

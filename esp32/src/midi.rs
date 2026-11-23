@@ -28,6 +28,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use autoblink_core_beat::tracker::Section;
 use autoblink_core_dbserver::{current_phrase_idx, phrase_info};
 use autoblink_core_midi::clock::Master;
 use autoblink_core_midi::scenes::{SceneInput, ScenePhrase, SceneStatus, Scenes, ScenesConfig};
@@ -83,8 +84,9 @@ pub struct Beat {
 
 /// Starts the MIDI thread. Returns the queue for the master beats.
 ///
-/// `rx` is not used yet. The UART driver of ESP-IDF 5.5 does not install without a receive
-/// buffer, and `UartTxDriver` asks for none. IO2 has no wire. The joystick uses IO35.
+/// `rx` is not used. The UART driver of ESP-IDF 5.5 does not install without a receive
+/// buffer, and `UartTxDriver` asks for none. After the install, the receive input goes to a
+/// constant high level, and the mic uses IO2 for its clock.
 pub fn start(
     uart: UART2<'static>,
     tx: Gpio17<'static>,
@@ -97,6 +99,12 @@ pub fn start(
 ) -> anyhow::Result<Arc<Queue<Beat>>> {
     let uart_cfg = config::Config::new().baudrate(Hertz(31_250));
     let uart = UartDriver::new(uart, tx, rx, None::<Gpio2>, None::<Gpio17>, &uart_cfg)?;
+    use esp_idf_svc::sys::{
+        esp_rom_gpio_connect_in_signal, GPIO_MATRIX_CONST_ONE_INPUT, U2RXD_IN_IDX,
+    };
+    // SAFETY: the call sets the source of the UART2 RX signal in the GPIO matrix. IO2 is then
+    // free for the clock of the mic.
+    unsafe { esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT, U2RXD_IN_IDX, false) };
     let beats = Arc::new(Queue::<Beat>::new(16));
     let beat_rx = beats.clone();
 
@@ -115,6 +123,7 @@ pub fn start(
         let mut smoother = Smoother::default();
         let mut smoothed_bpm = 0.0;
         let mut last_master = 0u8;
+        let mut arbiter = autoblink_core_beat::arbiter::Arbiter::default();
         // The last guess of the loop. The guess keeps a Drop or a Break near its threshold.
         let mut prev_guess = None;
         // The master deck and the track of `prev_guess`.
@@ -228,7 +237,55 @@ pub fn start(
             // The track energy and the time of the next drop, for the pilot.
             #[cfg(feature = "dmx")]
             let mut facts = (None, None);
-            let (mut snap, track) = {
+            // While the mic is the master, its calibrated grid gives the master values.
+            // This thread decides the master. It sees a deck stop and gives the beat to the mic in
+            // one pass, so the clock sees no step without a playing master between the two.
+            let mic = {
+                let view = *state.mic.lock().unwrap();
+                let deck_playing = state
+                    .tracker
+                    .lock()
+                    .unwrap()
+                    .master()
+                    .is_some_and(|m| m.is_playing(now_ms));
+                let master =
+                    arbiter.update(deck_playing, view.state, state.now_us(), view.last_kick_us)
+                        && view.grid.is_some();
+                state.mic_master.store(master, Ordering::Relaxed);
+                master.then_some(view).and_then(|v| Some((v, v.grid?)))
+            };
+            let (mut snap, track) = if let Some((v, g)) = mic {
+                let now_us = state.now_us() as f64;
+                let (_, phrase16) = g.current(now_us);
+                let bpm = if v.device == last_master && smoothed_bpm > 0.0 {
+                    smoothed_bpm
+                } else {
+                    g.bpm()
+                };
+                scene_in = SceneInput {
+                    device: v.device,
+                    track: 0,
+                    playing: true,
+                    bpm,
+                    phrase: None,
+                    bass_cut: None,
+                    guess: v.section.map(|s| match s {
+                        Section::Break => autoblink_core_midi::scenes::Event::Break,
+                        Section::Drop => autoblink_core_midi::scenes::Event::Drop,
+                    }),
+                    phrase16,
+                };
+                let snap = Snapshot {
+                    device: v.device,
+                    bpm,
+                    pitch: 0.0,
+                    phrase16,
+                    beat_phase: g.beat_phase(now_us),
+                    playing: true,
+                    phrase: None,
+                };
+                (snap, None)
+            } else {
                 let tracker = state.tracker.lock().unwrap();
                 tracker.master().map_or((Snapshot::default(), None), |m| {
                     let snap = Snapshot {
@@ -310,6 +367,7 @@ pub fn start(
                 device: snap.device,
                 playing: snap.playing,
                 bpm: snap.bpm,
+                mic: mic.is_some(),
             });
             next_pulse = clock.poll(&cfg, state.now_us(), master, &mut send);
             if Instant::now() >= next_cc {

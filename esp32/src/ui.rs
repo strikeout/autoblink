@@ -433,6 +433,11 @@ fn dmx_last_change(state: &State) -> Option<(u16, u8)> {
 
 /// Copies the values of the screen from the state. Each lock is taken alone.
 fn snapshot(state: &State) -> Snapshot {
+    let mic = state
+        .mic_master
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .then(|| *state.mic.lock().unwrap())
+        .and_then(|v| Some((v, v.grid?)));
     let master = state.tracker.lock().unwrap().master().cloned();
     let phrase = master.as_ref().and_then(|d| phrase(state, d)).map(|p| p.0);
     let blinks = crate::led::blinks(state);
@@ -446,8 +451,22 @@ fn snapshot(state: &State) -> Snapshot {
     #[cfg(not(feature = "dmx"))]
     let dmx = None;
     let now = state.now_ms();
+    if let Some((v, g)) = mic {
+        return Snapshot {
+            master: Some(v.device),
+            mic: true,
+            playing: true,
+            bpm: g.bpm(),
+            beat: g.current(state.now_us() as f64).0,
+            phrase: Some(format!("Mic {}", v.state.label())),
+            blinks,
+            ip,
+            dmx,
+        };
+    }
     Snapshot {
         master: master.as_ref().map(|d| d.num),
+        mic: false,
         playing: master.as_ref().is_some_and(|d| d.is_playing(now)),
         bpm: master.as_ref().map_or(0.0, |d| d.bpm),
         beat: master.as_ref().map_or(0, |d| d.beat),

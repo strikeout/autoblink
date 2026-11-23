@@ -24,7 +24,6 @@ use std::borrow::Cow;
 use std::ffi::CString;
 use std::fmt::{Display, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,7 +46,7 @@ use crate::State;
 use autoblink_core_dbserver::{phrase_status, PhraseKind, TrackOverview};
 use autoblink_core_midi::scenes::{SceneStatus, ScenesConfig};
 use autoblink_core_prolink::{Deck, PlayState};
-#[cfg(feature = "dmx")]
+use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::task::queue::Queue;
 #[cfg(feature = "dmx")]
 use esp_idf_svc::http::server::{EspHttpConnection, Request};
@@ -68,6 +67,7 @@ const CAPS: &[&str] = &[
     "waveform",
     "ota",
     "scenes",
+    "mic",
     #[cfg(feature = "dmx")]
     "dmx",
     #[cfg(feature = "dmx")]
@@ -163,14 +163,18 @@ pub fn scenes_changed() {
 
 /// Starts the web server and the thread that sends the beats and the status to the page.
 ///
-/// Returns the server and the sender for the beats: (device number, beat in the bar). Use
-/// `try_send` for a beat. A send to a slow WiFi client can wait up to 5 s, and the beat receive
-/// thread must not wait for it.
+/// Returns the server and the queue for the beats: (device number, beat in the bar). Send a beat
+/// without a wait. A send to a slow WiFi client can wait up to 5 s, and the beat senders must not
+/// wait for it.
+///
+/// A FreeRTOS queue and not `std::sync::mpsc`: the `mic` thread has a lower priority than
+/// `web-status`, and a `std::sync::mpsc` receiver can spin on a half-written slot of such a
+/// sender (see AGENTS.md).
 pub fn start(
     state: Arc<State>,
     settings: Arc<Mutex<Settings>>,
     #[cfg(feature = "dmx")] dmx_q: Arc<Queue<DmxMsg>>,
-) -> anyhow::Result<(EspHttpServer<'static>, SyncSender<(u8, u8)>)> {
+) -> anyhow::Result<(EspHttpServer<'static>, Arc<Queue<(u8, u8)>>)> {
     // When all sockets are open, a new connection closes the socket that received data least
     // recently. The active WebSocket receives no data, so it is that socket. The page loads the
     // waveforms of all decks at the same time: 1 WebSocket and up to 4 requests. A waiting page
@@ -216,6 +220,76 @@ pub fn start(
             }
             None => req.into_status_response(404)?.write_all(b"no waveform"),
         }
+    })?;
+
+    // A 16-bit stereo WAV of the mic and the Pro DJ Link beats, for the tuning on a computer. The
+    // route streams a live room microphone, so it answers only after the active page armed it.
+    let mic_state = state.clone();
+    server.fn_handler("/mic", Method::Get, move |req| -> anyhow::Result<()> {
+        if !crate::mic::take_arm(mic_state.now_ms()) {
+            req.into_status_response(403)?
+                .write_all(b"Start the recording from the page")?;
+            return Ok(());
+        }
+        let secs = query_value(req.uri(), "s").map_or(Some(30), |v| v.parse::<u32>().ok());
+        let Some(secs) = secs.filter(|s| (1..=120).contains(s)) else {
+            req.into_status_response(400)?
+                .write_all(b"s must be 1 to 120")?;
+            return Ok(());
+        };
+        // SAFETY: the heap calls only read counters.
+        let (free, block) = unsafe {
+            (
+                sys::esp_get_free_heap_size(),
+                sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT),
+            )
+        };
+        if free < 40_000 || block < 12_000 || !crate::mic::capture_start() {
+            req.into_status_response(503)?
+                .write_all(b"not enough memory, or another recording runs")?;
+            return Ok(());
+        }
+        /// Ends the capture also when the client goes away during the stream.
+        struct Stop;
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                let dropped = crate::mic::capture_stop();
+                log::info!("Mic recording ends. {dropped} frames were dropped");
+            }
+        }
+        let _stop = Stop;
+        let frames = secs * autoblink_core_beat::SAMPLE_RATE;
+        let headers = [
+            ("Content-Type", "audio/wav"),
+            ("Content-Disposition", "attachment; filename=\"mic.wav\""),
+        ];
+        let mut resp = req.into_response(200, None, &headers)?;
+        resp.write_all(&autoblink_core_beat::wav::header(
+            frames,
+            2,
+            autoblink_core_beat::SAMPLE_RATE,
+        ))?;
+        // One buffer of 512 bytes: the HTTP task has an 8 KB stack.
+        let mut left = frames as usize * 4;
+        let mut bytes = [0u8; 512];
+        let mut quiet_since = Instant::now();
+        while left > 0 && quiet_since.elapsed() < Duration::from_secs(1) {
+            let n = crate::mic::capture_read(&mut bytes[..left.min(512)], 100);
+            if n == 0 {
+                continue;
+            }
+            quiet_since = Instant::now();
+            resp.write_all(&bytes[..n])?;
+            left -= n;
+        }
+        // Without the mic, the file has the size of its header and holds silence.
+        bytes.fill(0);
+        while left > 0 {
+            let n = left.min(512);
+            resp.write_all(&bytes[..n])?;
+            left -= n;
+        }
+        Ok(())
     })?;
 
     server.fn_handler("/log", Method::Get, |req| {
@@ -422,8 +496,9 @@ pub fn start(
         Ok(())
     })?;
 
-    // This thread does all the sends to the page. When the queue is full, `try_send` drops the beat.
-    let (beat_tx, beat_rx) = mpsc::sync_channel::<(u8, u8)>(8);
+    // This thread does all the sends to the page. When the queue is full, a send drops the beat.
+    let beat_tx = Arc::new(Queue::<(u8, u8)>::new(8));
+    let beat_rx = beat_tx.clone();
     crate::spawn(c"web-status", 6 * 1024, move || {
         let mut next_status = Instant::now();
         // The thread keeps one buffer for the status and one for the beat. Thus a message does
@@ -431,8 +506,10 @@ pub fn start(
         let mut status = Vec::with_capacity(4096);
         let mut beat_msg = String::with_capacity(48);
         loop {
-            match beat_rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
-                Ok((device, beat)) => {
+            let wait =
+                TickType::from(next_status.saturating_duration_since(Instant::now())).ticks();
+            match beat_rx.recv_front(wait) {
+                Some(((device, beat), _)) => {
                     beat_msg.clear();
                     let _ = write!(
                         beat_msg,
@@ -442,8 +519,7 @@ pub fn start(
                         release_strobe(&state);
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
+                None => {}
             }
             if SETTINGS_CHANGED.swap(false, Ordering::Relaxed) && active.is_some() {
                 let msg = push_settings.lock().unwrap().message();
@@ -831,6 +907,10 @@ fn command(
             }
             _ => error("The command needs a preset"),
         },
+        Some("mic_arm") => {
+            crate::mic::arm(state.now_ms());
+            r#"{"type":"mic_arm"}"#.into()
+        }
         Some("reboot") => match crate::restart_soon() {
             Ok(()) => {
                 log::info!("The page asked for a restart");
@@ -1032,6 +1112,27 @@ struct Status<'a> {
     #[cfg(feature = "dmx")]
     #[serde(skip_serializing_if = "Option::is_none")]
     auto: Option<AutoStatus>,
+    /// `None` while the setting "Mic" is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mic: Option<MicJson>,
+}
+
+/// The mic beat and its accuracy against Pro DJ Link.
+#[derive(Serialize)]
+struct MicJson {
+    state: &'static str,
+    master: bool,
+    /// The tempo of the calibrated grid. 0 without a grid.
+    bpm: f64,
+    level: u8,
+    confidence: u8,
+    offset_ms: i16,
+    beats: u32,
+    tempo_err_cbpm: u16,
+    phase_med_ms: u16,
+    phase_p95_ms: u16,
+    bar1_pct: u8,
+    lock_ms: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -1127,6 +1228,10 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
             .collect()
     };
     let master = master_num.and_then(|n| decks.iter().find(|d| d.num == n));
+    let mic = *state.mic.lock().unwrap();
+    let mic_grid = mic
+        .grid
+        .filter(|_| state.mic_master.load(Ordering::Relaxed));
     let deck_json: Vec<DeckJson> = decks
         .iter()
         .zip(fields)
@@ -1211,17 +1316,35 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
     let auto = *state.auto_status.lock().unwrap();
     let status = Status {
         kind: "status",
-        source: master.map(|_| "ProLink (network)"),
+        source: if mic_grid.is_some() {
+            Some("Mic")
+        } else {
+            master.map(|_| "ProLink (network)")
+        },
         mode: "ProLink (network)",
         iface: state.iface.lock().unwrap().clone(),
-        master: MasterJson {
-            device: master.map_or(0, |m| m.num),
-            virtual_master: master.is_some() && master_virtual,
-            bpm: master.map_or(0.0, |m| m.bpm),
-            pitch: master.map_or(0.0, |m| m.pitch),
-            beat: master.map_or(0, |m| m.beat),
-            phrase16: master.map_or(0, |m| m.phrase16),
-            playing: master.is_some_and(|m| m.is_playing(now)),
+        master: match mic_grid {
+            Some(g) => {
+                let (beat, phrase16) = g.current(state.now_us() as f64);
+                MasterJson {
+                    device: mic.device,
+                    virtual_master: false,
+                    bpm: g.bpm(),
+                    pitch: 0.0,
+                    beat,
+                    phrase16,
+                    playing: true,
+                }
+            }
+            None => MasterJson {
+                device: master.map_or(0, |m| m.num),
+                virtual_master: master.is_some() && master_virtual,
+                bpm: master.map_or(0.0, |m| m.bpm),
+                pitch: master.map_or(0.0, |m| m.pitch),
+                beat: master.map_or(0, |m| m.beat),
+                phrase16: master.map_or(0, |m| m.phrase16),
+                playing: master.is_some_and(|m| m.is_playing(now)),
+            },
         },
         no_devices: deck_json.is_empty(),
         decks: deck_json,
@@ -1243,6 +1366,20 @@ fn status_message(state: &State, clock_enabled: bool, out: &mut Vec<u8>) {
         dmx,
         #[cfg(feature = "dmx")]
         auto,
+        mic: mic.enabled.then(|| MicJson {
+            state: mic.state.label(),
+            master: mic_grid.is_some(),
+            bpm: mic.grid.map_or(0.0, |g| g.bpm()),
+            level: mic.level,
+            confidence: mic.confidence,
+            offset_ms: mic.offset_ms,
+            beats: mic.stats.beats,
+            tempo_err_cbpm: mic.stats.tempo_err_cbpm,
+            phase_med_ms: mic.stats.phase_med_ms,
+            phase_p95_ms: mic.stats.phase_p95_ms,
+            bar1_pct: mic.stats.bar1_pct,
+            lock_ms: mic.stats.lock_ms,
+        }),
     };
     out.clear();
     // Serialization to a Vec fails only when the heap is full.

@@ -12,6 +12,8 @@ pub const COLS: usize = 21;
 pub struct Snapshot {
     /// The number of the master deck.
     pub master: Option<u8>,
+    /// True while the mic of the box is the master.
+    pub mic: bool,
     pub playing: bool,
     /// The BPM of the master deck. 0 when it is not known.
     pub bpm: f64,
@@ -55,8 +57,10 @@ pub fn blink_text(blinks: u64) -> &'static str {
 
 /// Makes the lines of the status screen. Each line has `COLS` characters or less.
 pub fn lines(s: &Snapshot) -> Lines {
+    let state = if s.playing { "PLAY" } else { "STOP" };
     let deck = match s.master {
-        Some(n) => format!("Deck {n}  {}", if s.playing { "PLAY" } else { "STOP" }),
+        Some(_) if s.mic => format!("MIC  {state}"),
+        Some(n) => format!("Deck {n}  {state}"),
         None => "No master".into(),
     };
     let bpm = if s.bpm > 0.0 {
@@ -325,6 +329,19 @@ pub fn scenes_lines(cfg: &ScenesConfig, s: &SceneStatus, flash: Option<u8>) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mic_master_shows_mic() {
+        let l = lines(&Snapshot {
+            mic: true,
+            master: Some(7),
+            playing: true,
+            bpm: 128.0,
+            ..Default::default()
+        });
+        assert_eq!(l.deck, "MIC  PLAY");
+        assert_eq!(l.bpm, "128.0");
+    }
 
     #[test]
     fn a_playing_master_shows_its_bpm_and_beat() {

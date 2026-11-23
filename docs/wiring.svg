@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Wiring of the AUTOBLINK box with modules: WT32-ETH01, two LEDs, OLED, joystick, MIDI OUT (TRS-A), DMX OUT, DMX IN, USB-C power and the flash header. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1563" viewBox="0 0 1400 1563" font-family="Helvetica, Arial, sans-serif">
-  <rect x="0" y="0" width="1400" height="1563" fill="#ffffff"/>
+<!-- Wiring of the AUTOBLINK box with modules: WT32-ETH01, two LEDs, OLED, joystick, MIDI OUT (TRS-A), DMX OUT, DMX IN, PDM mic, USB-C power and the flash header. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1753" viewBox="0 0 1400 1753" font-family="Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="1400" height="1753" fill="#ffffff"/>
 
   <!-- Title -->
   <text x="60" y="50" font-size="24" font-weight="bold" fill="#24292f">AUTOBLINK box · wiring</text>
-  <text x="60" y="74" font-size="13" fill="#57606a">WT32-ETH01 · LEDs · OLED · joystick · MIDI OUT (TRS-A) · DMX OUT · DMX IN · USB-C power · flash header</text>
+  <text x="60" y="74" font-size="13" fill="#57606a">WT32-ETH01 · LEDs · OLED · joystick · MIDI OUT · DMX OUT · DMX IN · PDM mic · USB-C · flash</text>
 
   <!-- Panels -->
   <g fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5">
@@ -17,7 +17,7 @@
     <rect x="790" y="390" width="550" height="220" rx="10"/>
     <rect x="790" y="630" width="550" height="240" rx="10"/>
     <rect x="790" y="890" width="550" height="430" rx="10"/>
-    <rect x="60" y="1340" width="1280" height="203" rx="10"/>
+    <rect x="60" y="1530" width="1280" height="203" rx="10"/>
   </g>
   <g font-size="15" font-weight="bold" fill="#24292f">
     <text x="75" y="122">LEDs · active high</text>
@@ -28,8 +28,8 @@
     <text x="805" y="412">DMX OUT · UART1 TX · 250 kbaud</text>
     <text x="805" y="652">DMX IN · UART1 RX · HTP merge</text>
     <text x="805" y="912">Parts</text>
-    <text x="75" y="1362">Legend</text>
-    <text x="520" y="1362">Notes</text>
+    <text x="75" y="1552">Legend</text>
+    <text x="520" y="1552">Notes</text>
   </g>
 
   <!-- ============ Wires ============ -->
@@ -239,7 +239,8 @@
   </g>
   <g font-size="12" fill="#ffffff" text-anchor="end">
     <text x="748" y="174">TXD (IO17) · MIDI</text>
-    <text x="748" y="214">IO2 · UART2 RX (n/c)</text>
+    <text x="748" y="214">IO2 · mic CLK</text>
+    <text x="748" y="254">IO12 · mic DATA</text>
     <text x="748" y="559">IO4 · UART1 TX</text>
     <text x="748" y="744">IO36 · UART1 RX</text>
   </g>
@@ -249,7 +250,7 @@
     <text x="650" y="445" font-size="11" font-weight="bold" fill="#f2cc60">Do not use:</text>
     <text x="650" y="462" font-size="11" fill="#f2cc60">16 18 19 21 22 23 25 26 27</text>
     <text x="650" y="478" font-size="11" fill="#f2cc60">IO0: only the BOOT button</text>
-    <text x="650" y="494" font-size="11" fill="#f2cc60">IO2, IO12: no wire</text>
+    <text x="650" y="494" font-size="11" fill="#f2cc60">IO12: no pull-up (strap pin)</text>
   </g>
   <g fill="#d4a72c" stroke="#0f2018" stroke-width="1">
     <circle cx="540" cy="230" r="5"/>
@@ -268,13 +269,13 @@
     <circle cx="540" cy="1285" r="5"/>
     <circle cx="760" cy="170" r="5"/>
     <circle cx="760" cy="210" r="5"/>
+    <circle cx="760" cy="250" r="5"/>
     <circle cx="760" cy="555" r="5"/>
     <circle cx="760" cy="740" r="5"/>
   </g>
-  <g stroke="#57606a" stroke-width="2">
-    <line x1="765" y1="210" x2="780" y2="210"/>
-    <line x1="776" y1="204" x2="786" y2="216"/>
-    <line x1="786" y1="204" x2="776" y2="216"/>
+  <g fill="#1f6feb" font-size="11" font-weight="bold">
+    <text x="766" y="200">M1</text>
+    <text x="766" y="245">M1</text>
   </g>
 
   <!-- ============ MIDI OUT jack ============ -->
@@ -410,14 +411,15 @@
     <text x="805" y="1096">2 × resistor 330 Ω (R1, R2), 1 × 10 Ω (R3), 1 × 33 Ω (R4)</text>
     <text x="805" y="1113">1 × DMX terminator for the last fixture (XLR-3 male, 120 Ω on pins 2 and 3)</text>
     <text x="805" y="1130">Perfboard, hook-up wire. Optional: 3.3 V USB-serial adapter for J2</text>
-    <text x="805" y="1154" font-weight="bold">Prepare</text>
-    <text x="805" y="1171">U1 (DMX OUT): remove the 120 Ω resistor. U2 (DMX IN): keep it (R5).</text>
-    <text x="805" y="1188">Put all GND wires on one GND rail and all 3V3 wires on one 3V3 rail.</text>
-    <text x="805" y="1205">Connect each rail to the WT32-ETH01 with one short wire.</text>
-    <text x="805" y="1229" font-weight="bold">Firmware</text>
-    <text x="805" y="1246">Flash the board once with the dock. After that, the box updates over the network.</text>
-    <text x="805" y="1263">Firmware 1.24.0 and later drive MIDI, the LEDs, DMX OUT, DMX IN,</text>
-    <text x="805" y="1280">the OLED and the joystick.</text>
+    <text x="805" y="1147">1 × PDM MEMS mic breakout (M1): see the mic panel</text>
+    <text x="805" y="1171" font-weight="bold">Prepare</text>
+    <text x="805" y="1188">U1 (DMX OUT): remove the 120 Ω resistor. U2 (DMX IN): keep it (R5).</text>
+    <text x="805" y="1205">Put all GND wires on one GND rail and all 3V3 wires on one 3V3 rail.</text>
+    <text x="805" y="1222">Connect each rail to the WT32-ETH01 with one short wire.</text>
+    <text x="805" y="1246" font-weight="bold">Firmware</text>
+    <text x="805" y="1263">Flash the board once with the dock. After that, the box updates over the network.</text>
+    <text x="805" y="1280">Firmware 1.24.0 and later drive MIDI, the LEDs, DMX OUT, DMX IN,</text>
+    <text x="805" y="1297">the OLED and the joystick.</text>
   </g>
 
   <!-- ============ GND symbols ============ -->
@@ -455,37 +457,84 @@
     <text x="480" y="1120">3V3</text>
   </g>
 
+  <!-- ============ PDM mic ============ -->
+  <rect x="60" y="1340" width="1280" height="170" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="75" y="1362" font-size="15" font-weight="bold" fill="#24292f">PDM mic · I2S0 · 16 kHz · beat when no deck plays</text>
+  <rect x="110" y="1380" width="200" height="126" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="2"/>
+  <text x="124" y="1402" font-size="13" font-weight="bold" fill="#24292f">M1 · PDM MEMS mic</text>
+  <g font-size="12" fill="#24292f" text-anchor="end">
+    <text x="300" y="1426">VDD</text>
+    <text x="300" y="1444">GND</text>
+    <text x="300" y="1462">SEL</text>
+    <text x="300" y="1480">CLK</text>
+    <text x="300" y="1498">DATA</text>
+  </g>
+  <g fill="#d4a72c" stroke="#57606a" stroke-width="1">
+    <circle cx="310" cy="1422" r="4"/>
+    <circle cx="310" cy="1440" r="4"/>
+    <circle cx="310" cy="1458" r="4"/>
+    <circle cx="310" cy="1476" r="4"/>
+    <circle cx="310" cy="1494" r="4"/>
+  </g>
+  <g stroke="#cf222e" stroke-width="2.5" fill="none">
+    <polyline points="310,1422 360,1422 360,1410"/>
+    <path d="M350 1410 h20"/>
+  </g>
+  <text x="376" y="1414" font-size="12" font-weight="bold" fill="#cf222e">3V3</text>
+  <g stroke="#24292f" stroke-width="2.5" fill="none">
+    <polyline points="310,1440 420,1440 420,1458 310,1458"/>
+    <line x1="420" y1="1449" x2="440" y2="1449"/>
+  </g>
+  <path d="M440 1449 v8 M430 1457 h20 M434 1461 h12 M438 1465 h4" stroke="#24292f" stroke-width="2" fill="none"/>
+  <circle cx="420" cy="1449" r="4" fill="#24292f"/>
+  <g stroke="#1f6feb" stroke-width="2.5" fill="none">
+    <line x1="310" y1="1476" x2="380" y2="1476"/>
+    <line x1="310" y1="1494" x2="380" y2="1494"/>
+  </g>
+  <g font-size="12" font-weight="bold" fill="#1f6feb">
+    <text x="386" y="1480">→ IO2</text>
+    <text x="386" y="1498">→ IO12</text>
+  </g>
+  <g font-size="12" fill="#24292f">
+    <text x="520" y="1386">3.3 V, an acoustic overload point of 120 dB SPL or more. Candidate chips: ST MP34DT05, Knowles SPH0641.</text>
+    <text x="520" y="1404">Do not use a module with a pull-up resistor on DATA. IO12 high at power-on sets the flash to 1.8 V, and the box does not start.</text>
+    <text x="520" y="1422">Read the schematic of the module before you buy it. Without the clock, the mic keeps DATA at high impedance.</text>
+    <text x="520" y="1440">SEL to GND: the mic sends on the left slot. Put the mic where it hears the room, away from a fan.</text>
+    <text x="520" y="1458">Firmware 1.40.0 and later read the mic. Without the mic, the box works as before and the page shows "no mic".</text>
+    <text x="520" y="1476">The setting "Mic" (Sync tab) turns the mic off.</text>
+  </g>
+
   <!-- ============ Legend ============ -->
   <g stroke-width="3" stroke-linecap="round">
-    <line x1="75" y1="1385" x2="115" y2="1385" stroke="#1f6feb"/>
-    <line x1="75" y1="1407" x2="115" y2="1407" stroke="#e36209"/>
-    <line x1="75" y1="1429" x2="115" y2="1429" stroke="#cf222e"/>
-    <line x1="75" y1="1451" x2="115" y2="1451" stroke="#24292f"/>
-    <line x1="270" y1="1385" x2="310" y2="1385" stroke="#8250df"/>
+    <line x1="75" y1="1575" x2="115" y2="1575" stroke="#1f6feb"/>
+    <line x1="75" y1="1597" x2="115" y2="1597" stroke="#e36209"/>
+    <line x1="75" y1="1619" x2="115" y2="1619" stroke="#cf222e"/>
+    <line x1="75" y1="1641" x2="115" y2="1641" stroke="#24292f"/>
+    <line x1="270" y1="1575" x2="310" y2="1575" stroke="#8250df"/>
   </g>
   <g font-size="12" fill="#24292f">
-    <text x="125" y="1389">Signal (3.3 V logic)</text>
-    <text x="125" y="1411">5 V</text>
-    <text x="125" y="1433">3V3</text>
-    <text x="125" y="1455">GND</text>
-    <text x="320" y="1389">DMX pair</text>
-    <text x="320" y="1415">3V3 flag: to the 3V3 rail</text>
-    <text x="320" y="1441">GND symbol: to the GND rail</text>
-    <text x="320" y="1465">Dot: wires connect</text>
+    <text x="125" y="1579">Signal (3.3 V logic)</text>
+    <text x="125" y="1601">5 V</text>
+    <text x="125" y="1623">3V3</text>
+    <text x="125" y="1645">GND</text>
+    <text x="320" y="1579">DMX pair</text>
+    <text x="320" y="1605">3V3 flag: to the 3V3 rail</text>
+    <text x="320" y="1631">GND symbol: to the GND rail</text>
+    <text x="320" y="1655">Dot: wires connect</text>
   </g>
-  <path d="M290 1418 v-12 M280 1406 h20" stroke="#cf222e" stroke-width="2.5" fill="none"/>
-  <path d="M290 1430 v8 M280 1438 h20 M284 1442 h12 M288 1446 h4" stroke="#24292f" stroke-width="2" fill="none"/>
-  <circle cx="290" cy="1461" r="4" fill="#24292f"/>
+  <path d="M290 1608 v-12 M280 1596 h20" stroke="#cf222e" stroke-width="2.5" fill="none"/>
+  <path d="M290 1620 v8 M280 1628 h20 M284 1632 h12 M288 1636 h4" stroke="#24292f" stroke-width="2" fill="none"/>
+  <circle cx="290" cy="1651" r="4" fill="#24292f"/>
 
   <g font-size="12" fill="#24292f">
-    <text x="520" y="1386">1. Power the OLED, the joystick and the two RS485 modules from 3V3, not from 5 V. At 5 V, they put 5 V on ESP32 pins.</text>
-    <text x="520" y="1404">2. U1 (OUT): remove its 120 Ω resistor; the last fixture has the terminator. U2 (IN): keep it; the box ends the console line.</text>
-    <text x="520" y="1422">3. The jack is TRS Type A. A Type B device swaps tip and ring: use a Type A to B adapter.</text>
-    <text x="520" y="1440">4. To flash over J2: adapter TX to RX0, adapter RX to TX0, GND to GND. Hold BOOT, push RST, release BOOT.</text>
-    <text x="520" y="1458">5. Power comes from J1 during the flash. Do not connect the 5 V pin of the adapter. Do not use J1 and the dock together.</text>
-    <text x="520" y="1476">6. Do not connect IO2 and IO12. IO2 is the receive pin of the MIDI UART. IO12 high at power-on stops the start.</text>
-    <text x="520" y="1494">7. The firmware calibrates the joystick center at each start. Do not touch the joystick while the box starts.</text>
-    <text x="520" y="1512">8. EN high makes the RS485 module send, EN low makes it receive. U1: EN to 3V3. U2: EN to GND.</text>
-    <text x="520" y="1530">9. Connect TXD of U1 to IO4. Do not connect it to the pin TXD of the board: that pin is IO17, the MIDI output.</text>
+    <text x="520" y="1576">1. Power the OLED, the joystick and the two RS485 modules from 3V3, not from 5 V. At 5 V, they put 5 V on ESP32 pins.</text>
+    <text x="520" y="1594">2. U1 (OUT): remove its 120 Ω resistor; the last fixture has the terminator. U2 (IN): keep it; the box ends the console line.</text>
+    <text x="520" y="1612">3. The jack is TRS Type A. A Type B device swaps tip and ring: use a Type A to B adapter.</text>
+    <text x="520" y="1630">4. To flash over J2: adapter TX to RX0, adapter RX to TX0, GND to GND. Hold BOOT, push RST, release BOOT.</text>
+    <text x="520" y="1648">5. Power comes from J1 during the flash. Do not connect the 5 V pin of the adapter. Do not use J1 and the dock together.</text>
+    <text x="520" y="1666">6. IO2 and IO12 go only to the mic. IO12 high at power-on stops the start: use a mic without a pull-up on DATA.</text>
+    <text x="520" y="1684">7. The firmware calibrates the joystick center at each start. Do not touch the joystick while the box starts.</text>
+    <text x="520" y="1702">8. EN high makes the RS485 module send, EN low makes it receive. U1: EN to 3V3. U2: EN to GND.</text>
+    <text x="520" y="1720">9. Connect TXD of U1 to IO4. Do not connect it to the pin TXD of the board: that pin is IO17, the MIDI output.</text>
   </g>
 </svg>

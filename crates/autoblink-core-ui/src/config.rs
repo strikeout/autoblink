@@ -15,11 +15,12 @@ pub const IDX_LOSS_ACTION: usize = 115;
 pub const IDX_LOSS_TIME: usize = 116;
 pub const IDX_ARTNET_UNIVERSE: usize = 117;
 pub const IDX_SACN_UNIVERSE: usize = 118;
+pub const IDX_MIC: usize = 119;
 pub const IDX_ROTATE: usize = 120;
 pub const IDX_BRIGHTNESS: usize = 121;
 
 /// The indices of the rows that `BoxConfig` has.
-pub const INDICES: [usize; 11] = [
+pub const INDICES: [usize; 12] = [
     IDX_DMX_MODE,
     IDX_BEAT_CHANNEL,
     IDX_DMX_IN,
@@ -29,6 +30,7 @@ pub const INDICES: [usize; 11] = [
     IDX_LOSS_TIME,
     IDX_ARTNET_UNIVERSE,
     IDX_SACN_UNIVERSE,
+    IDX_MIC,
     IDX_ROTATE,
     IDX_BRIGHTNESS,
 ];
@@ -79,6 +81,8 @@ pub struct BoxConfig {
     pub artnet_universe: u16,
     /// The sACN universe that the box receives, 1 to 63999.
     pub sacn_universe: u16,
+    /// Reads the PDM mic on IO2 and IO12. The mic gives the beat when no Pro DJ Link deck plays.
+    pub mic: bool,
     /// Turns the OLED by 180°, for a display that is upside down on the front panel.
     pub rotate: bool,
     /// The contrast of the OLED, 1 to 255.
@@ -97,6 +101,7 @@ impl Default for BoxConfig {
             loss_s: 10,
             artnet_universe: 0,
             sacn_universe: 1,
+            mic: true,
             rotate: false,
             brightness: 128,
         }
@@ -238,6 +243,16 @@ impl BoxConfig {
                 on: None,
             },
             SettingItem {
+                idx: IDX_MIC,
+                label: "Mic",
+                section: Some("Mic"),
+                kind: "toggle",
+                value: if self.mic { "✓" } else { "✗" }.into(),
+                raw: None,
+                step: false,
+                on: None,
+            },
+            SettingItem {
                 idx: IDX_ROTATE,
                 label: "Display Rotate 180°",
                 section: Some("Display"),
@@ -299,6 +314,10 @@ impl BoxConfig {
             }
             IDX_DMX_IN => {
                 self.dmx_in = flag()?;
+                Ok(())
+            }
+            IDX_MIC => {
+                self.mic = flag()?;
                 Ok(())
             }
             IDX_DMX_REFRESH => {
@@ -364,6 +383,7 @@ impl BoxConfig {
                     .clamp(1, 512)
             }
             IDX_DMX_IN => self.dmx_in = !self.dmx_in,
+            IDX_MIC => self.mic = !self.mic,
             IDX_DMX_REFRESH => self.dmx_refresh_always = !self.dmx_refresh_always,
             IDX_DMX_CHANNELS => {
                 // A value between two steps goes to the next step in the direction.
@@ -612,6 +632,28 @@ mod tests {
         cfg.sacn_universe = 65000;
         cfg.sanitize();
         assert_eq!((cfg.loss_s, cfg.sacn_universe), (60, 63999));
+    }
+
+    #[test]
+    fn the_mic_is_on_by_default_and_toggles() {
+        let mut cfg = BoxConfig::default();
+        assert!(cfg.mic);
+        cfg.set(IDX_MIC, "0").unwrap();
+        assert!(!cfg.mic);
+        assert!(cfg.set(IDX_MIC, "2").is_err());
+        cfg.cycle(IDX_MIC, 1).unwrap();
+        assert!(cfg.mic);
+        let row = cfg.items().into_iter().find(|i| i.idx == IDX_MIC).unwrap();
+        assert_eq!(
+            (row.label, row.section, row.kind),
+            ("Mic", Some("Mic"), "toggle")
+        );
+        assert!(INDICES.contains(&IDX_MIC));
+    }
+
+    #[test]
+    fn an_old_blob_without_mic_keeps_the_mic_on() {
+        assert!(serde_json::from_str::<BoxConfig>("{}").unwrap().mic);
     }
 
     #[test]

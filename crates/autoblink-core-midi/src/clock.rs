@@ -13,6 +13,9 @@
 //! - When more than one beat of pulses was late, the clock sends Stop, Start and a pulse on the
 //!   next downbeat (a hard resync).
 //! - Latency Comp moves the send time of each pulse. The grid stays on the beats.
+//! - A change of the master between a deck and the mic beat of the box does not stop the clock.
+//!   The first beat of the new master slews the phase error at once. A change from one deck to
+//!   another deck stops the clock as before.
 
 use crate::config::MidiConfig;
 use crate::{Out, CLOCK, CONTINUE, START, STOP};
@@ -27,6 +30,8 @@ pub struct Master {
     pub device: u8,
     pub playing: bool,
     pub bpm: f64,
+    /// True when the beat comes from the mic of the box, not from a deck.
+    pub mic: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +53,10 @@ struct Slew {
 pub struct Clock {
     state: State,
     master: u8,
+    /// True while the master is the mic.
+    master_mic: bool,
+    /// True from a handover between a deck and the mic until the first beat of the new master.
+    handover: bool,
     has_started: bool,
     /// The time of the last pulse on the grid, in µs. The send time adds the latency.
     grid: f64,
@@ -69,6 +78,8 @@ impl Default for Clock {
         Self {
             state: State::Idle,
             master: 0,
+            master_mic: false,
+            handover: false,
             has_started: false,
             grid: 0.0,
             pulse_index: 0,
@@ -81,6 +92,13 @@ impl Default for Clock {
             earliest: None,
         }
     }
+}
+
+/// The time of a slew of `error` µs: the tempo changes by 10 % or less.
+fn slew_us(cfg: &MidiConfig, error: f64) -> f64 {
+    (cfg.smoothing_ms as f64 * 1000.0)
+        .max(1000.0)
+        .max(10.0 * error.abs())
 }
 
 fn interval_us(bpm: f64) -> f64 {
@@ -132,9 +150,14 @@ impl Clock {
             return None;
         };
         if m.device != self.master {
-            self.stop(out);
+            if self.state == State::Running && m.mic != self.master_mic {
+                self.handover = true;
+            } else {
+                self.stop(out);
+                self.state = State::Waiting;
+            }
             self.master = m.device;
-            self.state = State::Waiting;
+            self.master_mic = m.mic;
         }
         if self.state == State::Idle {
             self.state = State::Waiting;
@@ -221,6 +244,21 @@ impl Clock {
             self.earliest = None;
             return;
         }
+        if self.handover {
+            // The grid of the new master can differ by some ms. Slew it out now.
+            self.handover = false;
+            let error = self.phase_error(now_f);
+            self.last_error_ms = Some(error / 1000.0);
+            self.earliest = None;
+            self.bars = 0;
+            self.slew = (error.abs() >= DEADBAND).then(|| Slew {
+                start: now_f,
+                duration: slew_us(cfg, error),
+                total: error,
+                applied: 0.0,
+            });
+            return;
+        }
         if !self.dropped {
             let error = self.phase_error(now_f);
             self.earliest = Some(self.earliest.map_or(error, |e| e.min(error)));
@@ -240,12 +278,9 @@ impl Clock {
         if error.abs() < DEADBAND {
             return;
         }
-        let duration = (cfg.smoothing_ms as f64 * 1000.0)
-            .max(1000.0)
-            .max(10.0 * error.abs());
         self.slew = Some(Slew {
             start: now_f,
-            duration,
+            duration: slew_us(cfg, error),
             total: error,
             applied: 0.0,
         });
@@ -304,6 +339,7 @@ mod tests {
             device: 1,
             playing,
             bpm: 120.0,
+            mic: false,
         })
     }
 
@@ -396,6 +432,7 @@ mod tests {
             device: 2,
             playing: true,
             bpm: 120.0,
+            mic: false,
         });
         assert_eq!(
             run(|o| {
@@ -503,5 +540,79 @@ mod tests {
         });
         assert_eq!(out, [Out::Realtime(STOP)]);
         assert_eq!(c.state_label(), "idle");
+    }
+
+    fn mic() -> Option<Master> {
+        Some(Master {
+            device: 7,
+            playing: true,
+            bpm: 120.0,
+            mic: true,
+        })
+    }
+
+    fn no_transport(v: &[Out]) -> bool {
+        !v.iter()
+            .any(|o| matches!(o, Out::Realtime(STOP) | Out::Realtime(START)))
+    }
+
+    #[test]
+    fn a_handover_to_the_mic_keeps_the_clock_running() {
+        let cfg = MidiConfig::default();
+        let mut c = started(&cfg);
+        let mut out = Vec::new();
+        let mut now = 0;
+        while now < BEAT {
+            now += 1000;
+            c.poll(&cfg, now, mic(), &mut |x| out.push(x));
+        }
+        assert!(no_transport(&out), "{out:?}");
+        assert_eq!(pulses(&out), 24);
+        assert_eq!(c.state_label(), "lock");
+    }
+
+    #[test]
+    fn a_handover_back_to_a_deck_keeps_the_clock_running() {
+        let cfg = MidiConfig::default();
+        let mut c = started(&cfg);
+        let mut out = Vec::new();
+        c.poll(&cfg, 1000, mic(), &mut |x| out.push(x));
+        c.beat(&cfg, BEAT, 7, 2, 120.0, &mut |x| out.push(x));
+        c.poll(&cfg, BEAT + 1000, master(true), &mut |x| out.push(x));
+        c.beat(&cfg, 2 * BEAT, 1, 3, 120.0, &mut |x| out.push(x));
+        assert!(no_transport(&out), "{out:?}");
+        assert_eq!(c.state_label(), "lock");
+    }
+
+    #[test]
+    fn the_first_beat_after_a_handover_slews_at_once() {
+        let cfg = MidiConfig {
+            phrase_lock_bars: 4,
+            ..MidiConfig::default()
+        };
+        let mut c = started(&cfg);
+        let at = BEAT + 30_000;
+        for t in (1000..=at).step_by(1000) {
+            c.poll(&cfg, t, mic(), &mut |_| {});
+        }
+        c.beat(&cfg, at, 7, 2, 120.0, &mut |_| {});
+        assert!(c.slew.is_some());
+        assert!((c.last_error_ms().unwrap() - 30.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn a_deck_change_still_stops() {
+        let cfg = MidiConfig::default();
+        let mut c = started(&cfg);
+        let other = Some(Master {
+            device: 2,
+            playing: true,
+            bpm: 120.0,
+            mic: false,
+        });
+        let out = run(|o| {
+            c.poll(&cfg, 10, other, &mut |x| o(x));
+        });
+        assert_eq!(out, [Out::Realtime(STOP)]);
     }
 }

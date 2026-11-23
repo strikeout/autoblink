@@ -66,10 +66,11 @@ cp .github/vendor-patches/link_bindings.rs vendor/rusty_link/link_bindings.rs
 | Crate | Role | Key modules |
 |---|---|---|
 | `host` | Desktop app + shared library | `config`, `dmx`, `midi/*`, `prolink/*`, `state`, `web/*`, `settings`, `link` |
-| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (DMX OUT and DMX IN, feature `dmx`), `show.rs` (the `show` partition), `ofl.rs` (Open Fixture Library fetch), `artnet.rs` (Art-Net in, ArtPollReply), `sacn.rs` (sACN in, multicast joins), `ui.rs` (OLED pages, joystick), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS, including the night memory), `logring.rs` (log that stays through a restart, core dump report) |
+| `esp32` | Firmware for the WT32-ETH01, ESP-IDF with `std` | `net.rs` (Ethernet, WiFi AP, WiFi station), `ota.rs` (update from GitHub), `prolink.rs` (virtual CDJ, UDP receive), `tracks.rs` (dbserver fetch), `midi.rs` (UART MIDI out), `led.rs` (beat LED, status LED), `dmx.rs` (DMX OUT and DMX IN, feature `dmx`), `show.rs` (the `show` partition), `ofl.rs` (Open Fixture Library fetch), `artnet.rs` (Art-Net in, ArtPollReply), `sacn.rs` (sACN in, multicast joins), `ui.rs` (OLED pages, joystick), `webui.rs` (page, protocol v1, waveform route), `settings.rs` (NVS, including the night memory), `logring.rs` (log that stays through a restart, core dump report), `mic.rs` (PDM mic, `mic` thread, `GET /mic` capture) |
 | `crates/autoblink-core-dbserver` | Blocking dbserver client of the firmware, host-testable | `client.rs` (fetch), `protocol.rs` (wire format), `parse.rs` (PSSI, PWV4, PQTZ, cues), `types.rs` (song structure, phrase position) |
 | `crates/autoblink-core-midi` | MIDI logic of the firmware, host-testable. The host uses `scenes.rs` too. | `clock.rs`, `mapper.rs`, `scenes.rs` (DMX scenes), `settings.rs` (host setting indices) |
 | `crates/autoblink-core-dmx` | DMX looks of the firmware, host-testable | `show.rs` (show model and limits), `render.rs` (look into universe), `clock.rs` (beat clock), `effect.rs` (intensity and bar effects), `lights.rs` (engine), `artnet.rs` (ArtDmx, ArtPoll, ArtPollReply), `sacn.rs` (E1.31 parse), `source.rs` (outside source, sender lock, loss action), `merge.rs` (HTP and LTP merge), `auto.rs` (autopilot settings), `night.rs` (energy spot, night memory), `pilot.rs` (picks, pins, drop sequence), `moves.rs` (move shapes, room level) |
+| `crates/autoblink-core-beat` | Beat tracker of the box mic, host-testable | `onset.rs` (band onsets), `tracker.rs` (tempo, phase, bar 1, flywheel, Break and Drop), `grid.rs` (time axis, beat emitter), `calib.rs` (calibration against Pro DJ Link), `arbiter.rs` (mic master), `wav.rs`, `examples/eval.rs` |
 | `crates/autoblink-core-ui` | Logic of the box hardware of the firmware, host-testable | `dmx.rs` (DMX modes, HTP merge), `config.rs` (settings 110 to 121), `screen.rs` (OLED text), `joystick.rs` (input state machine), `menu.rs` (OLED pages, settings menu) |
 | `esp32-emulator` | Native emulator | `main.rs`, `verify_stopped.rs` |
 
@@ -165,14 +166,15 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The bootloader has rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). A new app calls `ota::mark_valid` after the web server and the Pro DJ Link threads start. If it restarts before that call, the bootloader starts the previous app.
 - Do not use the bootloader of espflash. It has no rollback. The runner and the release workflow give `--bootloader` with the bootloader of the build.
 - The tag `esp32-vX.Y.Z` must match the version in `esp32/Cargo.toml`. The release workflow stops when they differ. Otherwise the box installs the same firmware after each check.
-- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.30.0 uses 89 % (1 748 832 bytes). Version 1.31.0 uses 93 % (1 836 144 bytes). The release builds of esp-idf-sys already use `CONFIG_COMPILER_OPTIMIZATION_SIZE`. The memory trim after 1.32.3 uses 91 % (1 782 624 bytes). Silent assertions (`CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT`) remove 50 KB. An access point without WPA3 (`CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n`) removes 5 KB. The next levers are Rust `opt-level = "z"` and a smaller page. A panic hook without the default hook of std removes only 352 bytes. The std backtrace code stays, because std and `anyhow` still use it. Full LTO, the gzip page and the common certificate bundle make it smaller.
+- An app image must be smaller than the slot (0x1E0000 bytes). Version 1.21.0 uses 74 % of the slot (1 450 080 bytes). Version 1.30.0 uses 89 % (1 748 832 bytes). Version 1.31.0 uses 93 % (1 836 144 bytes). The release builds of esp-idf-sys already use `CONFIG_COMPILER_OPTIMIZATION_SIZE`. The memory trim after 1.32.3 uses 91 % (1 782 624 bytes). Version 1.39.7 uses 92 % (1 813 600 bytes). Version 1.40.0 with the mic uses 95 % (1 859 856 bytes). Version 1.40.1 uses 1 860 624 bytes. Silent assertions (`CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT`) remove 50 KB. An access point without WPA3 (`CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n`) removes 5 KB. The next levers are Rust `opt-level = "z"` and a smaller page. A panic hook without the default hook of std removes only 352 bytes. The std backtrace code stays, because std and `anyhow` still use it. Full LTO, the gzip page and the common certificate bundle make it smaller.
 - The OTA check uses the common certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). The GitHub certificate chains end at DigiCert and USERTrust. If `ota_check` fails with a certificate error, set the full bundle again.
 
 ### Update the box over WiFi
 
 - Update the box of the user over WiFi, not over USB. The USB port is not available.
 - Increase the version in `Cargo.toml` and `esp32/Cargo.toml` (a hotfix step is enough). The box installs only a newer version.
-- Run `sh scripts/ota-push.sh` (or `sh scripts/ota-push.sh 192.168.1.104`). The script puts the build into the prerelease `esp32-latest` and sends `ota_install` with `scripts/ws-command.py`. Then it waits for the new version.
+- Run `sh scripts/ota-push.sh`. The script puts the build into the prerelease `esp32-latest` and sends `ota_install` with `scripts/ws-command.py`. Then it waits until the hello message gives the new version.
+- Give no IP address to the script. The router can give the box a new DHCP address after the restart (192.168.1.104, then 192.168.1.105 on 2026-11-12). The default host `autoblink.local` follows the box.
 - Each box that does a check gets that build. The next tagged release replaces it.
 - OTA writes only the app. A change to the partition table, the bootloader or the bootloader settings of `sdkconfig.defaults` needs USB. Tell the user before such a change.
 - If the new app restarts before `ota::mark_valid`, the bootloader starts the previous app. Then read `/log` for the crash.
@@ -393,6 +395,34 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The status field `box` gives the IP address of the box, or null. The status field `dmx` comes from the engine.
 - When a box is on the network, the host page loads and saves the show of the box (`GET` and `POST` to the box). Open the host page at `127.0.0.1` or `localhost`, so that the box accepts the POST (`dev_origin`). The preset names on the host page are the names of the host. The page hides the Preview button.
 
+### Mic beat fallback
+
+- A PDM MEMS mic gives the beat when no Pro DJ Link deck plays. The design is `docs/superpowers/specs/2026-11-12-mic-beat-fallback-design.md`.
+- The `mic` thread runs on core 0 with priority 4 (`esp32/src/mic.rs`). It reads 256 frames (16 ms) of 16-bit PCM at 16 kHz from I2S0. The DMA holds 6 reads (96 ms).
+- `autoblink_core_beat::Tracker` finds the tempo (80 to 160 BPM), the phase, bar 1, the flywheel, Break and Drop. The tests use synthetic tracks (`synth.rs`).
+- The tempo comes from an autocorrelation of the last 4 s of onsets. The period comes from a least-squares fit over the last 16 kicks.
+- The kick onset is about 8 ms late in the tracker (`DELAY`). The calibration takes up the rest of the delay.
+- Bar 1 is the beat with the most change above 4 kHz, among the two beats without a clap. A Drop sets bar 1 and the start of the 16-beat block.
+- A Pro DJ Link deck that plays is always the master. The mic becomes the master only from `Locked` (`Arbiter`).
+- After a deck stops, the mic needs a kick that comes at least 0.5 s after the stop (`TAKEOVER_AFTER_US`). The lock of the mic holds the kicks of the deck for 8 beats. Thus a paused deck in a silent room stops the clock and the lights as before.
+- The flywheel only keeps a mic master that took over already.
+- The `midi` thread runs the `Arbiter` and writes `State::mic_master`. It sees a deck stop and gives the beat to the mic in one pass. With Clock Loop Sync, a `mic` thread decision came one pass late, and the clock sent Stop and Start.
+- The calibrator uses only a packet within a quarter beat of the current offset. A WiFi packet that is more than half a beat late wraps to the next mic beat.
+- The mic master uses the setting "Device Number" (index 2). A handover between a deck and the mic sends no MIDI Stop and no Start. The first beat of the new master slews the phase error (`Clock::poll`, `Master::mic`).
+- The mic thread sends its beats into `BeatOut`, the fan-out of the Pro DJ Link beats. The page beat queue is a FreeRTOS queue, because the `mic` thread has a lower priority than `web-status`.
+- While a deck plays, the calibrator learns the offset from the mic grid to the Pro DJ Link grid. It also learns the bar rotation and the tempo ratio (1, 2 or 1/2). It uses the earliest packet of each window of 32 beats.
+- NVS keeps the offset under the key `mic`. The main loop writes it at most every 5 minutes, after a change of more than 2 ms. Without a stored value, the offset is 30 ms.
+- `/log` shows the accuracy once a minute while a deck plays. System › Diagnostics shows the same values (status field `mic`).
+- `GET /mic?s=30` (1 to 120 s) streams a stereo WAV. The left channel is the mic. The right channel marks each Pro DJ Link master beat with `beat_in_bar * 1000`. The route answers 403 until the active page sends `mic_arm`. One arm allows one capture within 60 s.
+- During a capture, the HTTP task streams the WAV, and the page gets no status. The capture needs 40 KB of free heap and a 12 KB block. It uses about 11 KB of heap.
+- Run the tracker on a recording: `cargo run -p autoblink-core-beat --example eval -- rec.wav`. Keep the recordings out of git.
+- The mic costs about 20 KB of heap: the 8 KB stack, the DMA buffers and the tracker. On 2026-11-12, 1.39.7 had about 110 KB free and 1.40.1 about 91 KB free, with Art-Net live and the page closed.
+- The PDM clock on IO2 is 2.048 MHz: 16 kHz with 16 times downsampling (`PdmDownsample::Samples16`). The default 8 times gives 1.024 MHz, at the lower limit of an MP34DT01 (1 to 3.25 MHz).
+- The setting "Mic" (index 119, default on) turns off the I2S channel. A box without the module shows `no_mic` after 5 s of constant PCM.
+- The flywheel has no time limit (owner decision). Crowd noise after the music can keep it on. The log reports a flywheel that lasts longer than 5 minutes.
+- Check the stack frame of a thread body after a change: decode the `entry` instruction of `__rust_begin_short_backtrace::<…>` in the ELF. `Box::new(T::new())` builds `T` on the stack first. A large buffer of the tracker or the calibrator therefore lives in a `Vec` or a boxed slice.
+- If the mic sends silence, set SEL of the module to 3V3, or change the slot of `PdmRxSlotConfig`. Nobody has tested a module on a box yet.
+
 ### Debug logs
 
 - Run `curl http://autoblink.local/log` to read the log over WiFi. The buttons Log and Memory in the System tab of the page show `/log` and `/mem`.
@@ -405,7 +435,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - `crate::spawn` gives priority 5 on the two cores, the same as the HTTP server task. `crate::spawn_rt` sets a priority and a core. The WiFi task runs on core 0. The `midi` thread has priority 10 on core 1. The `prolink-rx` thread has priority 8 on core 1.
 - `prolink-rx` receives on the three Pro DJ Link sockets with one `poll` loop and one buffer. The task watchdog watches it, the `midi` thread and the `dmx` thread (since 1.39.0). The loop of the `dmx` thread waits at most 1 s, also with a long `/dmxtune` period. After a receive error, the thread sleeps for 10 ms, so that the idle task can run.
 - `prolink-rx` also runs the virtual CDJ (`VirtualCdj` in `prolink.rs`). Between two receives, it does the due step. A join sends a packet every 300 ms. After the join, the virtual CDJ sends the keepalive and the status packets every 1.5 s. The poll waits until the next step, and at most 1 s. The virtual CDJ has no thread.
-- Each stack comes from the heap. Each size keeps 1.5 KB or more above the low point of `/mem`. Measure with `/mem` again after a change that adds work to a thread. The memory trim after 1.32.3 sets the sizes in `sdkconfig.defaults` and in the `spawn` calls. The sizes in bytes are `ui` 6656, `dbserver` 5120, `dmx` 8192, `prolink-rx` 5632, `main` 6144, `mdns` 3072 and IDLE 2176.
+- Each stack comes from the heap. Each size keeps 1.5 KB or more above the low point of `/mem`. Measure with `/mem` again after a change that adds work to a thread. The memory trim after 1.32.3 sets the sizes in `sdkconfig.defaults` and in the `spawn` calls. The sizes in bytes are `ui` 6656, `dbserver` 5120, `dmx` 8192, `prolink-rx` 5632, `main` 6144, `mdns` 3072, `mic` 8192 and IDLE 2176. Its thread body has a frame of 2 736 bytes in 1.40.0. On 1.40.1 without a mic module, `mic` kept 4160 bytes free. Measure it again with a module, because the tempo and phase code then runs.
 - The LEDs have no thread. An esp_timer of 5 ms in the `esp_timer` task sets IO32 and IO33 (`led.rs`). The `prolink-rx` thread writes the beat into atomics, and the main loop writes the blink code each second. The `esp_timer` task has 2560 bytes of stack. Measure it with `/mem` after an hour of beats.
 - Put a large struct on the heap (`Box`), not on the stack of a thread. The OLED display struct holds its 1 KB frame buffer. On the 5 KB stack of `ui`, it overflowed the stack, and the box restarted in `malloc` with the address 0xffffffff.
 - The status message and the settings message are `Serialize` structs. Do not build them as a `serde_json::Value` tree. A tree has a heap block for each field, and the blocks fragment the heap.
@@ -419,6 +449,7 @@ The output is `esp32/target/xtensa-esp32-espidf/release/autoblink-esp32`.
 - The text has three parts: the last crash, the lines of the previous start and the lines of this start. `GET /log` sends the parts one after the other (`logring::write_text`). It copies one ring at a time, so it needs about 4 KB of heap.
 - The RTC slow memory has about 120 bytes free. A larger ring or another RTC variable stops the linker.
 - The firmware keeps the crash report outside the ring. Thus a flood of log lines cannot push it out.
+- The info lines of esp-idf-svc go only to UART0 (since 1.40.1). One line for each HTTP handler filled the ring in the first 15 s after a start.
 - The ESP-IDF C components (WiFi driver, HTTP server) log only to UART0. The ring has only the Rust log lines. The C components log only warnings and errors (`CONFIG_LOG_DEFAULT_LEVEL_WARN`), because each UART write blocks the task.
 - After a crash, the panic handler writes a core dump to the `coredump` partition (0x3E0000). At the next start, the firmware logs the task, the exception and the backtrace. Then it erases the dump.
 - A box with an older partition table has no `coredump` partition. Flash it over USB to add the partition. OTA does not change the partition table.
@@ -445,7 +476,8 @@ The wiring diagram is `docs/wiring.svg`. It gives the board label first and the 
 | IO32 | Beat LED. It pulses for 30 ms on each beat of the master deck. |
 | IO33 | Status LED, with the label 485_EN on the board. While the master deck plays, it pulses for 120 ms on beat 1 and for 25 ms on the other beats. When no beat arrives for 2 s, it shows a blink code (see below). |
 | IO17 | MIDI out (UART2 TX, 31250 baud). TRS-A: IO17 → 10 Ω → tip, 3V3 → 33 Ω → ring, GND → sleeve. |
-| IO2 | UART2 RX. It has no wire, but the UART driver needs a receive pin. |
+| IO2 | PDM mic clock (I2S0). The MIDI UART installs with IO2 as its receive pin, because the driver needs one. Then `midi::start` routes the UART2 receive input to a constant high level. |
+| IO12 | PDM mic data (I2S0). IO12 is a strapping pin: a high level at reset sets the flash to 1.8 V, and the box does not start. Use a mic module without a pull-up resistor on its data line. |
 | IO4 | DMX out (UART1 TX, 250 kbaud) to TXD of an RS485 module (V2.03). EN of that module goes to 3V3, so that it always sends. The feature `dmx` is on by default. |
 | IO36 | DMX IN (UART1 RX, 250 kbaud) from RXD of a second RS485 module. EN of that module goes to GND, so that it always receives. |
 | IO14, IO15 | I2C0 SCL and SDA for an SSD1306 or SSD1315 OLED (address 0x3C, 400 kHz). The OLED module has the pull-up resistors. |

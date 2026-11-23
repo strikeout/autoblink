@@ -324,6 +324,18 @@ impl Settings {
         }
     }
 
+    /// The offset of the mic grid from NVS key `mic`, in µs.
+    pub fn mic_offset(&self) -> Option<i64> {
+        self.nvs.get_i32("mic").ok().flatten().map(i64::from)
+    }
+
+    /// Writes the offset of the mic grid to NVS key `mic`.
+    pub fn save_mic_offset(&self, us: i32) {
+        if let Err(e) = self.nvs.set_i32("mic", us) {
+            log::warn!("Cannot save the mic offset: {e}");
+        }
+    }
+
     fn save_json(&self, key: &str, json: serde_json::Result<String>, what: &str) {
         match json
             .map_err(anyhow::Error::from)
